@@ -1,3 +1,7 @@
+# Timely-viz
+
+Visualization for Timely Dataflow and Differential Dataflow programs
+
 ## Debugging tips:
 
 If the output is empty when it shouldn't be, make sure you aren't overwriting the default
