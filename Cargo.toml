@@ -1,0 +1,45 @@
+[package]
+name = "timely-viz"
+version = "0.1.0"
+authors = ["Chase Wilson <me@chasewilson.dev>"]
+license = "MIT OR Apache-2.0"
+edition = "2018"
+default-run = "timely-viz"
+
+[dependencies]
+num = "0.3.1"
+serde = "1.0.123"
+anyhow = "1.0.38"
+colorous = "1.0.3"
+structopt = "0.3.21"
+abomonation = "0.7.3"
+sequence_trie = "0.3.6"
+crossbeam-channel = "0.5.0"
+abomonation_derive = "0.5.0"
+
+[dependencies.differential-dataflow]
+path = "./vendor/differential-dataflow"
+default-features = false
+
+[dependencies.timely]
+path = "./vendor/timely-dataflow/timely"
+#default-features = false
+
+# TODO: Remove this once timely-dataflow/#356 is resolved
+#       https://github.com/TimelyDataflow/timely-dataflow/issues/356
+[dependencies.timely-viz-hook]
+path = "./crates/timely-viz-hook"
+
+[profile.dev]
+opt-level = 0
+lto = false
+debug = 0
+incremental = true
+
+[profile.release]
+codegen-units = 1
+opt-level = 3
+lto = "fat"
+debug = 0
+incremental = false
+debug-assertions = false
