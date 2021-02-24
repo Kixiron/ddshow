@@ -20,13 +20,6 @@ pub struct Args {
     #[structopt(long = "address", default_value = "127.0.0.1:51317")]
     pub address: SocketAddr,
 
-    /// The address to listen for `timely/progress` log messages on
-    #[structopt(long = "progress-address", default_value = "127.0.0.1:51318")]
-    pub progress_address: SocketAddr,
-
-    #[structopt(long = "timely-progress")]
-    pub profile_progress: bool,
-
     /// The file to write the generated graph to
     #[structopt(long = "dot-file", default_value = "dataflow.dot")]
     pub dot_file: PathBuf,

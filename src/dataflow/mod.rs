@@ -42,10 +42,8 @@ use timely::{
     },
     logging::{ChannelsEvent, OperatesEvent, TimelyEvent, WorkerIdentifier},
 };
-use timely_viz_hook::InternalTimelyProgressEvent;
 
 type TimelyLogBundle = (Duration, WorkerIdentifier, TimelyEvent);
-type ProgressLogBundle = (Duration, WorkerIdentifier, InternalTimelyProgressEvent);
 type Diff = isize;
 type Address = Vec<usize>;
 
@@ -75,7 +73,6 @@ pub fn dataflow<S>(
     scope: &mut S,
     _args: &Args,
     timely_traces: Vec<EventReader<Duration, TimelyLogBundle, TcpStream>>,
-    progress_traces: Option<Vec<EventReader<Duration, ProgressLogBundle, TcpStream>>>,
     replay_shutdown: Arc<AtomicBool>,
     senders: DataflowSenders,
 ) -> Result<()>
@@ -84,7 +81,7 @@ where
 {
     // The timely log stream filtered down to worker 0's events
     let timely_stream = timely_traces
-        .replay_with_shutdown_into_named("Timely Replay", scope, replay_shutdown.clone())
+        .replay_with_shutdown_into_named("Timely Replay", scope, replay_shutdown)
         // This is a bit of a cop-out that should work for *most*
         // dataflow programs. In most programs, every worker has the
         // exact same dataflows created, which means that ignoring
@@ -98,12 +95,6 @@ where
         // they should vary from worker to worker and this workaround
         // only shows 1/nth of the story
         .filter(|&(_, worker_id, _)| worker_id == 0);
-
-    let _progress_stream = progress_traces.map(|traces| {
-        traces
-            .replay_with_shutdown_into_named("Timely Progress Replay", scope, replay_shutdown)
-            .filter(|&(_, worker_id, _)| worker_id == 0)
-    });
 
     let operators = operator_creations(&timely_stream);
     let (leaves, subgraphs) = sift_leaves_and_scopes(scope, &operators);
@@ -316,19 +307,43 @@ pub enum Channel {
 }
 
 impl Channel {
+    pub fn channel_id(&self) -> usize {
+        match *self {
+            Self::ScopeIngress { channel_id, .. }
+            | Self::ScopeEgress { channel_id, .. }
+            | Self::Normal { channel_id, .. } => channel_id,
+        }
+    }
+
+    pub fn channel_addr(&self) -> Address {
+        match self {
+            Self::ScopeIngress { channel_addr, .. }
+            | Self::ScopeEgress { channel_addr, .. }
+            | Self::Normal { channel_addr, .. } => channel_addr.to_owned(),
+        }
+    }
+
+    pub fn channel_name(&self) -> String {
+        match self {
+            Self::ScopeIngress { channel_name, .. }
+            | Self::ScopeEgress { channel_name, .. }
+            | Self::Normal { channel_name, .. } => channel_name.to_owned(),
+        }
+    }
+
     pub fn source_addr(&self) -> Address {
         match self {
-            Self::ScopeIngress { source_addr, .. } => source_addr.clone(),
-            Self::ScopeEgress { source_addr, .. } => source_addr.clone(),
-            Self::Normal { source_addr, .. } => source_addr.clone(),
+            Self::ScopeIngress { source_addr, .. }
+            | Self::ScopeEgress { source_addr, .. }
+            | Self::Normal { source_addr, .. } => source_addr.to_owned(),
         }
     }
 
     pub fn target_addr(&self) -> Address {
         match self {
-            Self::ScopeIngress { target_addr, .. } => target_addr.clone(),
-            Self::ScopeEgress { target_addr, .. } => target_addr.clone(),
-            Self::Normal { target_addr, .. } => target_addr.clone(),
+            Self::ScopeIngress { target_addr, .. }
+            | Self::ScopeEgress { target_addr, .. }
+            | Self::Normal { target_addr, .. } => target_addr.to_owned(),
         }
     }
 }

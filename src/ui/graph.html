@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+
+    <head>
+        <!-- d3.js requires a utf8 charset (and so does the modern world) -->
+        <meta charset="UTF-8" />
+        <meta content="IE=edge" http-equiv="X-UA-Compatible" />
+        <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+
+        <!-- TODO: Maybe name this by the targeted project? -->
+        <title>Dataflow Graph</title>
+    </head>
+
+    <!-- Load d3.js -->
+    <!-- TODO: Bundle/include this in the source code so it can be 100% offline -->
+    <script src="https://d3js.org/d3.v4.js"></script>
+    <script src="https://dagrejs.github.io/project/dagre-d3/latest/dagre-d3.js"></script>
+
+    <style>
+        body,
+        text {
+            font-weight: 300;
+            font-family: "Helvetica Neue", Helvetica, Arial, sans-serf;
+            font-size: 14px;
+        }
+
+        #dataflow-graph {
+            width: 100%;
+            height: 100%;
+        }
+
+        .node rect {
+            stroke: #333;
+            fill: #fff;
+        }
+
+        .node text {
+            pointer-events: none;
+        }
+
+        .edgePath path {
+            stroke: #333;
+            fill: #333;
+            stroke-width: 1.5px;
+        }
+
+    </style>
+
+    <body>
+        <svg id="dataflow-graph"></svg>
+    </body>
+
+    <!-- TODO: Make this script file external & bundled via tera -->
+    <script>
+        let raw_nodes = [
+            {% raw %}
+                {{ nodes }}
+            {% endraw %}
+        ];
+
+        let raw_subgraphs = [
+            {% raw %}
+                {{ subgraphs }}
+            {% endraw %}
+        ];
+
+        let raw_edges = [
+            {% raw %}
+                {{ edges }}
+            {% endraw %}
+        ];
+
+        let dataflow_svg = d3.select("#dataflow-graph");
+        let svg = dataflow_svg.append("g");
+
+        // Create the zoomable area for the graph
+        let zoom = d3.zoom().on("zoom", () => {
+            svg.attr("transform", d3.event.transform);
+        });
+        dataflow_svg.call(zoom);
+
+        let graph = new dagreD3.graphlib.Graph({ compound: true });
+        graph.setGraph({ nodesep: 50, ranksep: 50 });
+
+        let render = new dagreD3.render();
+
+        for (const node of raw_nodes) {
+            console.log(node);
+
+            const node_id = node.id.toString();
+
+            graph.setNode(
+                node_id,
+                { label: node.name },
+            );
+            graph.setParent(node_id, node.addr[node.addr.length - 2]);
+        }
+
+        for (const subgraph of raw_subgraph) {
+            console.log(subgraph);
+            graph.setNode(
+                subgraph.id.toString(),
+                { label: subgraph.name },
+            );
+        }
+
+        for (const edge of raw_edges) {
+            console.log(edge);
+            graph.setEdge(
+                edge.src.toString(),
+                edge.dest.toString(),
+                {},
+            );
+        }
+
+        console.log(graph._nodes);
+        console.log(graph._edges);
+
+        // Render the graph
+        dataflow_svg.call(render, graph);
+
+        // Center the graph
+        const initialScale = 0.75;
+        svg.call(
+            zoom.transform,
+            d3
+                .zoomIdentity
+                .translate((svg.attr("width") - graph.graph().width * initialScale) / 2, 20)
+                .scale(initialScale),
+        );
+        svg.attr("height", graph.graph().height * initialScale + 40);
+    </script>
+
+</html>

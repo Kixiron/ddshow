@@ -7,13 +7,12 @@ use std::{
 };
 use timely::communication::WorkerGuards;
 
-pub type Connections = (Vec<Option<TcpStream>>, Option<Vec<Option<TcpStream>>>);
+pub type Connections = Vec<Option<TcpStream>>;
 
 /// Connect to the given address and collect `connections` streams, returning all of them
 /// in non-blocking mode
 pub fn wait_for_connections(
     timely_addr: SocketAddr,
-    progress_addr: Option<SocketAddr>,
     connections: NonZeroUsize,
 ) -> Result<Connections> {
     let timely_listener =
@@ -32,27 +31,7 @@ pub fn wait_for_connections(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let progress_conns = progress_addr
-        .map(|progress_addr| {
-            let progress_listener =
-                TcpListener::bind(progress_addr).context("failed to bind to socket address")?;
-
-            (0..connections.get())
-                .zip(progress_listener.incoming())
-                .map(|(i, socket)| {
-                    let socket = socket.context("failed to accept socket connection")?;
-                    socket
-                        .set_nonblocking(true)
-                        .context("failed to set socket to non-blocking mode")?;
-
-                    println!("Connected to socket {}/{}", i + 1, connections);
-                    Ok(Some(socket))
-                })
-                .collect::<Result<Vec<_>>>()
-        })
-        .transpose()?;
-
-    Ok((timely_conns, progress_conns))
+    Ok(timely_conns)
 }
 
 /// Wait for user input to terminate the trace replay and wait for all timely

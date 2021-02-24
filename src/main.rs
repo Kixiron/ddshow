@@ -3,16 +3,17 @@ mod colormap;
 mod dataflow;
 mod dot;
 mod network;
+mod ui;
 
 use anyhow::{Context, Result};
 use args::Args;
-use dataflow::{CrossbeamExtractor, DataflowSenders};
+use colormap::select_color;
+use dataflow::{CrossbeamExtractor, DataflowSenders, OperatorStats};
 use dot::Graph;
 use network::{wait_for_connections, wait_for_input};
 use sequence_trie::SequenceTrie;
 use std::{
     collections::HashMap,
-    fmt::Write as _,
     fs::{self, File},
     io::{self, Write},
     sync::{atomic::AtomicBool, Arc, Mutex},
@@ -22,7 +23,7 @@ use std::{
 use structopt::StructOpt;
 use timely::{
     communication::Config as ParallelConfig, dataflow::operators::capture::EventReader,
-    execute::Config,
+    execute::Config, logging::OperatesEvent,
 };
 
 fn main() -> Result<()> {
@@ -47,20 +48,9 @@ fn main() -> Result<()> {
     );
     let start_time = Instant::now();
 
-    let (timely_connections, progress_connections) = wait_for_connections(
-        args.address,
-        if args.profile_progress {
-            Some(args.progress_address)
-        } else {
-            None
-        },
-        args.timely_connections,
-    )?;
+    let timely_connections = wait_for_connections(args.address, args.timely_connections)?;
 
-    let (timely_connections, progress_connections) = (
-        Arc::new(Mutex::new(timely_connections)),
-        progress_connections.map(|conns| Arc::new(Mutex::new(conns))),
-    );
+    let timely_connections = Arc::new(Mutex::new(timely_connections));
 
     let elapsed = start_time.elapsed();
     println!(
@@ -94,18 +84,6 @@ fn main() -> Result<()> {
             .map(EventReader::new)
             .collect::<Vec<_>>();
 
-        let progress_traces = progress_connections.clone().map(|conns| {
-            conns
-                .lock()
-                .unwrap()
-                .iter_mut()
-                .enumerate()
-                .filter(|&(i, _)| i % args.timely_connections.get() == worker_index)
-                .map(|(_, connection)| connection.take().unwrap())
-                .map(EventReader::new)
-                .collect::<Vec<_>>()
-        });
-
         let senders = DataflowSenders {
             node_sender: node_sender.clone(),
             edge_sender: edge_sender.clone(),
@@ -118,7 +96,6 @@ fn main() -> Result<()> {
                 scope,
                 &*args,
                 timely_traces,
-                progress_traces,
                 replay_shutdown.clone(),
                 senders,
             )
@@ -135,14 +112,16 @@ fn main() -> Result<()> {
     let mut operator_names = HashMap::new();
     let mut subgraph_ids = Vec::new();
 
-    for (addr, event) in CrossbeamExtractor::new(node_receiver).extract_all() {
+    let node_events = CrossbeamExtractor::new(node_receiver).extract_all();
+    for (addr, event) in node_events.clone() {
         let id = event.id;
 
         operator_names.insert(id, event.name.clone());
         graph_nodes.insert(&addr, Graph::Node(event));
         operator_addresses.insert(id, addr);
     }
-    for (addr, event) in CrossbeamExtractor::new(subgraph_receiver).extract_all() {
+    let subgraph_events = CrossbeamExtractor::new(subgraph_receiver).extract_all();
+    for (addr, event) in subgraph_events.clone() {
         let id = event.id;
 
         operator_names.insert(id, event.name.clone());
@@ -152,7 +131,8 @@ fn main() -> Result<()> {
     }
 
     let (mut operator_stats, mut raw_timings) = (HashMap::new(), Vec::new());
-    for (operator, stats) in CrossbeamExtractor::new(stats_receiver).extract_all() {
+    let stats_events = CrossbeamExtractor::new(stats_receiver).extract_all();
+    for (operator, stats) in stats_events.clone() {
         operator_stats.insert(operator, stats);
 
         if !subgraph_ids.contains(&operator) {
@@ -160,10 +140,88 @@ fn main() -> Result<()> {
         }
     }
 
+    let edge_events = CrossbeamExtractor::new(edge_receiver).extract_all();
+
     let (max_time, min_time) = (
         raw_timings.iter().max().copied().unwrap_or_default(),
         raw_timings.iter().min().copied().unwrap_or_default(),
     );
+
+    let html_nodes: Vec<_> = node_events
+        .into_iter()
+        .map(|(addr, OperatesEvent { id, name, .. })| {
+            let OperatorStats {
+                max,
+                min,
+                average,
+                total,
+                invocations,
+                ..
+            } = operator_stats[&id];
+
+            let fill_color = select_color(&args.palette, total, (max, min));
+            let text_color = fill_color.text_color();
+
+            ui::Node {
+                id,
+                addr,
+                name,
+                max_activation_time: format!("{:#?}", max),
+                mix_activation_time: format!("{:#?}", min),
+                average_activation_time: format!("{:#?}", average),
+                total_activation_time: format!("{:#?}", total),
+                invocations,
+                fill_color: format!("{}", fill_color),
+                text_color: format!("{}", text_color),
+            }
+        })
+        .collect();
+
+    let html_subgraphs: Vec<_> = subgraph_events
+        .into_iter()
+        .map(|(addr, OperatesEvent { id, name, .. })| {
+            let OperatorStats {
+                max,
+                min,
+                average,
+                total,
+                invocations,
+                ..
+            } = operator_stats[&id];
+
+            let fill_color = select_color(&args.palette, total, (max, min));
+            let text_color = fill_color.text_color();
+
+            ui::Subgraph {
+                id,
+                addr,
+                name,
+                max_activation_time: format!("{:#?}", max),
+                mix_activation_time: format!("{:#?}", min),
+                average_activation_time: format!("{:#?}", average),
+                total_activation_time: format!("{:#?}", total),
+                invocations,
+                fill_color: format!("{}", fill_color),
+                text_color: format!("{}", text_color),
+            }
+        })
+        .collect();
+
+    let html_edges: Vec<_> = edge_events
+        .clone()
+        .into_iter()
+        .map(
+            |(OperatesEvent { id: src, .. }, channel, OperatesEvent { id: dest, .. })| ui::Edge {
+                src,
+                dest,
+                channel_id: channel.channel_id(),
+                channel_addr: channel.channel_addr(),
+                channel_name: channel.channel_name(),
+            },
+        )
+        .collect();
+
+    ui::render(&html_nodes, &html_subgraphs, &html_edges)?;
 
     let (thread_stats, thread_graph, thread_args) =
         (operator_stats.clone(), graph_nodes.clone(), args.clone());
@@ -186,7 +244,7 @@ fn main() -> Result<()> {
             1,
         )?;
 
-        for (source, _channel, target) in CrossbeamExtractor::new(edge_receiver).extract_all() {
+        for (source, _channel, target) in edge_events {
             let mut edge_attrs = "[".to_owned();
 
             if source.name == "Feedback" {

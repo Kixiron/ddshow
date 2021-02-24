@@ -1,41 +1,60 @@
+use differential_dataflow::{input::Input, operators::arrange::ArrangeBySelf};
 use std::env;
-use timely::dataflow::{
-    operators::{Enter, Exchange, Filter, Input, Inspect, Probe},
-    InputHandle, ProbeHandle, Scope,
-};
+use timely::dataflow::{ProbeHandle, Scope};
+use timely_viz_hook::LoggingConfig;
+
+type Time = usize;
+type Diff = isize;
 
 fn main() {
     timely::execute_from_args(env::args(), |worker| {
-        timely_viz_hook::set_log_hooks(worker, &Default::default()).unwrap();
+        if let Ok(addr) = env::var("TIMELY_WORKER_LOG_ADDR") {
+            if !addr.is_empty() {
+                timely_viz_hook::set_log_hooks(
+                    worker,
+                    &LoggingConfig {
+                        timely_addr: addr.parse().unwrap(),
+                    },
+                )
+                .unwrap();
+            }
+        }
 
         let index = worker.index();
-        let mut input = InputHandle::new();
         let mut probe = ProbeHandle::new();
 
         // create a new input, exchange data, and inspect its output
-        worker.dataflow(|scope| {
-            let stream = scope
-                .input_from(&mut input)
-                .exchange(|&x| x)
-                .inspect(move |&x| println!("worker {}:\thello {}", index, x))
-                .probe_with(&mut probe);
+        let (mut input, mut trace) = worker.dataflow::<Time, _, _>(|scope| {
+            let (input, stream) = scope.new_collection::<usize, Diff>();
 
-            scope.region(|region| {
-                stream
-                    .enter(region)
-                    .filter(|&x| x != 4)
-                    .probe_with(&mut probe);
-            })
+            let stream =
+                stream.inspect(move |(x, _time, _diff)| println!("worker {}:\thello {}", index, x));
+
+            let scoped = scope.region_named("An inner region", |region| {
+                stream.enter_region(region).filter(|&x| x != 4).leave()
+            });
+
+            (input, scoped.arrange_by_self().trace)
         });
 
-        // introduce data and watch!
-        for round in 0..10 {
-            if index == 0 {
-                input.send(round);
-            }
+        worker.dataflow_named("Arrangement Importer", |scope| {
+            let arranged = trace.import_named(scope, "A named import");
 
-            input.advance_to(round + 1);
-            worker.step_while(|| probe.less_than(input.time()));
+            arranged
+                .flat_map_ref(|&x, &()| if x % 2 == 0 { Some(x) } else { None })
+                .probe_with(&mut probe);
+        });
+
+        if index == 0 {
+            for elem in 0..100 {
+                input.insert(elem);
+            }
+        }
+
+        input.advance_to(1);
+        input.flush();
+        while probe.less_than(input.time()) {
+            worker.step_or_park(None);
         }
 
         timely_viz_hook::remove_log_hooks(worker);
