@@ -5,17 +5,26 @@ use tera::{Context, Tera};
 
 const GRAPH_HTML: &str = include_str!("graph.html");
 
-pub fn render(nodes: &[Node], subgraphs: &[Subgraph], edges: &[Edge]) -> Result<()> {
-    let mut context = Context::new();
-    context.insert("nodes", nodes);
-    context.insert("subgraphs", subgraphs);
-    context.insert("edges", edges);
+pub fn render(nodes: Vec<Node>, subgraphs: Vec<Subgraph>, edges: Vec<Edge>) -> Result<()> {
+    let context = Context::from_serialize(GraphData {
+        nodes,
+        subgraphs,
+        edges,
+    })
+    .context("failed to render graph context as json")?;
 
     let rendered =
         Tera::one_off(GRAPH_HTML, &context, false).context("failed to render output graph")?;
     fs::write("graph.html", rendered).context("failed to write output graph to file")?;
 
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+pub struct GraphData {
+    nodes: Vec<Node>,
+    subgraphs: Vec<Subgraph>,
+    edges: Vec<Edge>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
@@ -48,8 +57,8 @@ pub struct Subgraph {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 pub struct Edge {
-    pub src: usize,
-    pub dest: usize,
+    pub src: Vec<usize>,
+    pub dest: Vec<usize>,
     pub channel_id: usize,
     pub channel_addr: Vec<usize>,
     pub channel_name: String,

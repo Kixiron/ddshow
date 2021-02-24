@@ -1,6 +1,6 @@
 use colorous::{Color as InnerColor, Gradient};
 use std::{
-    fmt::{self, Display},
+    fmt::{self, Debug, Display},
     time::Duration,
 };
 
@@ -38,10 +38,17 @@ impl Color {
     }
 }
 
-impl Display for Color {
+impl Debug for Color {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self(InnerColor { r, g, b }) = *self;
         write!(f, "\"#{:02X}{:02X}{:02X}\"", r, g, b)
+    }
+}
+
+impl Display for Color {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self(InnerColor { r, g, b }) = *self;
+        write!(f, "#{:02X}{:02X}{:02X}", r, g, b)
     }
 }
 

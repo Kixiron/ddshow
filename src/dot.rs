@@ -63,7 +63,7 @@ where
 
                 writeln!(
                     dot_graph,
-                    "{indent}{node_id} [label = {label:?}, fillcolor = {fill_color}, fontcolor = {font_color}, \
+                    "{indent}{node_id} [label = {label:?}, fillcolor = {fill_color:?}, fontcolor = {font_color:?}, \
                         tooltip = {tooltip:?}, color = black, shape = box, style = filled];",
                     indent = " ".repeat(level * 4),
                     node_id = node_id(node)?,

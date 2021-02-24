@@ -79,7 +79,7 @@ fn main() -> Result<()> {
             .unwrap()
             .iter_mut()
             .enumerate()
-            .filter(|&(i, _)| i % args.timely_connections.get() == worker_index)
+            .filter(|&(i, _)| i % worker.peers() == worker_index)
             .map(|(_, connection)| connection.take().unwrap())
             .map(EventReader::new)
             .collect::<Vec<_>>();
@@ -159,7 +159,7 @@ fn main() -> Result<()> {
                 ..
             } = operator_stats[&id];
 
-            let fill_color = select_color(&args.palette, total, (max, min));
+            let fill_color = select_color(&args.palette, total, (max_time, min_time));
             let text_color = fill_color.text_color();
 
             ui::Node {
@@ -211,17 +211,19 @@ fn main() -> Result<()> {
         .clone()
         .into_iter()
         .map(
-            |(OperatesEvent { id: src, .. }, channel, OperatesEvent { id: dest, .. })| ui::Edge {
-                src,
-                dest,
-                channel_id: channel.channel_id(),
-                channel_addr: channel.channel_addr(),
-                channel_name: channel.channel_name(),
+            |(OperatesEvent { addr: src, .. }, channel, OperatesEvent { addr: dest, .. })| {
+                ui::Edge {
+                    src,
+                    dest,
+                    channel_id: channel.channel_id(),
+                    channel_addr: channel.channel_addr(),
+                    channel_name: channel.channel_name(),
+                }
             },
         )
         .collect();
 
-    ui::render(&html_nodes, &html_subgraphs, &html_edges)?;
+    ui::render(html_nodes, html_subgraphs, html_edges)?;
 
     let (thread_stats, thread_graph, thread_args) =
         (operator_stats.clone(), graph_nodes.clone(), args.clone());

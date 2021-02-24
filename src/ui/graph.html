@@ -20,13 +20,19 @@
         body,
         text {
             font-weight: 300;
-            font-family: "Helvetica Neue", Helvetica, Arial, sans-serf;
+            font-family: "Verdana", Helvetica, Arial, sans-serf;
             font-size: 14px;
+            background-color: #EEEEEE;
         }
 
         #dataflow-graph {
-            width: 100%;
-            height: 100%;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        .cluster rect {
+            stroke: #333;
+            fill: #fff;
         }
 
         .node rect {
@@ -52,23 +58,9 @@
 
     <!-- TODO: Make this script file external & bundled via tera -->
     <script>
-        let raw_nodes = [
-            {% raw %}
-                {{ nodes }}
-            {% endraw %}
-        ];
-
-        let raw_subgraphs = [
-            {% raw %}
-                {{ subgraphs }}
-            {% endraw %}
-        ];
-
-        let raw_edges = [
-            {% raw %}
-                {{ edges }}
-            {% endraw %}
-        ];
+        let raw_nodes = {{ nodes | json_encode() }};
+        let raw_subgraphs = {{ subgraphs | json_encode() }};
+        let raw_edges = {{ edges | json_encode() }};
 
         let dataflow_svg = d3.select("#dataflow-graph");
         let svg = dataflow_svg.append("g");
@@ -87,21 +79,40 @@
         for (const node of raw_nodes) {
             console.log(node);
 
-            const node_id = node.id.toString();
-
+            const node_id = node.addr.toString();
             graph.setNode(
                 node_id,
-                { label: node.name },
+                {
+                    label: node.name,
+                    style: `fill: ${node.fill_color}`,
+                    labelStyle: `fill: ${node.text_color}`,
+                },
             );
-            graph.setParent(node_id, node.addr[node.addr.length - 2]);
+
+            const parent_addr = node.addr.slice(0, node.addr.length - 1);
+            console.log(`adding edge from ${node_id} to ${parent_addr}`);
+            graph.setParent(node_id, parent_addr.toString());
         }
 
-        for (const subgraph of raw_subgraph) {
+        for (const subgraph of raw_subgraphs) {
             console.log(subgraph);
+
+            const subgraph_id = subgraph.addr.toString();
             graph.setNode(
-                subgraph.id.toString(),
-                { label: subgraph.name },
+                subgraph_id,
+                {
+                    label: subgraph.name,
+                    style: "fill: #EEEEEE",
+                    // style: `fill: ${subgraph.fill_color}`,
+                    // labelStyle: `fill: ${subgraph.text_color}`,
+                },
             );
+
+            if (subgraph.addr.length > 1) {
+                const parent_addr = subgraph.addr.slice(0, subgraph.addr.length - 1);
+                console.log(`adding edge from ${subgraph_id} to ${parent_addr}`);
+                graph.setParent(subgraph_id, parent_addr.toString());
+            }
         }
 
         for (const edge of raw_edges) {
@@ -117,18 +128,13 @@
         console.log(graph._edges);
 
         // Render the graph
-        dataflow_svg.call(render, graph);
+        render(svg, graph);
 
         // Center the graph
-        const initialScale = 0.75;
-        svg.call(
-            zoom.transform,
-            d3
-                .zoomIdentity
-                .translate((svg.attr("width") - graph.graph().width * initialScale) / 2, 20)
-                .scale(initialScale),
-        );
-        svg.attr("height", graph.graph().height * initialScale + 40);
+        // TODO: Doesn't work?
+        // const center_offset = (svg.attr("width") - graph.graph().width) / 2;
+        // dataflow_svg.attr("transform", "translate(" + center_offset + ", 20)");
+        // svg.attr("height", graph.graph().height + 40);
     </script>
 
 </html>

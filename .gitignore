@@ -4,3 +4,5 @@ dataflow.dot
 dataflow.png
 dataflow.svg
 /.cargo
+graph.html
+!src/ui/graph.html

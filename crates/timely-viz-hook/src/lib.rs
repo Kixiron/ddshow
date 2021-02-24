@@ -11,7 +11,7 @@ use timely::{
 };
 
 const TIMELY: &str = "timely";
-const DIFFERENTIAL_ARRANGEMENTS: &str = "differential/arrange";
+// const DIFFERENTIAL_ARRANGEMENTS: &str = "differential/arrange";
 
 #[derive(Debug, Clone, PartialEq, Hash)]
 pub struct LoggingConfig {
@@ -30,13 +30,13 @@ pub fn set_log_hooks<W>(worker: &mut W, config: &LoggingConfig) -> io::Result<()
 where
     W: AsWorker,
 {
-    let timely_stream = TcpStream::connect(&config.timely_addr)?;
-    let mut logger = BatchLogger::new(EventWriter::new(timely_stream));
-
-    worker
-        .log_register()
-        .insert::<TimelyEvent, _>(TIMELY, move |time, data| logger.publish_batch(time, data));
-
+    // let timely_stream = TcpStream::connect(&config.timely_addr)?;
+    // let mut logger = BatchLogger::new(EventWriter::new(timely_stream));
+    //
+    // worker
+    //     .log_register()
+    //     .insert::<TimelyEvent, _>(TIMELY, move |time, data| logger.publish_batch(time, data));
+    //
     Ok(())
 }
 
@@ -47,8 +47,8 @@ pub fn remove_log_hooks<W>(worker: &mut W)
 where
     W: AsWorker,
 {
-    let log_hooks = [TIMELY, DIFFERENTIAL_ARRANGEMENTS];
-    for hook in log_hooks.iter().copied() {
-        worker.log_register().remove(hook);
-    }
+    // let log_hooks = [TIMELY];
+    // for hook in log_hooks.iter().copied() {
+    //     worker.log_register().remove(hook);
+    // }
 }
