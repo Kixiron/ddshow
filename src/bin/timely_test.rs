@@ -30,8 +30,14 @@ fn main() {
             let stream =
                 stream.inspect(move |(x, _time, _diff)| println!("worker {}:\thello {}", index, x));
 
-            let scoped = scope.region_named("An inner region", |region| {
-                stream.enter_region(region).filter(|&x| x != 4).leave()
+            let scoped = scope.region_named("a middle region", |scope| {
+                let stream = stream.enter_region(scope);
+
+                scope
+                    .region_named("An inner region", |region| {
+                        stream.enter_region(region).filter(|&x| x != 4).leave()
+                    })
+                    .leave()
             });
 
             (input, scoped.arrange_by_self().trace)

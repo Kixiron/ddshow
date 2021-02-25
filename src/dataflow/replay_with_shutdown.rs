@@ -1,6 +1,9 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
 };
 use timely::{
     dataflow::{
@@ -11,9 +14,11 @@ use timely::{
         },
     },
     dataflow::{Scope, Stream},
-    progress::{frontier::MutableAntichain, Timestamp},
+    progress::Timestamp,
     Data,
 };
+
+const DEFAULT_REACTIVATION_DELAY: Duration = Duration::from_millis(200);
 
 /// Replay a capture stream into a scope with the same timestamp.
 pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
@@ -27,7 +32,12 @@ pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
         Self: Sized,
         S: Scope<Timestamp = T>,
     {
-        self.replay_with_shutdown_into_named("Replay With Shutdown", scope, is_running)
+        self.replay_with_shutdown_into_core(
+            "ReplayWithShutdown",
+            scope,
+            is_running,
+            DEFAULT_REACTIVATION_DELAY,
+        )
     }
 
     fn replay_with_shutdown_into_named<N, S>(
@@ -35,6 +45,21 @@ pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
         name: N,
         scope: &mut S,
         is_running: Arc<AtomicBool>,
+    ) -> Stream<S, D>
+    where
+        Self: Sized,
+        N: Into<String>,
+        S: Scope<Timestamp = T>,
+    {
+        self.replay_with_shutdown_into_core(name, scope, is_running, DEFAULT_REACTIVATION_DELAY)
+    }
+
+    fn replay_with_shutdown_into_core<N, S>(
+        self,
+        name: N,
+        scope: &mut S,
+        is_running: Arc<AtomicBool>,
+        reactivation_delay: Duration,
     ) -> Stream<S, D>
     where
         N: Into<String>,
@@ -48,11 +73,12 @@ where
     I: IntoIterator,
     <I as IntoIterator>::Item: EventIterator<T, D> + 'static,
 {
-    fn replay_with_shutdown_into_named<N, S>(
+    fn replay_with_shutdown_into_core<N, S>(
         self,
         name: N,
         scope: &mut S,
         is_running: Arc<AtomicBool>,
+        reactivation_delay: Duration,
     ) -> Stream<S, D>
     where
         N: Into<String>,
@@ -61,13 +87,12 @@ where
         let mut builder = OperatorBuilder::new(name.into(), scope.clone());
 
         let address = builder.operator_info().address;
-        let activator = scope.activator_for(&address);
+        let activator = scope.activator_for(&address[..]);
 
         let (targets, stream) = builder.new_output();
 
         let mut output = PushBuffer::new(PushCounter::new(targets));
         let mut event_streams = self.into_iter().collect::<Vec<_>>();
-        let mut antichain = MutableAntichain::new();
         let mut started = false;
 
         builder.build(move |progress| {
@@ -75,53 +100,35 @@ where
                 // The first thing we do is modify our capabilities to match the number of streams we manage.
                 // This should be a simple change of `self.event_streams.len() - 1`. We only do this once, as
                 // our very first action.
-                progress.internals[0].update(Default::default(), event_streams.len() as i64 - 1);
-                antichain.update_iter(
-                    Some((Default::default(), event_streams.len() as i64 - 1)).into_iter(),
-                );
-
+                progress.internals[0]
+                    .update(S::Timestamp::minimum(), (event_streams.len() as i64) - 1);
                 started = true;
             }
 
-            if is_running.load(Ordering::Acquire) {
-                for event_stream in event_streams.iter_mut() {
-                    while let Some(event) = event_stream.next() {
-                        match *event {
-                            Event::Progress(ref vec) => {
-                                antichain.update_iter(vec.iter().cloned());
-                                progress.internals[0].extend(vec.iter().cloned());
-                            }
-                            Event::Messages(ref time, ref data) => {
-                                output.session(time).give_iterator(data.iter().cloned());
-                            }
+            for event_stream in event_streams.iter_mut() {
+                while let Some(event) = event_stream.next() {
+                    match *event {
+                        Event::Progress(ref vec) => {
+                            progress.internals[0].extend(vec.iter().cloned());
+                        }
+                        Event::Messages(ref time, ref data) => {
+                            output.session(time).give_iterator(data.iter().cloned());
                         }
                     }
                 }
-
-                // Always reschedule `replay`.
-                activator.activate();
-
-                output.cease();
-                output
-                    .inner()
-                    .produced()
-                    .borrow_mut()
-                    .drain_into(&mut progress.produceds[0]);
-            } else {
-                while !antichain.is_empty() {
-                    let elements = antichain
-                        .frontier()
-                        .iter()
-                        .map(|t| (t.clone(), -1))
-                        .collect::<Vec<_>>();
-                    for (t, c) in elements.iter() {
-                        progress.internals[0].update(t.clone(), *c);
-                    }
-                    antichain.update_iter(elements);
-                }
             }
 
-            false
+            // Reactivate according to the re-activation delay
+            activator.activate_after(reactivation_delay);
+
+            output.cease();
+            output
+                .inner()
+                .produced()
+                .borrow_mut()
+                .drain_into(&mut progress.produceds[0]);
+
+            !is_running.load(Ordering::Acquire)
         });
 
         stream

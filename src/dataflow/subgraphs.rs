@@ -128,6 +128,10 @@ where
             subgraphs.enter_region(region),
         );
 
+        channels.inspect(|x| println!("channel: {:?}", x));
+        operators.inspect(|x| println!("operator: {:?}", x));
+        subgraphs.inspect(|x| println!("subgraph: {:?}", x));
+
         // Channels that exit from a subscope, as seen from the world outside of the subscope
         // Their destination is the operator representing the subscope
         let exiting_channels = channels
@@ -138,12 +142,19 @@ where
                 (subscope_addr, channel)
             })
             .semijoin(&subgraphs)
+            .inspect(|x| println!("channels semijoined on subgraphs: {:?}", x))
             .join_map(
                 &operators.map(|operator| (operator.addr, operator.name)),
                 |addr, channel, channel_name| {
                     (addr.clone(), (channel.clone(), channel_name.to_owned()))
                 },
-            );
+            )
+            .inspect(|x| {
+                println!(
+                    "channels semijoined on subgraphs joined with operators: {:?}",
+                    x
+                )
+            });
 
         let egress_channels = channels.map(|channel| {
             (
@@ -162,10 +173,10 @@ where
             .join_map(
                 &egress_channels,
                 |(entrance_addr, _to), (channel, channel_name), (_channel_id, from)| {
-                    let mut source_addr = channel.scope_addr.clone();
+                    let mut source_addr = entrance_addr.clone();
                     source_addr.push(from.0);
 
-                    let mut target_addr = entrance_addr.clone();
+                    let mut target_addr = channel.scope_addr.clone();
                     target_addr.push(channel.target.0);
 
                     Channel::ScopeEgress {
@@ -177,6 +188,7 @@ where
                     }
                 },
             )
+            .inspect(|x| println!("exiting channels joined on egress channels: {:?}", x))
             .leave_region()
     })
 }

@@ -9,6 +9,7 @@ use structopt::StructOpt;
 /// and the `DIFFERENTIAL_LOG_ADDR` variable to gather data on Differential Dataflow computations.
 /// Set `--connections` to the number of timely workers that the target computation is using.
 ///
+// TODO: Better docs
 #[derive(Debug, Clone, StructOpt)]
 #[structopt(rename_all = "kebab-case")]
 pub struct Args {
@@ -43,14 +44,10 @@ pub struct Args {
         default_value = "inferno",
     )]
     pub palette: ThreadedGradient,
-    // TODO
-    // /// The file to output the logs recorded from the target program to, defaults
-    // /// to not saving logs
-    // #[structopt(long = "save-logs")]
-    // pub save_logs: Option<PathBuf>,
-    //
-    // #[structopt(long = "output", default_value = "stdout", possible_values = Output::VALUES)]
-    // output: Output,
+
+    /// The directory to generate artifacts in
+    #[structopt(long = "output_dir", default_value = "dataflow-graph")]
+    pub output_dir: PathBuf,
 }
 
 macro_rules! parse_gradient {

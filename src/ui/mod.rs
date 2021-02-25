@@ -3,9 +3,36 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use tera::{Context, Tera};
 
-const GRAPH_HTML: &str = include_str!("graph.html");
+use crate::args::Args;
 
-pub fn render(nodes: Vec<Node>, subgraphs: Vec<Subgraph>, edges: Vec<Edge>) -> Result<()> {
+const GRAPH_HTML: &str = include_str!("graph.html");
+const GRAPH_CSS: &str = include_str!("graph.css");
+const GRAPH_JS: &str = include_str!("graph.js");
+const D3_JS: &str = include_str!("d3.v5.js");
+const DAGRE_JS: &str = include_str!("dagre-d3.js");
+
+pub fn render(
+    args: &Args,
+    nodes: Vec<Node>,
+    subgraphs: Vec<Subgraph>,
+    edges: Vec<Edge>,
+) -> Result<()> {
+    let output_dir = &args.output_dir;
+
+    fs::create_dir_all(output_dir).context("failed to create output directory")?;
+
+    fs::write(output_dir.join("graph.html"), GRAPH_HTML)
+        .context("failed to write output graph to file")?;
+
+    fs::write(output_dir.join("graph.css"), GRAPH_CSS)
+        .context("failed to write output graph to file")?;
+
+    fs::write(output_dir.join("d3.v5.js"), D3_JS)
+        .context("failed to write output graph to file")?;
+
+    fs::write(output_dir.join("dagre-d3.js"), DAGRE_JS)
+        .context("failed to write output graph to file")?;
+
     let context = Context::from_serialize(GraphData {
         nodes,
         subgraphs,
@@ -13,9 +40,11 @@ pub fn render(nodes: Vec<Node>, subgraphs: Vec<Subgraph>, edges: Vec<Edge>) -> R
     })
     .context("failed to render graph context as json")?;
 
-    let rendered =
-        Tera::one_off(GRAPH_HTML, &context, false).context("failed to render output graph")?;
-    fs::write("graph.html", rendered).context("failed to write output graph to file")?;
+    let rendered_js =
+        Tera::one_off(GRAPH_JS, &context, false).context("failed to render output graph")?;
+
+    fs::write(output_dir.join("graph.js"), rendered_js)
+        .context("failed to write output graph to file")?;
 
     Ok(())
 }

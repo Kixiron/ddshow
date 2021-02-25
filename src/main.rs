@@ -223,7 +223,7 @@ fn main() -> Result<()> {
         )
         .collect();
 
-    ui::render(html_nodes, html_subgraphs, html_edges)?;
+    ui::render(&args, html_nodes, html_subgraphs, html_edges)?;
 
     let (thread_stats, thread_graph, thread_args) =
         (operator_stats.clone(), graph_nodes.clone(), args.clone());

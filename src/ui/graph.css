@@ -1,0 +1,32 @@
+body,
+text {
+    font-weight: 300;
+    font-family: "Verdana", Helvetica, Arial, sans-serf;
+    font-size: 14px;
+    background-color: #EEEEEE;
+}
+
+#dataflow-graph {
+    width: 100vw;
+    height: 100vh;
+}
+
+.cluster rect {
+    stroke: #333;
+    fill: #fff;
+}
+
+.node rect {
+    stroke: #333;
+    fill: #fff;
+}
+
+.node text {
+    pointer-events: none;
+}
+
+.edgePath path {
+    stroke: #333;
+    fill: #333;
+    stroke-width: 1.5px;
+}
