@@ -210,6 +210,7 @@ fn main() -> Result<()> {
     let html_edges: Vec<_> = edge_events
         .clone()
         .into_iter()
+        .inspect(|x| println!("Output channel: {:?}", x))
         .map(
             |(OperatesEvent { addr: src, .. }, channel, OperatesEvent { addr: dest, .. })| {
                 ui::Edge {

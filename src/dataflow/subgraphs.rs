@@ -101,14 +101,14 @@ where
 
         propagated_channels
             .reduce(|_source, input, output| {
-                let (target, path) = input
+                if let Some((target, path)) = input
                     .iter()
+                    .filter(|((_, path), _)| path.len() >= 2)
                     .max_by_key(|((_, path), _)| path.len())
-                    .expect("input will be non-empty")
-                    .0
-                    .clone();
-
-                output.push(((target, path), D::from(1)));
+                    .map(|((target, path), _diff)| (target.to_owned(), path.to_owned()))
+                {
+                    output.push(((target, path), D::from(1)));
+                }
             })
             .inspect(|x| println!("(ingress) reduced propagations: {:?}", x))
             .map(
@@ -122,6 +122,7 @@ where
                     target_addr,
                 },
             )
+            .consolidate()
             .inspect(|x| println!("(ingress) egress channels: {:?}", x))
             .leave_region()
     })
@@ -187,14 +188,14 @@ where
 
         propagated_channels
             .reduce(|_source, input, output| {
-                let (target, path) = input
+                if let Some((target, path)) = input
                     .iter()
+                    .filter(|((_, path), _)| path.len() >= 2)
                     .max_by_key(|((_, path), _)| path.len())
-                    .expect("input will be non-empty")
-                    .0
-                    .clone();
-
-                output.push(((target, path), D::from(1)));
+                    .map(|((target, path), _diff)| (target.to_owned(), path.to_owned()))
+                {
+                    output.push(((target, path), D::from(1)));
+                }
             })
             .inspect(|x| println!("(egress) reduced propagations: {:?}", x))
             .map(
@@ -208,6 +209,7 @@ where
                     target_addr,
                 },
             )
+            .consolidate()
             .inspect(|x| println!("(egress) egress channels: {:?}", x))
             .leave_region()
     })
