@@ -14,7 +14,7 @@ use timely::{
         },
     },
     dataflow::{Scope, Stream},
-    progress::Timestamp,
+    progress::{frontier::MutableAntichain, Timestamp},
     Data,
 };
 
@@ -87,12 +87,14 @@ where
         let mut builder = OperatorBuilder::new(name.into(), scope.clone());
 
         let address = builder.operator_info().address;
-        let activator = scope.activator_for(&address[..]);
+        let activator = scope.activator_for(&address);
 
         let (targets, stream) = builder.new_output();
 
         let mut output = PushBuffer::new(PushCounter::new(targets));
         let mut event_streams = self.into_iter().collect::<Vec<_>>();
+
+        let mut antichain = MutableAntichain::new();
         let mut started = false;
 
         builder.build(move |progress| {
@@ -102,33 +104,56 @@ where
                 // our very first action.
                 progress.internals[0]
                     .update(S::Timestamp::minimum(), (event_streams.len() as i64) - 1);
+                antichain.update_iter(
+                    Some((Default::default(), event_streams.len() as i64 - 1)).into_iter(),
+                );
+
                 started = true;
             }
 
             for event_stream in event_streams.iter_mut() {
                 while let Some(event) = event_stream.next() {
-                    match *event {
-                        Event::Progress(ref vec) => {
+                    match event {
+                        Event::Progress(vec) => {
+                            antichain.update_iter(vec.iter().cloned());
                             progress.internals[0].extend(vec.iter().cloned());
                         }
-                        Event::Messages(ref time, ref data) => {
+                        Event::Messages(time, data) => {
                             output.session(time).give_iterator(data.iter().cloned());
                         }
                     }
                 }
             }
 
-            // Reactivate according to the re-activation delay
-            activator.activate_after(reactivation_delay);
+            if is_running.load(Ordering::Acquire) {
+                // Reactivate according to the re-activation delay
+                activator.activate_after(reactivation_delay);
 
-            output.cease();
-            output
-                .inner()
-                .produced()
-                .borrow_mut()
-                .drain_into(&mut progress.produceds[0]);
+                output.cease();
+                output
+                    .inner()
+                    .produced()
+                    .borrow_mut()
+                    .drain_into(&mut progress.produceds[0]);
+            } else {
+                while !antichain.is_empty() {
+                    let elements = antichain
+                        .frontier()
+                        .iter()
+                        .map(|time| (time.clone(), -1))
+                        .collect::<Vec<_>>();
 
-            !is_running.load(Ordering::Acquire)
+                    for (time, change) in elements.iter() {
+                        progress.internals[0].update(time.clone(), *change);
+                    }
+
+                    antichain.update_iter(elements);
+                }
+            }
+
+            // Return whether or not we're incomplete, which we base
+            // off of whether or not we're still supposed to be running
+            is_running.load(Ordering::Acquire)
         });
 
         stream

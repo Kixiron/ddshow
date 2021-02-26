@@ -284,7 +284,6 @@ pub enum Channel {
     ScopeIngress {
         channel_id: usize,
         channel_addr: Address,
-        channel_name: String,
         source_addr: Address,
         target_addr: Address,
     },
@@ -292,7 +291,6 @@ pub enum Channel {
     ScopeEgress {
         channel_id: usize,
         channel_addr: Address,
-        channel_name: String,
         source_addr: Address,
         target_addr: Address,
     },
@@ -300,7 +298,6 @@ pub enum Channel {
     Normal {
         channel_id: usize,
         channel_addr: Address,
-        channel_name: String,
         source_addr: Address,
         target_addr: Address,
     },
@@ -320,14 +317,6 @@ impl Channel {
             Self::ScopeIngress { channel_addr, .. }
             | Self::ScopeEgress { channel_addr, .. }
             | Self::Normal { channel_addr, .. } => channel_addr.to_owned(),
-        }
-    }
-
-    pub fn channel_name(&self) -> String {
-        match self {
-            Self::ScopeIngress { channel_name, .. }
-            | Self::ScopeEgress { channel_name, .. }
-            | Self::Normal { channel_name, .. } => channel_name.to_owned(),
         }
     }
 

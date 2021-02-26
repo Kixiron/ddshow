@@ -1,8 +1,8 @@
 use super::{Address, Channel};
 use differential_dataflow::{
-    difference::{Monoid, Semigroup},
+    difference::{Abelian, Monoid, Semigroup},
     lattice::Lattice,
-    operators::{Consolidate, Join},
+    operators::{Consolidate, Iterate, Join, Reduce, Threshold},
     Collection, ExchangeData,
 };
 use std::ops::{Mul, Neg};
@@ -20,7 +20,7 @@ pub fn rewire_channels<S, D>(
 where
     S: Scope,
     S::Timestamp: Lattice,
-    D: Semigroup + Monoid + ExchangeData + Mul<Output = D> + Neg<Output = D>,
+    D: Semigroup + Monoid + ExchangeData + Mul<Output = D> + Neg<Output = D> + From<i8>,
 {
     scope.region_named("Rewire Channels", |region| {
         let (channels, operators, subgraphs) = (
@@ -50,62 +50,79 @@ fn subgraph_ingress<S, D>(
 where
     S: Scope,
     S::Timestamp: Lattice,
-    D: Semigroup + ExchangeData + Mul<Output = D>,
+    D: Abelian + ExchangeData + Mul<Output = D> + From<i8>,
 {
     scope.region_named("Subgraph Ingress", |region| {
-        let (channels, operators, subgraphs) = (
+        let (channels, _operators, _subgraphs) = (
             channels.enter_region(region),
             operators.enter_region(region),
             subgraphs.enter_region(region),
         );
 
-        // Channels that enter into a subscope, as seen from the world outside of the subscope
-        // Their source (where they come from) is the operator representing the subscope
-        let entering_channels = channels
-            .map(|channel| (channel.scope_addr.clone(), channel))
-            .join_map(
-                &operators.map(|operator| (operator.addr, operator.name)),
-                |channel_addr, channel, channel_name| {
-                    let mut subscope_addr = channel_addr.clone();
-                    subscope_addr.push(channel.target.0);
+        let propagated_channels = channels
+            .map(|channel| {
+                let mut source = channel.scope_addr.clone();
+                source.push(channel.source.0);
 
-                    (subscope_addr, (channel.clone(), channel_name.to_owned()))
-                },
-            )
-            .semijoin(&subgraphs);
+                let mut target = channel.scope_addr;
+                target.push(channel.target.0);
 
-        let ingress_channels = channels.map(|channel| {
-            (
-                (channel.scope_addr, channel.source),
-                (channel.id, channel.target),
-            )
-        });
-
-        entering_channels
-            .map(|(subscope_addr, (channel, channel_name))| {
                 (
-                    (subscope_addr, (0, channel.target.1)),
-                    (channel, channel_name),
+                    (source, channel.source.1),
+                    ((target, channel.target.1), vec![channel.id]),
                 )
             })
-            .join_map(
-                &ingress_channels,
-                |(entrance_addr, _from), (channel, channel_name), (_channel_id, channel_target)| {
-                    let mut source_addr = channel.scope_addr.clone();
-                    source_addr.push(channel.source.0);
+            .inspect(|x| println!("(ingress) mapped channels: {:?}", x))
+            .iterate(|links| {
+                let ingress_candidates = links
+                    .map(|(source, (target, path))| {
+                        let mut new_target = target.0.clone();
+                        new_target.push(0);
 
-                    let mut target_addr = entrance_addr.clone();
-                    target_addr.push(channel_target.0);
+                        ((new_target, target.1), (source, path))
+                    })
+                    .inspect(|x| println!("(ingress) ingress candidates: {:?}", x));
 
-                    Channel::ScopeIngress {
-                        channel_id: channel.id,
-                        channel_addr: entrance_addr.to_owned(),
-                        channel_name: channel_name.to_owned(),
-                        source_addr,
-                        target_addr,
-                    }
+                links
+                    .join_map(
+                        &ingress_candidates,
+                        |_middle, (inner, inner_vec), (outer, outer_vec)| {
+                            let mut outer_vec = outer_vec.to_owned();
+                            outer_vec.extend(inner_vec);
+
+                            (outer.to_owned(), (inner.to_owned(), outer_vec))
+                        },
+                    )
+                    .inspect(|x| println!("(ingress) joined links: {:?}", x))
+                    .concat(links)
+                    .distinct_core()
+                    .inspect(|x| println!("(ingress) distinct links: {:?}", x))
+            });
+
+        propagated_channels
+            .reduce(|_source, input, output| {
+                let (target, path) = input
+                    .iter()
+                    .max_by_key(|((_, path), _)| path.len())
+                    .expect("input will be non-empty")
+                    .0
+                    .clone();
+
+                output.push(((target, path), D::from(1)));
+            })
+            .inspect(|x| println!("(ingress) reduced propagations: {:?}", x))
+            .map(
+                |(
+                    (source_addr, _source_port),
+                    ((target_addr, _target_port), channel_ids_along_path),
+                )| Channel::ScopeIngress {
+                    channel_id: channel_ids_along_path[0],
+                    channel_addr: target_addr.clone(),
+                    source_addr,
+                    target_addr,
                 },
             )
+            .inspect(|x| println!("(ingress) egress channels: {:?}", x))
             .leave_region()
     })
 }
@@ -119,76 +136,79 @@ fn subgraph_egress<S, D>(
 where
     S: Scope,
     S::Timestamp: Lattice,
-    D: Semigroup + ExchangeData + Mul<Output = D>,
+    D: Abelian + ExchangeData + Mul<Output = D> + From<i8>,
 {
     scope.region_named("Subgraph Egress", |region| {
-        let (channels, operators, subgraphs) = (
+        let (channels, _operators, _subgraphs) = (
             channels.enter_region(region),
             operators.enter_region(region),
             subgraphs.enter_region(region),
         );
 
-        channels.inspect(|x| println!("channel: {:?}", x));
-        operators.inspect(|x| println!("operator: {:?}", x));
-        subgraphs.inspect(|x| println!("subgraph: {:?}", x));
-
-        // Channels that exit from a subscope, as seen from the world outside of the subscope
-        // Their destination is the operator representing the subscope
-        let exiting_channels = channels
+        let propagated_channels = channels
             .map(|channel| {
-                let mut subscope_addr = channel.scope_addr.clone();
-                subscope_addr.push(channel.source.0);
+                let mut source = channel.scope_addr.clone();
+                source.push(channel.source.0);
 
-                (subscope_addr, channel)
-            })
-            .semijoin(&subgraphs)
-            .inspect(|x| println!("channels semijoined on subgraphs: {:?}", x))
-            .join_map(
-                &operators.map(|operator| (operator.addr, operator.name)),
-                |addr, channel, channel_name| {
-                    (addr.clone(), (channel.clone(), channel_name.to_owned()))
-                },
-            )
-            .inspect(|x| {
-                println!(
-                    "channels semijoined on subgraphs joined with operators: {:?}",
-                    x
+                let mut target = channel.scope_addr;
+                target.push(channel.target.0);
+
+                (
+                    (source, channel.source.1),
+                    ((target, channel.target.1), vec![channel.id]),
                 )
+            })
+            .inspect(|x| println!("(egress) mapped channels: {:?}", x))
+            .iterate(|links| {
+                let egress_candidates = links
+                    .map(|(source, (target, path))| {
+                        let mut new_source = source.0.clone();
+                        new_source.push(0);
+
+                        ((new_source, source.1), (target, path))
+                    })
+                    .inspect(|x| println!("(egress) egress candidates: {:?}", x));
+
+                links
+                    .join_map(
+                        &egress_candidates,
+                        |_middle, (inner, inner_vec), (outer, outer_vec)| {
+                            let mut inner_vec = inner_vec.to_owned();
+                            inner_vec.extend(outer_vec);
+
+                            (inner.to_owned(), (outer.to_owned(), inner_vec))
+                        },
+                    )
+                    .inspect(|x| println!("(egress) joined links: {:?}", x))
+                    .concat(links)
+                    .distinct_core()
+                    .inspect(|x| println!("(egress) distinct links: {:?}", x))
             });
 
-        let egress_channels = channels.map(|channel| {
-            (
-                (channel.scope_addr, channel.target),
-                (channel.id, channel.source),
-            )
-        });
+        propagated_channels
+            .reduce(|_source, input, output| {
+                let (target, path) = input
+                    .iter()
+                    .max_by_key(|((_, path), _)| path.len())
+                    .expect("input will be non-empty")
+                    .0
+                    .clone();
 
-        exiting_channels
-            .map(|(subscope_addr, (channel, channel_name))| {
-                (
-                    (subscope_addr, (0, channel.source.1)),
-                    (channel, channel_name),
-                )
+                output.push(((target, path), D::from(1)));
             })
-            .join_map(
-                &egress_channels,
-                |(entrance_addr, _to), (channel, channel_name), (_channel_id, from)| {
-                    let mut source_addr = entrance_addr.clone();
-                    source_addr.push(from.0);
-
-                    let mut target_addr = channel.scope_addr.clone();
-                    target_addr.push(channel.target.0);
-
-                    Channel::ScopeEgress {
-                        channel_id: channel.id,
-                        channel_addr: channel.scope_addr.clone(),
-                        channel_name: channel_name.to_owned(),
-                        source_addr,
-                        target_addr,
-                    }
+            .inspect(|x| println!("(egress) reduced propagations: {:?}", x))
+            .map(
+                |(
+                    (source_addr, _source_port),
+                    ((target_addr, _target_port), channel_ids_along_path),
+                )| Channel::ScopeEgress {
+                    channel_id: channel_ids_along_path[0],
+                    channel_addr: target_addr.clone(),
+                    source_addr,
+                    target_addr,
                 },
             )
-            .inspect(|x| println!("exiting channels joined on egress channels: {:?}", x))
+            .inspect(|x| println!("(egress) egress channels: {:?}", x))
             .leave_region()
     })
 }
@@ -229,7 +249,7 @@ where
             .map(|(_, channel)| (channel.scope_addr.clone(), channel))
             .join_map(
                 &operators.map(|operator| (operator.addr, operator.name)),
-                |_, channel, channel_name| {
+                |_, channel, _| {
                     let mut source_addr = channel.scope_addr.clone();
                     source_addr.push(channel.source.0);
 
@@ -239,7 +259,6 @@ where
                     Channel::Normal {
                         channel_id: channel.id,
                         channel_addr: channel.scope_addr.clone(),
-                        channel_name: channel_name.to_owned(),
                         source_addr,
                         target_addr,
                     }

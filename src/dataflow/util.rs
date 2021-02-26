@@ -65,7 +65,7 @@ where
 
         data.into_iter()
             // TODO: Should this be `diff >= 1`?
-            .filter(|&(_, diff)| diff == 1)
+            .filter(|&(_, diff)| diff >= 1)
             .map(|(data, _)| data)
             .collect()
     }
