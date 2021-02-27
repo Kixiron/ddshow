@@ -25,8 +25,24 @@ use timely::{
     communication::Config as ParallelConfig, dataflow::operators::capture::EventReader,
     execute::Config, logging::OperatesEvent,
 };
+use tracing_subscriber::{
+    fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
+    EnvFilter,
+};
 
 fn main() -> Result<()> {
+    let filter_layer = EnvFilter::from_env("TIMELY_VIZ_LOG");
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .pretty()
+        .with_timer(Uptime::default())
+        .with_thread_names(true)
+        .with_ansi(true);
+
+    tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(fmt_layer)
+        .init();
+
     // Grab the args from the user and build the required configs
     let args = Arc::new(Args::from_args());
     let config = {
@@ -43,8 +59,14 @@ fn main() -> Result<()> {
     };
 
     println!(
-        "Waiting for {} Timely connections on {}...",
-        args.timely_connections, args.address,
+        "Waiting for {} Timely connection{} on {}...",
+        args.timely_connections,
+        if args.timely_connections.get() == 1 {
+            ""
+        } else {
+            "s"
+        },
+        args.address,
     );
     let start_time = Instant::now();
 
@@ -54,8 +76,14 @@ fn main() -> Result<()> {
 
     let elapsed = start_time.elapsed();
     println!(
-        "Connected to {} Timely traces in {:#?}",
-        args.timely_connections, elapsed,
+        "Connected to {} Timely trace{} in {:#?}",
+        args.timely_connections,
+        if args.timely_connections.get() == 1 {
+            ""
+        } else {
+            "s"
+        },
+        elapsed,
     );
 
     let running = Arc::new(AtomicBool::new(true));
@@ -113,6 +141,11 @@ fn main() -> Result<()> {
     let mut subgraph_ids = Vec::new();
 
     let node_events = CrossbeamExtractor::new(node_receiver).extract_all();
+    tracing::info!(
+        "finished extracting node events for a total of {}",
+        node_events.len(),
+    );
+
     for (addr, event) in node_events.clone() {
         let id = event.id;
 
@@ -120,7 +153,13 @@ fn main() -> Result<()> {
         graph_nodes.insert(&addr, Graph::Node(event));
         operator_addresses.insert(id, addr);
     }
+
     let subgraph_events = CrossbeamExtractor::new(subgraph_receiver).extract_all();
+    tracing::info!(
+        "finished extracting subgraph events for a total of {}",
+        subgraph_events.len(),
+    );
+
     for (addr, event) in subgraph_events.clone() {
         let id = event.id;
 
@@ -132,6 +171,11 @@ fn main() -> Result<()> {
 
     let (mut operator_stats, mut raw_timings) = (HashMap::new(), Vec::new());
     let stats_events = CrossbeamExtractor::new(stats_receiver).extract_all();
+    tracing::info!(
+        "finished extracting stats events for a total of {}",
+        stats_events.len(),
+    );
+
     for (operator, stats) in stats_events.clone() {
         operator_stats.insert(operator, stats);
 
@@ -141,6 +185,10 @@ fn main() -> Result<()> {
     }
 
     let edge_events = CrossbeamExtractor::new(edge_receiver).extract_all();
+    tracing::info!(
+        "finished extracting edge events for a total of {}",
+        edge_events.len(),
+    );
 
     let (max_time, min_time) = (
         raw_timings.iter().max().copied().unwrap_or_default(),
@@ -210,7 +258,7 @@ fn main() -> Result<()> {
     let html_edges: Vec<_> = edge_events
         .clone()
         .into_iter()
-        .inspect(|x| println!("Output channel: {:?}", x))
+        //.inspect(|x| println!("Output channel: {:?}", x))
         .map(
             |(OperatesEvent { addr: src, .. }, channel, OperatesEvent { addr: dest, .. })| {
                 ui::Edge {

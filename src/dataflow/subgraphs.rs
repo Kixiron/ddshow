@@ -72,16 +72,15 @@ where
                     ((target, channel.target.1), vec![channel.id]),
                 )
             })
-            .inspect(|x| println!("(ingress) mapped channels: {:?}", x))
+            //.inspect(|x| println!("(ingress) mapped channels: {:?}", x))
             .iterate(|links| {
-                let ingress_candidates = links
-                    .map(|(source, (target, path))| {
-                        let mut new_target = target.0.clone();
-                        new_target.push(0);
+                let ingress_candidates = links.map(|(source, (target, path))| {
+                    let mut new_target = target.0.clone();
+                    new_target.push(0);
 
-                        ((new_target, target.1), (source, path))
-                    })
-                    .inspect(|x| println!("(ingress) ingress candidates: {:?}", x));
+                    ((new_target, target.1), (source, path))
+                });
+                //.inspect(|x| println!("(ingress) ingress candidates: {:?}", x));
 
                 links
                     .join_map(
@@ -93,10 +92,10 @@ where
                             (outer.to_owned(), (inner.to_owned(), outer_vec))
                         },
                     )
-                    .inspect(|x| println!("(ingress) joined links: {:?}", x))
+                    //.inspect(|x| println!("(ingress) joined links: {:?}", x))
                     .concat(links)
                     .distinct_core()
-                    .inspect(|x| println!("(ingress) distinct links: {:?}", x))
+                //.inspect(|x| println!("(ingress) distinct links: {:?}", x))
             });
 
         propagated_channels
@@ -110,7 +109,7 @@ where
                     output.push(((target, path), D::from(1)));
                 }
             })
-            .inspect(|x| println!("(ingress) reduced propagations: {:?}", x))
+            //.inspect(|x| println!("(ingress) reduced propagations: {:?}", x))
             .map(
                 |(
                     (source_addr, _source_port),
@@ -123,7 +122,7 @@ where
                 },
             )
             .consolidate()
-            .inspect(|x| println!("(ingress) egress channels: {:?}", x))
+            //.inspect(|x| println!("(ingress) egress channels: {:?}", x))
             .leave_region()
     })
 }
@@ -146,6 +145,8 @@ where
             subgraphs.enter_region(region),
         );
 
+        //channels.inspect(|x| println!("(egress) raw channel: {:?}", x));
+
         let propagated_channels = channels
             .map(|channel| {
                 let mut source = channel.scope_addr.clone();
@@ -159,16 +160,15 @@ where
                     ((target, channel.target.1), vec![channel.id]),
                 )
             })
-            .inspect(|x| println!("(egress) mapped channels: {:?}", x))
+            //.inspect(|x| println!("(egress) mapped channels: {:?}", x))
             .iterate(|links| {
-                let egress_candidates = links
-                    .map(|(source, (target, path))| {
-                        let mut new_source = source.0.clone();
-                        new_source.push(0);
+                let egress_candidates = links.map(|(source, (target, path))| {
+                    let mut new_source = source.0.clone();
+                    new_source.push(0);
 
-                        ((new_source, source.1), (target, path))
-                    })
-                    .inspect(|x| println!("(egress) egress candidates: {:?}", x));
+                    ((new_source, source.1), (target, path))
+                });
+                //.inspect(|x| println!("(egress) egress candidates: {:?}", x));
 
                 links
                     .join_map(
@@ -180,10 +180,10 @@ where
                             (inner.to_owned(), (outer.to_owned(), inner_vec))
                         },
                     )
-                    .inspect(|x| println!("(egress) joined links: {:?}", x))
+                    //.inspect(|x| println!("(egress) joined links: {:?}", x))
                     .concat(links)
                     .distinct_core()
-                    .inspect(|x| println!("(egress) distinct links: {:?}", x))
+                //.inspect(|x| println!("(egress) distinct links: {:?}", x))
             });
 
         propagated_channels
@@ -197,7 +197,7 @@ where
                     output.push(((target, path), D::from(1)));
                 }
             })
-            .inspect(|x| println!("(egress) reduced propagations: {:?}", x))
+            //.inspect(|x| println!("(egress) reduced propagations: {:?}", x))
             .map(
                 |(
                     (source_addr, _source_port),
@@ -210,7 +210,7 @@ where
                 },
             )
             .consolidate()
-            .inspect(|x| println!("(egress) egress channels: {:?}", x))
+            //.inspect(|x| println!("(egress) egress channels: {:?}", x))
             .leave_region()
     })
 }

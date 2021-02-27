@@ -111,17 +111,28 @@ where
                 started = true;
             }
 
+            let mut fuel: usize = 1_000_000;
+
             for event_stream in event_streams.iter_mut() {
                 while let Some(event) = event_stream.next() {
                     match event {
                         Event::Progress(vec) => {
-                            antichain.update_iter(vec.iter().cloned());
                             progress.internals[0].extend(vec.iter().cloned());
+                            antichain.update_iter(vec.iter().cloned());
                         }
                         Event::Messages(time, data) => {
                             output.session(time).give_iterator(data.iter().cloned());
+                            fuel = fuel.saturating_sub(data.len());
                         }
                     }
+
+                    if fuel == 0 {
+                        break;
+                    }
+                }
+
+                if fuel == 0 {
+                    break;
                 }
             }
 

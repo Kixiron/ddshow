@@ -1,25 +1,12 @@
 use differential_dataflow::{input::Input, operators::arrange::ArrangeBySelf};
 use std::env;
 use timely::dataflow::{ProbeHandle, Scope};
-use timely_viz_hook::LoggingConfig;
 
 type Time = usize;
 type Diff = isize;
 
 fn main() {
     timely::execute_from_args(env::args(), |worker| {
-        if let Ok(addr) = env::var("TIMELY_WORKER_LOG_ADDR") {
-            if !addr.is_empty() {
-                timely_viz_hook::set_log_hooks(
-                    worker,
-                    &LoggingConfig {
-                        timely_addr: addr.parse().unwrap(),
-                    },
-                )
-                .unwrap();
-            }
-        }
-
         let index = worker.index();
         let mut probe = ProbeHandle::new();
 
@@ -62,8 +49,6 @@ fn main() {
         while probe.less_than(input.time()) {
             worker.step_or_park(None);
         }
-
-        timely_viz_hook::remove_log_hooks(worker);
     })
     .unwrap();
 }

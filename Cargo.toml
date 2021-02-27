@@ -10,12 +10,14 @@ default-run = "timely-viz"
 num = "0.3.1"
 tera = "1.6.1"
 anyhow = "1.0.38"
+tracing = "0.1.25"
 colorous = "1.0.3"
 structopt = "0.3.21"
 abomonation = "0.7.3"
 sequence_trie = "0.3.6"
 crossbeam-channel = "0.5.0"
 abomonation_derive = "0.5.0"
+tracing-subscriber = "0.2.16"
 serde = { version = "1.0.123", features = ["derive"] }
 
 [dependencies.differential-dataflow]
@@ -25,10 +27,6 @@ default-features = false
 [dependencies.timely]
 git = "https://github.com/TimelyDataflow/timely-dataflow"
 #default-features = false
-
-# TODO: Remove this once I get a testing rig set up
-[dependencies.timely-viz-hook]
-path = "./crates/timely-viz-hook"
 
 [profile.dev]
 debug = 0
