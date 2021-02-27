@@ -2,7 +2,7 @@ use super::{Address, Channel};
 use differential_dataflow::{
     difference::{Abelian, Monoid, Semigroup},
     lattice::Lattice,
-    operators::{Consolidate, Iterate, Join, Reduce, Threshold},
+    operators::{arrange::ArrangeByKey, Consolidate, Iterate, Join, JoinCore, Reduce, Threshold},
     Collection, ExchangeData,
 };
 use std::ops::{Mul, Neg};
@@ -92,8 +92,8 @@ where
                             (outer.to_owned(), (inner.to_owned(), outer_vec))
                         },
                     )
-                    //.inspect(|x| println!("(ingress) joined links: {:?}", x))
                     .concat(links)
+                    //.inspect(|x| println!("(ingress) joined links: {:?}", x))
                     .distinct_core()
                 //.inspect(|x| println!("(ingress) distinct links: {:?}", x))
             });
@@ -145,9 +145,8 @@ where
             subgraphs.enter_region(region),
         );
 
-        //channels.inspect(|x| println!("(egress) raw channel: {:?}", x));
-
-        let propagated_channels = channels
+        let channels = channels
+            .inspect(|x| println!("(egress) channels: {:?}", x))
             .map(|channel| {
                 let mut source = channel.scope_addr.clone();
                 source.push(channel.source.0);
@@ -160,31 +159,37 @@ where
                     ((target, channel.target.1), vec![channel.id]),
                 )
             })
-            //.inspect(|x| println!("(egress) mapped channels: {:?}", x))
+            .inspect(|x| println!("(egress) mapped channels: {:?}", x));
+
+        let propagated_channels = channels
             .iterate(|links| {
-                let egress_candidates = links.map(|(source, (target, path))| {
-                    let mut new_source = source.0.clone();
-                    new_source.push(0);
+                let egress_candidates = links
+                    .map(|(source, (target, path))| {
+                        let mut new_source = source.0.clone();
+                        new_source.push(0);
 
-                    ((new_source, source.1), (target, path))
-                });
-                //.inspect(|x| println!("(egress) egress candidates: {:?}", x));
+                        ((new_source, source.1), (target, path))
+                    })
+                    .inspect(|x| println!("(egress) egress candidates: {:?}", x));
 
-                links
-                    .join_map(
-                        &egress_candidates,
+                channels
+                    .enter(&links.scope())
+                    .join_core(
+                        &egress_candidates.arrange_by_key(),
                         |_middle, (inner, inner_vec), (outer, outer_vec)| {
                             let mut inner_vec = inner_vec.to_owned();
                             inner_vec.extend(outer_vec);
 
-                            (inner.to_owned(), (outer.to_owned(), inner_vec))
+                            Some((inner.to_owned(), (outer.to_owned(), inner_vec)))
                         },
                     )
-                    //.inspect(|x| println!("(egress) joined links: {:?}", x))
+                    .inspect(|x| println!("(egress) joined links: {:?}", x))
                     .concat(links)
+                    .inspect(|x| println!("(egress) concatenated links: {:?}", x))
                     .distinct_core()
-                //.inspect(|x| println!("(egress) distinct links: {:?}", x))
-            });
+                    .inspect(|x| println!("(egress) distinct links: {:?}", x))
+            })
+            .inspect(|x| println!("(egress) raw propagated channels: {:?}", x));
 
         propagated_channels
             .reduce(|_source, input, output| {
@@ -197,7 +202,7 @@ where
                     output.push(((target, path), D::from(1)));
                 }
             })
-            //.inspect(|x| println!("(egress) reduced propagations: {:?}", x))
+            .inspect(|x| println!("(egress) reduced propagations: {:?}", x))
             .map(
                 |(
                     (source_addr, _source_port),
@@ -209,8 +214,9 @@ where
                     target_addr,
                 },
             )
+            .inspect(|x| println!("(egress) egress channels: {:?}", x))
             .consolidate()
-            //.inspect(|x| println!("(egress) egress channels: {:?}", x))
+            .inspect(|x| println!("(egress) consolidated egress channels: {:?}", x))
             .leave_region()
     })
 }
