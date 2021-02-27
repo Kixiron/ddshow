@@ -1,4 +1,8 @@
+use anyhow::Result;
+use crossbeam_channel::Receiver;
 use std::{
+    io::Read,
+    iter,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -13,12 +17,39 @@ use timely::{
             generic::builder_raw::OperatorBuilder,
         },
     },
-    dataflow::{Scope, Stream},
+    dataflow::{operators::capture::EventReader, Scope, Stream},
     progress::{frontier::MutableAntichain, Timestamp},
     Data,
 };
 
 const DEFAULT_REACTIVATION_DELAY: Duration = Duration::from_millis(200);
+
+type EventReceivers<T, D, R> = Arc<[Receiver<Vec<EventReader<T, D, R>>>]>;
+
+pub fn make_streams<I, T, D, R>(num_workers: usize, sources: I) -> Result<EventReceivers<T, D, R>>
+where
+    I: IntoIterator<Item = R>,
+    R: Read,
+{
+    let mut readers = Vec::with_capacity(num_workers);
+    readers.extend(iter::repeat_with(Vec::new).take(num_workers));
+
+    for (idx, source) in sources.into_iter().enumerate() {
+        readers[idx % num_workers].push(EventReader::new(source));
+    }
+
+    let (senders, receivers): (Vec<_>, Vec<_>) = (0..num_workers)
+        .map(|_| crossbeam_channel::bounded(1))
+        .unzip();
+
+    for (sender, bundle) in senders.into_iter().zip(readers) {
+        sender
+            .send(bundle)
+            .map_err(|_| anyhow::anyhow!("failed to send events to worker"))?;
+    }
+
+    Ok(Arc::from(receivers))
+}
 
 /// Replay a capture stream into a scope with the same timestamp.
 pub trait ReplayWithShutdown<T: Timestamp, D: Data> {

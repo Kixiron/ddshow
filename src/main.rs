@@ -8,6 +8,7 @@ mod ui;
 use anyhow::{Context, Result};
 use args::Args;
 use colormap::select_color;
+use dataflow::make_streams;
 use dataflow::{CrossbeamExtractor, DataflowSenders, OperatorStats};
 use dot::Graph;
 use network::{wait_for_connections, wait_for_input};
@@ -16,15 +17,12 @@ use std::{
     collections::HashMap,
     fs::{self, File},
     io::{self, Write},
-    sync::{atomic::AtomicBool, Arc, Mutex},
+    sync::{atomic::AtomicBool, Arc},
     thread,
     time::Instant,
 };
 use structopt::StructOpt;
-use timely::{
-    communication::Config as ParallelConfig, dataflow::operators::capture::EventReader,
-    execute::Config, logging::OperatesEvent,
-};
+use timely::{communication::Config as ParallelConfig, execute::Config, logging::OperatesEvent};
 use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
     EnvFilter,
@@ -71,8 +69,7 @@ fn main() -> Result<()> {
     let start_time = Instant::now();
 
     let timely_connections = wait_for_connections(args.address, args.timely_connections)?;
-
-    let timely_connections = Arc::new(Mutex::new(timely_connections));
+    let event_receivers = make_streams(args.timely_connections.get(), timely_connections)?;
 
     let elapsed = start_time.elapsed();
     println!(
@@ -96,21 +93,13 @@ fn main() -> Result<()> {
 
     // Spin up the timely computation
     let worker_guards = timely::execute(config, move |worker| {
-        let worker_index = worker.index();
         let dataflow_name = concat!(env!("CARGO_CRATE_NAME"), " log processor");
         let args = moved_args.clone();
 
         // Distribute the tcp streams across workers, converting each of them into an event reader
-        let timely_traces = timely_connections
-            .clone()
-            .lock()
-            .unwrap()
-            .iter_mut()
-            .enumerate()
-            .filter(|&(i, _)| i % worker.peers() == worker_index)
-            .map(|(_, connection)| connection.take().unwrap())
-            .map(EventReader::new)
-            .collect::<Vec<_>>();
+        let timely_traces = event_receivers[worker.index()]
+            .recv()
+            .expect("failed to receive event traces");
 
         let senders = DataflowSenders {
             node_sender: node_sender.clone(),

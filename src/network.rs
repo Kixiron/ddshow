@@ -7,7 +7,7 @@ use std::{
 };
 use timely::communication::WorkerGuards;
 
-pub type Connections = Vec<Option<TcpStream>>;
+pub type Connections = Vec<TcpStream>;
 
 /// Connect to the given address and collect `connections` streams, returning all of them
 /// in non-blocking mode
@@ -27,7 +27,7 @@ pub fn wait_for_connections(
                 .context("failed to set socket to non-blocking mode")?;
 
             println!("Connected to socket {}/{}", i + 1, connections);
-            Ok(Some(socket))
+            Ok(socket)
         })
         .collect::<Result<Vec<_>>>()?;
 

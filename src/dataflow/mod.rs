@@ -9,6 +9,7 @@ mod util;
 pub use filter_map::FilterMap;
 pub use min_max::{DiffDuration, Max, Min};
 pub use operator_stats::OperatorStats;
+pub(crate) use replay_with_shutdown::make_streams;
 pub use util::{CrossbeamExtractor, CrossbeamPusher, OperatorExt};
 
 use crate::args::Args;
