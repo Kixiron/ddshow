@@ -10,6 +10,9 @@ use structopt::StructOpt;
 /// Set `--connections` to the number of timely workers that the target computation is using.
 ///
 // TODO: Better docs
+// TODO: Number of workers
+// TODO: Save logs to file
+// TODO: Process logs from file
 #[derive(Debug, Clone, StructOpt)]
 #[structopt(rename_all = "kebab-case")]
 pub struct Args {
@@ -24,13 +27,6 @@ pub struct Args {
     /// The file to write the generated graph to
     #[structopt(long = "dot-file", default_value = "dataflow.dot")]
     pub dot_file: PathBuf,
-
-    /// Disable printing out a summary after data collection
-    #[structopt(long = "no-summary")]
-    pub no_summary: bool,
-
-    #[structopt(long = "top-displayed", default_value = "5")]
-    pub top_displayed: usize,
 
     /// Whether or not to call `dot` on the generated file to render the graph (requires `graphviz`)
     #[structopt(long = "render")]

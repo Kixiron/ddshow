@@ -1,3 +1,6 @@
+use crate::{args::Args, colormap::select_color, dataflow::OperatorStats};
+use anyhow::{Context, Result};
+use sequence_trie::SequenceTrie;
 use std::{
     collections::HashMap,
     fmt::Write as _,
@@ -6,10 +9,6 @@ use std::{
     process::Command,
     time::Duration,
 };
-
-use crate::{args::Args, colormap::select_color, dataflow::OperatorStats};
-use anyhow::{Context, Result};
-use sequence_trie::SequenceTrie;
 use timely::logging::OperatesEvent;
 
 pub fn render_graphviz_svg(args: &Args) -> Result<PathBuf> {
@@ -168,14 +167,6 @@ impl Graph {
         match self {
             Self::Node(node) => &node.name,
             Self::Subgraph(subgraph) => &subgraph.name,
-        }
-    }
-
-    pub fn as_subgraph(&self) -> Option<&OperatesEvent> {
-        if let Self::Subgraph(subgraph) = self {
-            Some(subgraph)
-        } else {
-            None
         }
     }
 }

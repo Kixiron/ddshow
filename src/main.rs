@@ -16,7 +16,7 @@ use sequence_trie::SequenceTrie;
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io::{self, Write},
+    io::Write,
     sync::{atomic::AtomicBool, Arc},
     thread,
     time::Instant,
@@ -28,6 +28,7 @@ use tracing_subscriber::{
     EnvFilter,
 };
 
+// TODO: Library-ify a lot of this
 fn main() -> Result<()> {
     let filter_layer = EnvFilter::from_env("TIMELY_VIZ_LOG");
     let fmt_layer = tracing_subscriber::fmt::layer()
@@ -129,23 +130,22 @@ fn main() -> Result<()> {
     let mut operator_names = HashMap::new();
     let mut subgraph_ids = Vec::new();
 
-    let node_events = CrossbeamExtractor::new(node_receiver).extract_all();
-    tracing::info!(
-        "finished extracting node events for a total of {}",
-        node_events.len(),
-    );
+    let mut node_events = CrossbeamExtractor::new(node_receiver).extract_all();
+    node_events.sort_unstable_by_key(|(addr, _)| addr.clone());
+    tracing::info!("finished extracting {} node events", node_events.len());
 
     for (addr, event) in node_events.clone() {
         let id = event.id;
 
         operator_names.insert(id, event.name.clone());
-        graph_nodes.insert(&addr, Graph::Node(event));
+        graph_nodes.insert(&addr.addr, Graph::Node(event));
         operator_addresses.insert(id, addr);
     }
 
-    let subgraph_events = CrossbeamExtractor::new(subgraph_receiver).extract_all();
+    let mut subgraph_events = CrossbeamExtractor::new(subgraph_receiver).extract_all();
+    subgraph_events.sort_unstable_by_key(|(addr, _)| addr.clone());
     tracing::info!(
-        "finished extracting subgraph events for a total of {}",
+        "finished extracting {} subgraph events",
         subgraph_events.len(),
     );
 
@@ -153,17 +153,15 @@ fn main() -> Result<()> {
         let id = event.id;
 
         operator_names.insert(id, event.name.clone());
-        graph_nodes.insert(&addr, Graph::Subgraph(event));
+        graph_nodes.insert(&addr.addr, Graph::Subgraph(event));
         operator_addresses.insert(id, addr);
         subgraph_ids.push(id);
     }
 
     let (mut operator_stats, mut raw_timings) = (HashMap::new(), Vec::new());
-    let stats_events = CrossbeamExtractor::new(stats_receiver).extract_all();
-    tracing::info!(
-        "finished extracting stats events for a total of {}",
-        stats_events.len(),
-    );
+    let mut stats_events = CrossbeamExtractor::new(stats_receiver).extract_all();
+    stats_events.sort_unstable_by_key(|&(operator, _)| operator);
+    tracing::info!("finished extracting {} stats events", stats_events.len());
 
     for (operator, stats) in stats_events.clone() {
         operator_stats.insert(operator, stats);
@@ -173,11 +171,9 @@ fn main() -> Result<()> {
         }
     }
 
-    let edge_events = CrossbeamExtractor::new(edge_receiver).extract_all();
-    tracing::info!(
-        "finished extracting edge events for a total of {}",
-        edge_events.len(),
-    );
+    let mut edge_events = CrossbeamExtractor::new(edge_receiver).extract_all();
+    edge_events.sort_unstable_by_key(|(_, channel, _)| channel.channel_id());
+    tracing::info!("finished extracting {} edge events", edge_events.len());
 
     let (max_time, min_time) = (
         raw_timings.iter().max().copied().unwrap_or_default(),
@@ -201,7 +197,7 @@ fn main() -> Result<()> {
 
             ui::Node {
                 id,
-                addr,
+                addr: addr.addr,
                 name,
                 max_activation_time: format!("{:#?}", max),
                 mix_activation_time: format!("{:#?}", min),
@@ -231,7 +227,7 @@ fn main() -> Result<()> {
 
             ui::Subgraph {
                 id,
-                addr,
+                addr: addr.addr,
                 name,
                 max_activation_time: format!("{:#?}", max),
                 mix_activation_time: format!("{:#?}", min),
@@ -247,7 +243,6 @@ fn main() -> Result<()> {
     let html_edges: Vec<_> = edge_events
         .clone()
         .into_iter()
-        //.inspect(|x| println!("Output channel: {:?}", x))
         .map(
             |(OperatesEvent { addr: src, .. }, channel, OperatesEvent { addr: dest, .. })| {
                 ui::Edge {
@@ -261,8 +256,7 @@ fn main() -> Result<()> {
 
     ui::render(&args, html_nodes, html_subgraphs, html_edges)?;
 
-    let (thread_stats, thread_graph, thread_args) =
-        (operator_stats.clone(), graph_nodes.clone(), args.clone());
+    let thread_args = args.clone();
     let file_thread = thread::spawn(move || -> Result<()> {
         let mut dot_graph =
             File::create(&thread_args.dot_file).context("failed to open out file")?;
@@ -276,8 +270,8 @@ fn main() -> Result<()> {
         dot::render_graph(
             &mut dot_graph,
             &*thread_args,
-            &thread_stats,
-            &thread_graph,
+            &operator_stats,
+            &graph_nodes,
             (max_time, min_time),
             1,
         )?;
@@ -288,17 +282,6 @@ fn main() -> Result<()> {
             if source.name == "Feedback" {
                 edge_attrs.push_str("constraint = false");
             }
-
-            // if let Some((message, capability, total_events)) = stats {
-            //     write!(
-            //         &mut edge_attrs,
-            //         "label = \" {} messages and {} capability&#10;updates over {} events\", labeltooltip = \"Messages: {} max, \
-            //             {} min, {:.2} average&#10;Capabilities: {} max, {} min, {:.2} average\", ",
-            //         message.total, capability.total, total_events, message.max,
-            //         message.min, f32::from_bits(message.average), capability.max,
-            //         capability.min, f32::from_bits(capability.average),
-            //     )?;
-            // }
 
             writeln!(
                 &mut dot_graph,
@@ -320,80 +303,6 @@ fn main() -> Result<()> {
 
         Ok(())
     });
-
-    // TODO: Process more data with timely
-    if !args.no_summary {
-        let mut stats: Vec<_> = operator_stats.values().collect();
-
-        // TODO: Filter regions out
-        stats.sort_unstable_by_key(|stat| stat.total);
-        let highest_total_times: Vec<_> = stats
-            .iter()
-            .rev()
-            .filter(|stats| !subgraph_ids.contains(&stats.id))
-            .take(args.top_displayed)
-            .map(|&stat| {
-                (
-                    stat.id,
-                    stat,
-                    containing_regions(&stat.id, &operator_addresses, &graph_nodes),
-                )
-            })
-            .collect();
-
-        stats.sort_unstable_by_key(|stat| stat.average);
-        let highest_average_times: Vec<_> = stats
-            .iter()
-            .rev()
-            .filter(|stats| !subgraph_ids.contains(&stats.id))
-            .take(args.top_displayed)
-            .map(|&stat| {
-                (
-                    stat.id,
-                    stat,
-                    containing_regions(&stat.id, &operator_addresses, &graph_nodes),
-                )
-            })
-            .collect();
-
-        stats.sort_unstable_by_key(|stat| stat.invocations);
-        let highest_invocations: Vec<_> = stats
-            .iter()
-            .rev()
-            .filter(|stats| !subgraph_ids.contains(&stats.id))
-            .take(args.top_displayed)
-            .map(|&stat| {
-                (
-                    stat.id,
-                    stat,
-                    containing_regions(&stat.id, &operator_addresses, &graph_nodes),
-                )
-            })
-            .collect();
-
-        let mut stdout = io::stdout();
-
-        writeln!(
-            &mut stdout,
-            "Top {} highest total operator runtimes",
-            highest_total_times.len(),
-        )?;
-
-        for (id, stats, containing_regions) in highest_total_times {
-            let num_regions = containing_regions.len();
-            for (i, region_name) in containing_regions.into_iter().enumerate() {
-                writeln!(&mut stdout, "{}{}", " ".repeat(i * 2), region_name)?;
-            }
-
-            writeln!(
-                &mut stdout,
-                "{}{} with a total time of {:#?}",
-                " ".repeat(num_regions * 2),
-                operator_names.get(&id).unwrap(),
-                stats.total,
-            )?;
-        }
-    }
 
     match file_thread.join() {
         Ok(res) => res?,
@@ -424,23 +333,4 @@ fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn containing_regions<'a>(
-    id: &usize,
-    operator_addresses: &'a HashMap<usize, Vec<usize>>,
-    graph_nodes: &'a SequenceTrie<usize, Graph>,
-) -> Vec<&'a str> {
-    operator_addresses
-        .get(id)
-        .map(|addr| {
-            graph_nodes
-                .get_prefix_nodes(addr)
-                .into_iter()
-                .flat_map(|trie| trie.value())
-                .filter_map(|graph| graph.as_subgraph())
-                .map(|subgraph| subgraph.name.as_str())
-                .collect()
-        })
-        .unwrap_or_default()
 }

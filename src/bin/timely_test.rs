@@ -1,9 +1,6 @@
-use differential_dataflow::{
-    input::Input,
-    operators::{arrange::ArrangeBySelf, Iterate, Threshold},
-};
+use differential_dataflow::input::Input;
 use std::env;
-use timely::dataflow::{ProbeHandle, Scope};
+use timely::dataflow::Scope;
 
 type Time = usize;
 type Diff = isize;

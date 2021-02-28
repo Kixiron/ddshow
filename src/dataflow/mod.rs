@@ -1,5 +1,6 @@
 // mod channel_stats;
 mod filter_map;
+mod inspect;
 mod min_max;
 mod operator_stats;
 mod replay_with_shutdown;
@@ -7,6 +8,7 @@ mod subgraphs;
 mod util;
 
 pub use filter_map::FilterMap;
+pub use inspect::InspectExt;
 pub use min_max::{DiffDuration, Max, Min};
 pub use operator_stats::OperatorStats;
 pub(crate) use replay_with_shutdown::make_streams;
@@ -15,7 +17,6 @@ pub use util::{CrossbeamExtractor, CrossbeamPusher, OperatorExt};
 use crate::args::Args;
 use abomonation_derive::Abomonation;
 use anyhow::Result;
-// use channel_stats::{coagulate_channel_messages, ChannelCapabilityStats, ChannelMessageStats};
 use crossbeam_channel::Sender;
 use differential_dataflow::{
     collection::AsCollection,
@@ -27,8 +28,9 @@ use differential_dataflow::{
 use operator_stats::operator_stats;
 use replay_with_shutdown::ReplayWithShutdown;
 use std::{
+    fmt::{self, Debug},
     net::TcpStream,
-    ops::Mul,
+    ops::{Deref, Mul},
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
@@ -46,7 +48,31 @@ use timely::{
 
 type TimelyLogBundle = (Duration, WorkerIdentifier, TimelyEvent);
 type Diff = isize;
-type Address = Vec<usize>;
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
+pub struct Address {
+    pub addr: Vec<usize>,
+}
+
+impl Address {
+    pub const fn new(addr: Vec<usize>) -> Self {
+        Self { addr }
+    }
+}
+
+impl Deref for Address {
+    type Target = Vec<usize>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.addr
+    }
+}
+
+impl Debug for Address {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.addr.iter()).finish()
+    }
+}
 
 pub type NodeBundle = ((Address, OperatesEvent), Duration, Diff);
 pub type EdgeBundle = (
@@ -101,14 +127,14 @@ where
     let (leaves, subgraphs) = sift_leaves_and_scopes(scope, &operators);
 
     operators
-        .map(|operator| (operator.addr.clone(), operator))
+        .map(|operator| (Address::new(operator.addr.clone()), operator))
         .semijoin(&leaves)
         .consolidate()
         .inner
         .capture_into(CrossbeamPusher::new(senders.node_sender));
 
     operators
-        .map(|operator| (operator.addr.clone(), operator))
+        .map(|operator| (Address::new(operator.addr.clone()), operator))
         .semijoin(&subgraphs)
         .consolidate()
         .inner
@@ -208,12 +234,12 @@ where
     scope.region_named("Sift Leaves and Scopes", |region| {
         let operators = operators
             .enter_region(region)
-            .map(|operator| (operator.addr, ()));
+            .map(|operator| (Address::new(operator.addr), ()));
 
         // The addresses of potential scopes, excluding leaf operators
         let potential_scopes = operators
             .map(|(mut addr, ())| {
-                addr.pop();
+                addr.addr.pop();
                 addr
             })
             .distinct();
@@ -253,7 +279,8 @@ where
             leaves.enter_region(region),
         );
 
-        let operators_by_address = operators.map(|operator| (operator.addr.clone(), operator));
+        let operators_by_address =
+            operators.map(|operator| (Address::new(operator.addr.clone()), operator));
 
         operators_by_address
             .semijoin(&leaves)
