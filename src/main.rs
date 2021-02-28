@@ -8,8 +8,7 @@ mod ui;
 use anyhow::{Context, Result};
 use args::Args;
 use colormap::select_color;
-use dataflow::make_streams;
-use dataflow::{CrossbeamExtractor, DataflowSenders, OperatorStats};
+use dataflow::{make_streams, Channel, CrossbeamExtractor, DataflowSenders, OperatorStats};
 use dot::Graph;
 use network::{wait_for_connections, wait_for_input};
 use sequence_trie::SequenceTrie;
@@ -27,6 +26,7 @@ use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
     EnvFilter,
 };
+use ui::EdgeKind;
 
 // TODO: Library-ify a lot of this
 fn main() -> Result<()> {
@@ -200,7 +200,7 @@ fn main() -> Result<()> {
                 addr: addr.addr,
                 name,
                 max_activation_time: format!("{:#?}", max),
-                mix_activation_time: format!("{:#?}", min),
+                min_activation_time: format!("{:#?}", min),
                 average_activation_time: format!("{:#?}", average),
                 total_activation_time: format!("{:#?}", total),
                 invocations,
@@ -249,6 +249,11 @@ fn main() -> Result<()> {
                     src,
                     dest,
                     channel_id: channel.channel_id(),
+                    edge_kind: match channel {
+                        Channel::Normal { .. } => EdgeKind::Normal,
+                        Channel::ScopeIngress { .. } => EdgeKind::Ingress,
+                        Channel::ScopeEgress { .. } => EdgeKind::Egress,
+                    },
                 }
             },
         )

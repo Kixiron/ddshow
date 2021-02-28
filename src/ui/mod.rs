@@ -62,7 +62,7 @@ pub struct Node {
     pub addr: Vec<usize>,
     pub name: String,
     pub max_activation_time: String,
-    pub mix_activation_time: String,
+    pub min_activation_time: String,
     pub average_activation_time: String,
     pub total_activation_time: String,
     pub invocations: usize,
@@ -89,4 +89,12 @@ pub struct Edge {
     pub src: Vec<usize>,
     pub dest: Vec<usize>,
     pub channel_id: usize,
+    pub edge_kind: EdgeKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+pub enum EdgeKind {
+    Normal,
+    Ingress,
+    Egress,
 }

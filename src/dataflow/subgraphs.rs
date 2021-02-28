@@ -45,7 +45,7 @@ fn subgraph_ingress<S, D>(
     scope: &mut S,
     channels: &Collection<S, ChannelsEvent, D>,
     _operators: &Collection<S, OperatesEvent, D>,
-    _subgraphs: &Collection<S, Address, D>,
+    subgraphs: &Collection<S, Address, D>,
 ) -> Collection<S, Channel, D>
 where
     S: Scope,
@@ -53,8 +53,12 @@ where
     D: Abelian + ExchangeData + Mul<Output = D> + From<i8>,
 {
     scope.region_named("Subgraph Ingress", |region| {
+        let (channels, subgraphs) = (
+            channels.enter_region(region),
+            subgraphs.enter_region(region),
+        );
+
         let channels = channels
-            .enter_region(region)
             .debug_inspect(|x| {
                 tracing::trace!(
                     target: "subgraph_ingress",
@@ -180,6 +184,16 @@ where
                     target_addr,
                 },
             )
+            .debug_inspect(|x| {
+                tracing::trace!(
+                    target: "subgraph_ingress",
+                    "pre-antijoin output channels: {:?}",
+                    x,
+                );
+            })
+            .map(|channel| (channel.target_addr(), channel))
+            .antijoin(&subgraphs)
+            .map(|(_, channel)| channel)
             .consolidate()
             .debug_inspect(|x| {
                 tracing::trace!(
