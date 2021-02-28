@@ -284,21 +284,18 @@ where
 pub enum Channel {
     ScopeIngress {
         channel_id: usize,
-        channel_addr: Address,
         source_addr: Address,
         target_addr: Address,
     },
 
     ScopeEgress {
         channel_id: usize,
-        channel_addr: Address,
         source_addr: Address,
         target_addr: Address,
     },
 
     Normal {
         channel_id: usize,
-        channel_addr: Address,
         source_addr: Address,
         target_addr: Address,
     },
@@ -310,14 +307,6 @@ impl Channel {
             Self::ScopeIngress { channel_id, .. }
             | Self::ScopeEgress { channel_id, .. }
             | Self::Normal { channel_id, .. } => channel_id,
-        }
-    }
-
-    pub fn channel_addr(&self) -> Address {
-        match self {
-            Self::ScopeIngress { channel_addr, .. }
-            | Self::ScopeEgress { channel_addr, .. }
-            | Self::Normal { channel_addr, .. } => channel_addr.to_owned(),
         }
     }
 

@@ -254,7 +254,6 @@ fn main() -> Result<()> {
                     src,
                     dest,
                     channel_id: channel.channel_id(),
-                    channel_addr: channel.channel_addr(),
                 }
             },
         )

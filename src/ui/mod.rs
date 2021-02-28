@@ -89,5 +89,4 @@ pub struct Edge {
     pub src: Vec<usize>,
     pub dest: Vec<usize>,
     pub channel_id: usize,
-    pub channel_addr: Vec<usize>,
 }
