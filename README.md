@@ -4,13 +4,13 @@ Visualization for Timely Dataflow and Differential Dataflow programs
 
 ## Showcase
 
-[ddshow-large]: https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow-large.png
+![](https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow-large.png)
 
-[ddshow]: https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow.png
+![](https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow.png)
 
-[ddshow-tooltip]: https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow-tooltip.png
+![](https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow-tooltip.png)
 
-[citations]: https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/citations.png
+![](https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/citations.png)
 
 ## Debugging tips:
 
