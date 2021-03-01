@@ -2,6 +2,16 @@
 
 Visualization for Timely Dataflow and Differential Dataflow programs
 
+## Showcase
+
+[ddshow-large]: https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow-large.svg
+
+[ddshow]: https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow.svg
+
+[ddshow-tooltip]: https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow-tooltip.svg
+
+[citations]: https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/citations.svg
+
 ## Debugging tips:
 
 If the output is empty when it shouldn't be, make sure you aren't overwriting the default
