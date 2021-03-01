@@ -196,6 +196,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ddshow"
+version = "0.1.0"
+dependencies = [
+ "abomonation",
+ "abomonation_derive",
+ "anyhow",
+ "colorous",
+ "crossbeam-channel",
+ "differential-dataflow",
+ "num",
+ "sequence_trie",
+ "serde",
+ "structopt",
+ "tera",
+ "timely",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "deunicode"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -953,26 +973,6 @@ dependencies = [
  "timely_bytes",
  "timely_communication",
  "timely_logging",
-]
-
-[[package]]
-name = "timely-viz"
-version = "0.1.0"
-dependencies = [
- "abomonation",
- "abomonation_derive",
- "anyhow",
- "colorous",
- "crossbeam-channel",
- "differential-dataflow",
- "num",
- "sequence_trie",
- "serde",
- "structopt",
- "tera",
- "timely",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

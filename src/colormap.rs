@@ -9,6 +9,10 @@ pub const LUMINANCE_THRESHOLD: f32 = 0.5;
 pub struct Color(InnerColor);
 
 impl Color {
+    pub const fn new(color: InnerColor) -> Self {
+        Self(color)
+    }
+
     /// Gets the text color that should be used for this color
     pub fn text_color(&self) -> Color {
         if self.luminance() >= LUMINANCE_THRESHOLD {
@@ -60,7 +64,7 @@ pub fn select_color(
     let lower_bound = lower_bound.as_secs_f64().log2();
     let upper_bound = upper_bound.as_secs_f64().log2();
 
-    Color(colormap.eval_continuous(
+    Color::new(colormap.eval_continuous(
         ((duration.as_secs_f64().log2() - lower_bound) / (upper_bound - lower_bound)) * 1.0,
     ))
 }

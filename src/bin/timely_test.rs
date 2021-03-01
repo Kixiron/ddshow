@@ -12,15 +12,17 @@ fn main() {
         // create a new input, exchange data, and inspect its output
         let mut input = worker.dataflow::<Time, _, _>(|scope| {
             let (input, stream) = scope.new_collection::<usize, Diff>();
+            let (_, stream2) = scope.new_collection::<usize, Diff>();
 
-            //let stream =
-            //    stream.inspect(move |(x, _time, _diff)| println!("worker {}:\thello {}", index, x));
-
-            let _scoped = scope.region_named("a middle region", |scope| {
+            scope.region_named("a middle region", |scope| {
                 let stream = stream.enter_region(scope);
+                let _stream2 = stream2.enter_region(scope);
 
                 scope
                     .region_named("An inner region", |region| {
+                        let (_, stream3) = region.new_collection::<usize, Diff>();
+                        stream3.leave();
+
                         stream.enter_region(region).filter(|&x| x != 4).leave()
                     })
                     .leave()

@@ -16,6 +16,7 @@ pub fn render(
     nodes: Vec<Node>,
     subgraphs: Vec<Subgraph>,
     edges: Vec<Edge>,
+    palette_colors: Vec<String>,
 ) -> Result<()> {
     let output_dir = &args.output_dir;
 
@@ -37,6 +38,7 @@ pub fn render(
         nodes,
         subgraphs,
         edges,
+        palette_colors,
     })
     .context("failed to render graph context as json")?;
 
@@ -54,6 +56,7 @@ pub struct GraphData {
     nodes: Vec<Node>,
     subgraphs: Vec<Subgraph>,
     edges: Vec<Edge>,
+    palette_colors: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
@@ -95,6 +98,5 @@ pub struct Edge {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 pub enum EdgeKind {
     Normal,
-    Ingress,
-    Egress,
+    Crossing,
 }

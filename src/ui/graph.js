@@ -1,20 +1,21 @@
 const raw_nodes = {{ nodes | json_encode() }};
 const raw_subgraphs = {{ subgraphs | json_encode() }};
 const raw_edges = {{ edges | json_encode() }};
+const palette_colors = {{ palette_colors | json_encode() }};
 
 const dataflow_svg = d3.select("#dataflow-graph");
 const svg = dataflow_svg.append("g");
 
 // Create the zoomable area for the graph
-let zoom = d3.zoom().on("zoom", () => {
+const zoom = d3.zoom().on("zoom", () => {
     svg.attr("transform", d3.event.transform);
 });
 dataflow_svg.call(zoom);
 
-let graph = new dagreD3.graphlib.Graph({ compound: true });
+const graph = new dagreD3.graphlib.Graph({ compound: true });
 graph.setGraph({ nodesep: 50, ranksep: 50 });
 
-let render = new dagreD3.render();
+const render = new dagreD3.render();
 
 for (const node of raw_nodes) {
     const node_id = node.addr.toString();
@@ -38,7 +39,7 @@ for (const subgraph of raw_subgraphs) {
         subgraph_id,
         {
             label: subgraph.name,
-            style: "fill: #EEEEEE",
+            style: "fill: #EEEEEE; stroke-dasharray: 5, 2;",
             clusterLabelPos: "top",
             data: { kind: "Subgraph", ...subgraph },
         },
@@ -53,18 +54,16 @@ for (const subgraph of raw_subgraphs) {
 for (const edge of raw_edges) {
     let style = "";
     switch (edge.edge_kind) {
-        case "Ingress":
+        case "Crossing":
             // Blue
             style = "stroke: #5d5de6; stroke-dasharray: 5, 2; fill: none;"
             break;
 
-        case "Egress":
-            // Red
-            style = "stroke: #b10000; stroke-dasharray: 5, 2; fill: none;"
+        case "Normal":
             break;
 
         default:
-            break;
+            throw "Invalid edge kind received";
     }
 
     graph.setEdge(
@@ -96,7 +95,7 @@ const tooltip = d3.select("body")
     .style("font-size", "0.7vw")
     .text("");
 
-// Make the tooltip appear on hover and follow the cursor
+// Node tooltips
 svg.selectAll("g.node")
     // Create the text to be displayed for each node
     .attr("data-hovertext", node_id => {
@@ -118,8 +117,81 @@ svg.selectAll("g.node")
     // Hide the tooltip on mouseout
     .on("mouseout", () => tooltip.style("visibility", "hidden"));
 
+// Edge tooltips
+svg.selectAll("g.edgePath")
+    // Create the text to be displayed for each edge
+    .attr("data-hovertext", edge_id => {
+        const edge = graph.edge(edge_id).data;
+        const src = graph.node(edge.src).data,
+            dest = graph.node(edge.dest).data;
+
+        return `channel from ${src.name} to ${dest.name}`;
+    })
+    // Reveal the tooltip on hover
+    .on("mouseover", () => tooltip.style("visibility", "visible"))
+    .on("mousemove", function () {
+        tooltip
+            .html(this.dataset.hovertext)
+            .style("top", (d3.event.pageY - 40) + "px")
+            .style("left", (d3.event.pageX + 40) + "px");
+    })
+    // Hide the tooltip on mouseout
+    .on("mouseout", () => tooltip.style("visibility", "hidden"));
+
+// Add the palette legend
+const palette_legend = d3.select("body")
+    .append("div")
+    .attr("id", "palette-legend")
+    .style("position", "absolute")
+    .style("top", "0")
+    .style("right", "0")
+    .style("background-color", "white")
+    .style("border", "solid")
+    .style("display", "block")
+    .style("border-width", "2px")
+    .style("border-radius", "5px")
+    .style("padding", "10px")
+    .style("z-index", "10")
+    .style("margin", "15px")
+    .style("font-size", "0.7vw")
+    .style("height", "15%")
+    .style("width", "3.5%")
+    .style("text-align", "center");
+
+// Make the gradient's css
+let palette_gradient = "",
+    gradient_counter = 0;
+for (color of palette_colors) {
+    palette_gradient += `${color} ${gradient_counter}%, `;
+    gradient_counter += 100 / palette_colors.length;
+}
+if (palette_gradient.endsWith(", ")) {
+    palette_gradient = palette_gradient.substring(0, palette_gradient.length - 2);
+}
+
+// Top text
+palette_legend
+    .append("div")
+    .attr("class", "palette-text")
+    .text("slower");
+
+// Heatgraph gradient
+palette_legend
+    .append("div")
+    .attr("id", "palette-gradient")
+    .style("background", `linear-gradient(to top, ${palette_gradient})`)
+    .style("height", "75%")
+    .style("width", "100%")
+    .style("display", "inline-block");
+
+// Bottom text
+palette_legend
+    .append("div")
+    .attr("class", "palette-text")
+    .text("faster");
+
 // Center & scale the graph
-const initialScale = 0.75;
+const initialScale = 1.00;
 d3.zoomIdentity
     .translate([(svg.attr("width") - graph.graph().width * initialScale) / 2, 20])
     .scale(initialScale);

@@ -141,7 +141,7 @@ where
         .capture_into(CrossbeamPusher::new(senders.subgraph_sender));
 
     let channel_events = channel_creations(&timely_stream);
-    let channels = rewire_channels(scope, &channel_events, &operators, &subgraphs);
+    let channels = rewire_channels(scope, &channel_events, &subgraphs);
 
     let edges = attach_operators(scope, &operators, &channels, &leaves);
 
@@ -309,13 +309,7 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
 pub enum Channel {
-    ScopeIngress {
-        channel_id: usize,
-        source_addr: Address,
-        target_addr: Address,
-    },
-
-    ScopeEgress {
+    ScopeCrossing {
         channel_id: usize,
         source_addr: Address,
         target_addr: Address,
@@ -329,27 +323,25 @@ pub enum Channel {
 }
 
 impl Channel {
-    pub fn channel_id(&self) -> usize {
+    pub const fn channel_id(&self) -> usize {
         match *self {
-            Self::ScopeIngress { channel_id, .. }
-            | Self::ScopeEgress { channel_id, .. }
-            | Self::Normal { channel_id, .. } => channel_id,
+            Self::ScopeCrossing { channel_id, .. } | Self::Normal { channel_id, .. } => channel_id,
         }
     }
 
     pub fn source_addr(&self) -> Address {
         match self {
-            Self::ScopeIngress { source_addr, .. }
-            | Self::ScopeEgress { source_addr, .. }
-            | Self::Normal { source_addr, .. } => source_addr.to_owned(),
+            Self::ScopeCrossing { source_addr, .. } | Self::Normal { source_addr, .. } => {
+                source_addr.to_owned()
+            }
         }
     }
 
     pub fn target_addr(&self) -> Address {
         match self {
-            Self::ScopeIngress { target_addr, .. }
-            | Self::ScopeEgress { target_addr, .. }
-            | Self::Normal { target_addr, .. } => target_addr.to_owned(),
+            Self::ScopeCrossing { target_addr, .. } | Self::Normal { target_addr, .. } => {
+                target_addr.to_owned()
+            }
         }
     }
 }

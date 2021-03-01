@@ -1,4 +1,4 @@
-# Timely-viz
+# DDShow
 
 Visualization for Timely Dataflow and Differential Dataflow programs
 

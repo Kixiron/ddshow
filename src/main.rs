@@ -7,7 +7,7 @@ mod ui;
 
 use anyhow::{Context, Result};
 use args::Args;
-use colormap::select_color;
+use colormap::{select_color, Color};
 use dataflow::{make_streams, Channel, CrossbeamExtractor, DataflowSenders, OperatorStats};
 use dot::Graph;
 use network::{wait_for_connections, wait_for_input};
@@ -251,15 +251,27 @@ fn main() -> Result<()> {
                     channel_id: channel.channel_id(),
                     edge_kind: match channel {
                         Channel::Normal { .. } => EdgeKind::Normal,
-                        Channel::ScopeIngress { .. } => EdgeKind::Ingress,
-                        Channel::ScopeEgress { .. } => EdgeKind::Egress,
+                        Channel::ScopeCrossing { .. } => EdgeKind::Crossing,
                     },
                 }
             },
         )
         .collect();
 
-    ui::render(&args, html_nodes, html_subgraphs, html_edges)?;
+    let mut palette_colors = Vec::with_capacity(10);
+    let mut pos = 0.0;
+    for _ in 0..10 {
+        palette_colors.push(format!("{}", Color::new(args.palette.eval_continuous(pos))));
+        pos += 0.1;
+    }
+
+    ui::render(
+        &args,
+        html_nodes,
+        html_subgraphs,
+        html_edges,
+        palette_colors,
+    )?;
 
     let thread_args = args.clone();
     let file_thread = thread::spawn(move || -> Result<()> {
