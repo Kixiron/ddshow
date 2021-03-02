@@ -22,7 +22,7 @@ use differential_dataflow::{
     collection::AsCollection,
     difference::{Abelian, Monoid, Semigroup},
     lattice::Lattice,
-    operators::{Consolidate, Join, Threshold},
+    operators::{Consolidate, Join, ThresholdTotal},
     Collection, ExchangeData,
 };
 use operator_stats::operator_stats;
@@ -44,6 +44,7 @@ use timely::{
         Scope, Stream,
     },
     logging::{ChannelsEvent, OperatesEvent, TimelyEvent, WorkerIdentifier},
+    order::TotalOrder,
 };
 
 type TimelyLogBundle = (Duration, WorkerIdentifier, TimelyEvent);
@@ -107,8 +108,10 @@ where
     S: Scope<Timestamp = Duration>,
 {
     // The timely log stream filtered down to worker 0's events
-    let timely_stream = timely_traces
-        .replay_with_shutdown_into_named("Timely Replay", scope, replay_shutdown)
+    let raw_timely_stream =
+        timely_traces.replay_with_shutdown_into_named("Timely Replay", scope, replay_shutdown);
+
+    let timely_stream = raw_timely_stream
         // This is a bit of a cop-out that should work for *most*
         // dataflow programs. In most programs, every worker has the
         // exact same dataflows created, which means that ignoring
@@ -124,7 +127,14 @@ where
         .filter(|&(_, worker_id, _)| worker_id == 0);
 
     let operators = operator_creations(&timely_stream);
+    let operator_stats = operator_stats(scope, &timely_stream);
+
     let (leaves, subgraphs) = sift_leaves_and_scopes(scope, &operators);
+
+    let channel_events = channel_creations(&timely_stream);
+    let channels = rewire_channels(scope, &channel_events, &subgraphs);
+
+    let edges = attach_operators(scope, &operators, &channels, &leaves);
 
     operators
         .map(|operator| (Address::new(operator.addr.clone()), operator))
@@ -140,37 +150,11 @@ where
         .inner
         .capture_into(CrossbeamPusher::new(senders.subgraph_sender));
 
-    let channel_events = channel_creations(&timely_stream);
-    let channels = rewire_channels(scope, &channel_events, &subgraphs);
-
-    let edges = attach_operators(scope, &operators, &channels, &leaves);
-
-    // .map(|(source, channel, target)| {
-    //     (
-    //         (source.id, channel.channel_id(), target.id),
-    //         (source, channel, target),
-    //     )
-    // })
-    //
-    // let messages = coagulate_channel_messages(scope, &timely_stream);
-    //
-    // let edge_bundles = edges
-    //     .join_map(&messages, |_, (source, channel, target), channel_stats| {
-    //         (
-    //             source.clone(),
-    //             channel.clone(),
-    //             target.clone(),
-    //             Some(channel_stats.clone()),
-    //         )
-    //     })
-    //     .join_map(edges.antijoin(&messages.map(|(key, _)| key)), |_, );
-
     edges
         .consolidate()
         .inner
         .capture_into(CrossbeamPusher::new(senders.edge_sender));
 
-    let operator_stats = operator_stats(scope, &timely_stream);
     operator_stats
         .consolidate()
         .inner
@@ -181,7 +165,7 @@ where
     // if let Some(save_logs) = args.save_logs.as_ref() {
     //     if scope.index() == 0 {
     //         let file = File::create(save_logs).context("failed to open `--save-logs` file")?;
-    //         log_stream.capture_into(EventWriter::new(file));
+    //         raw_timely_stream.capture_into(EventWriter::new(file));
     //     }
     // }
 
@@ -228,7 +212,7 @@ fn sift_leaves_and_scopes<S, D>(
 ) -> (Collection<S, Address, D>, Collection<S, Address, D>)
 where
     S: Scope,
-    S::Timestamp: Lattice,
+    S::Timestamp: Lattice + TotalOrder,
     D: Semigroup + Monoid + Abelian + ExchangeData + Mul<isize, Output = D>,
 {
     scope.region_named("Sift Leaves and Scopes", |region| {
@@ -242,7 +226,7 @@ where
                 addr.addr.pop();
                 addr
             })
-            .distinct();
+            .distinct_total();
 
         // Leaf operators
         let leaf_operators = operators

@@ -1,7 +1,8 @@
 use super::{Diff, DiffDuration, Max, Min, TimelyLogBundle};
 use abomonation_derive::Abomonation;
 use differential_dataflow::{
-    collection::AsCollection, difference::DiffPair, lattice::Lattice, operators::Count, Collection,
+    collection::AsCollection, difference::DiffPair, lattice::Lattice, operators::CountTotal,
+    Collection,
 };
 use std::{collections::HashMap, time::Duration};
 use timely::{
@@ -91,7 +92,7 @@ where
                     ),
                 ))
             })
-            .count()
+            .count_total()
             .map(
                 |(
                     id,

@@ -24,14 +24,13 @@ pub struct Args {
     #[structopt(long = "address", default_value = "127.0.0.1:51317")]
     pub address: SocketAddr,
 
-    /// The file to write the generated graph to
-    #[structopt(long = "dot-file", default_value = "dataflow.dot")]
-    pub dot_file: PathBuf,
+    // /// The file to write the generated graph to
+    // #[structopt(long = "dot-file", default_value = "dataflow.dot")]
+    // pub dot_file: PathBuf,
 
-    /// Whether or not to call `dot` on the generated file to render the graph (requires `graphviz`)
-    #[structopt(long = "render")]
-    pub render: bool,
-
+    // /// Whether or not to call `dot` on the generated file to render the graph (requires `graphviz`)
+    // #[structopt(long = "render")]
+    // pub render: bool,
     /// The color palette to use for the generated graphs
     #[structopt(
         long = "palette",
@@ -42,8 +41,12 @@ pub struct Args {
     pub palette: ThreadedGradient,
 
     /// The directory to generate artifacts in
-    #[structopt(long = "output_dir", default_value = "dataflow-graph")]
+    #[structopt(long = "output-dir", default_value = "dataflow-graph")]
     pub output_dir: PathBuf,
+    // TODO
+    // /// The file to save the target process's logs to
+    // #[structopt(long = "save-logs")]
+    // pub save_logs: Option<PathBuf>,
 }
 
 macro_rules! parse_gradient {

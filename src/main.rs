@@ -1,7 +1,7 @@
 mod args;
 mod colormap;
 mod dataflow;
-mod dot;
+// mod dot;
 mod network;
 mod ui;
 
@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use args::Args;
 use colormap::{select_color, Color};
 use dataflow::{make_streams, Channel, CrossbeamExtractor, DataflowSenders, OperatorStats};
-use dot::Graph;
+// use dot::Graph;
 use network::{wait_for_connections, wait_for_input};
 use sequence_trie::SequenceTrie;
 use std::{
@@ -125,22 +125,22 @@ fn main() -> Result<()> {
     wait_for_input(&*running, worker_guards)?;
 
     // Extract the data from timely
-    let mut graph_nodes = SequenceTrie::new();
-    let mut operator_addresses = HashMap::new();
-    let mut operator_names = HashMap::new();
+    // let mut graph_nodes = SequenceTrie::new();
+    // let mut operator_addresses = HashMap::new();
+    // let mut operator_names = HashMap::new();
     let mut subgraph_ids = Vec::new();
 
     let mut node_events = CrossbeamExtractor::new(node_receiver).extract_all();
     node_events.sort_unstable_by_key(|(addr, _)| addr.clone());
     tracing::info!("finished extracting {} node events", node_events.len());
 
-    for (addr, event) in node_events.clone() {
-        let id = event.id;
-
-        operator_names.insert(id, event.name.clone());
-        graph_nodes.insert(&addr.addr, Graph::Node(event));
-        operator_addresses.insert(id, addr);
-    }
+    // for (addr, event) in node_events.clone() {
+    //     let id = event.id;
+    //
+    //     operator_names.insert(id, event.name.clone());
+    //     graph_nodes.insert(&addr.addr, Graph::Node(event));
+    //     operator_addresses.insert(id, addr);
+    // }
 
     let mut subgraph_events = CrossbeamExtractor::new(subgraph_receiver).extract_all();
     subgraph_events.sort_unstable_by_key(|(addr, _)| addr.clone());
@@ -149,12 +149,12 @@ fn main() -> Result<()> {
         subgraph_events.len(),
     );
 
-    for (addr, event) in subgraph_events.clone() {
+    for (_addr, event) in subgraph_events.iter() {
         let id = event.id;
 
-        operator_names.insert(id, event.name.clone());
-        graph_nodes.insert(&addr.addr, Graph::Subgraph(event));
-        operator_addresses.insert(id, addr);
+        // operator_names.insert(id, event.name.clone());
+        // graph_nodes.insert(&addr.addr, Graph::Subgraph(event));
+        // operator_addresses.insert(id, addr);
         subgraph_ids.push(id);
     }
 
@@ -241,7 +241,7 @@ fn main() -> Result<()> {
         .collect();
 
     let html_edges: Vec<_> = edge_events
-        .clone()
+        // .clone()
         .into_iter()
         .map(
             |(OperatesEvent { addr: src, .. }, channel, OperatesEvent { addr: dest, .. })| {
@@ -273,81 +273,89 @@ fn main() -> Result<()> {
         palette_colors,
     )?;
 
-    let thread_args = args.clone();
-    let file_thread = thread::spawn(move || -> Result<()> {
-        let mut dot_graph =
-            File::create(&thread_args.dot_file).context("failed to open out file")?;
+    println!(
+        "Wrote the output graph to file://{}",
+        fs::canonicalize(&args.output_dir)
+            .context("failed to get path of output dir")?
+            .join("graph.html")
+            .display(),
+    );
 
-        writeln!(
-            &mut dot_graph,
-            "digraph {{\n    \
-                graph [compound = true];",
-        )?;
-
-        dot::render_graph(
-            &mut dot_graph,
-            &*thread_args,
-            &operator_stats,
-            &graph_nodes,
-            (max_time, min_time),
-            1,
-        )?;
-
-        for (source, _channel, target) in edge_events {
-            let mut edge_attrs = "[".to_owned();
-
-            if source.name == "Feedback" {
-                edge_attrs.push_str("constraint = false");
-            }
-
-            writeln!(
-                &mut dot_graph,
-                "    {} -> {}{}];",
-                dot::node_id(&source)?,
-                dot::node_id(&target)?,
-                edge_attrs.trim(),
-            )?;
-        }
-
-        writeln!(&mut dot_graph, "}}")?;
-
-        println!(
-            "Wrote the output graph to {}",
-            fs::canonicalize(&thread_args.dot_file)
-                .context("failed to get path of dot file")?
-                .display(),
-        );
-
-        Ok(())
-    });
-
-    match file_thread.join() {
-        Ok(res) => res?,
-        Err(err) => {
-            if let Some(panic_msg) = err.downcast_ref::<&str>() {
-                anyhow::bail!(
-                    "failed to write to file '{}': {}",
-                    args.dot_file.display(),
-                    panic_msg,
-                );
-            } else {
-                anyhow::bail!("failed to write to file '{}'", args.dot_file.display());
-            }
-        }
-    }
-
-    if args.render {
-        println!("Running dot...");
-
-        let out_file = dot::render_graphviz_svg(&args)?;
-
-        println!(
-            "Generated a svg at {}",
-            fs::canonicalize(out_file)
-                .context("failed to get path of out file")?
-                .display(),
-        );
-    }
+    // let thread_args = args.clone();
+    // let file_thread = thread::spawn(move || -> Result<()> {
+    //     let mut dot_graph =
+    //         File::create(&thread_args.dot_file).context("failed to open out file")?;
+    //
+    //     writeln!(
+    //         &mut dot_graph,
+    //         "digraph {{\n    \
+    //             graph [compound = true];",
+    //     )?;
+    //
+    //     dot::render_graph(
+    //         &mut dot_graph,
+    //         &*thread_args,
+    //         &operator_stats,
+    //         &graph_nodes,
+    //         (max_time, min_time),
+    //         1,
+    //     )?;
+    //
+    //     for (source, _channel, target) in edge_events {
+    //         let mut edge_attrs = "[".to_owned();
+    //
+    //         if source.name == "Feedback" {
+    //             edge_attrs.push_str("constraint = false");
+    //         }
+    //
+    //         writeln!(
+    //             &mut dot_graph,
+    //             "    {} -> {}{}];",
+    //             dot::node_id(&source)?,
+    //             dot::node_id(&target)?,
+    //             edge_attrs.trim(),
+    //         )?;
+    //     }
+    //
+    //     writeln!(&mut dot_graph, "}}")?;
+    //
+    //     println!(
+    //         "Wrote the output graph to {}",
+    //         fs::canonicalize(&thread_args.dot_file)
+    //             .context("failed to get path of dot file")?
+    //             .display(),
+    //     );
+    //
+    //     Ok(())
+    // });
+    //
+    // match file_thread.join() {
+    //     Ok(res) => res?,
+    //     Err(err) => {
+    //         if let Some(panic_msg) = err.downcast_ref::<&str>() {
+    //             anyhow::bail!(
+    //                 "failed to write to file '{}': {}",
+    //                 args.dot_file.display(),
+    //                 panic_msg,
+    //             );
+    //         } else {
+    //             anyhow::bail!("failed to write to file '{}'", args.dot_file.display());
+    //         }
+    //     }
+    // }
+    //
+    // if args.render {
+    //     println!("Running dot...");
+    //
+    //     let out_file = dot::render_graphviz_svg(&args)?;
+    //
+    //     println!(
+    //         "Generated a svg at {}",
+    //         fs::canonicalize(out_file)
+    //             .context("failed to get path of out file")?
+    //             .display(),
+    //     );
+    // }
 
     Ok(())
 }

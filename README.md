@@ -2,6 +2,55 @@
 
 Visualization for Timely Dataflow and Differential Dataflow programs
 
+# Getting started with `ddshow`
+
+First, install `ddshow` via [`cargo`](https://github.com/rust-lang/cargo/). As of now ddshow is not published
+to [crates.io](https://crates.io/), but it will be at a future date. Until then, the recommended way to
+install ddshow is by using the `--git` option with [`cargo install`](https://doc.rust-lang.org/cargo/commands/cargo-install.html#install-options)
+
+```sh
+cargo install --git https://github.com/Kixiron/ddshow
+```
+
+Next you need to set the `TIMELY_WORKER_LOG_ADDR` environmental variable for your target program. This should be
+set to the same address that ddshow is pointed (`127.0.0.1:51317` by default) to so that they can communicate over TCP.
+
+```sh
+# Bash
+set TIMELY_WORKER_LOG_ADDR=127.0.0.1:51317
+```
+
+```ps
+# Powershell
+$env:TIMELY_WORKER_LOG_ADDR = "127.0.0.1:51317"
+```
+
+```cmd
+:: CMD
+set TIMELY_WORKER_LOG_ADDR=127.0.0.1:51317
+```
+
+After setting the environmental variable you can now run ddshow. The `--connections` argument
+should be set to the number of timely workers that the target computation has spun up, defaulting
+to `1` if it's not given and the `--address` argument for setting the address ddshow should connect to.
+Note that `--address` should be the same as whatever you set the `TIMELY_WORKER_LOG_ADDR` variable to,
+otherwise ddshow won't be able to connect.
+
+```sh
+ddshow --connections 1 --address 127.0.0.1:51317
+```
+
+This will create the `dataflow-graph/` directory which contains everything that ddshow's UI needs
+to operate offline. Opening `dataflow-graph/graph.html` in a browser will allow viewing the graphed dataflow
+
+The full list of options ddshow supports and their options can be retrieved by running
+
+```sh
+ddshow --help
+```
+
+For basic usage 
+
 ## Showcase
 
 ![](https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow-large.png)

@@ -51,7 +51,7 @@ where
                     ),
                 ))
             })
-            .count()
+            .count_total()
             .map(
                 |(
                     channel_addr,
