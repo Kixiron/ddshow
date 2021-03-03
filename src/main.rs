@@ -1,7 +1,6 @@
 mod args;
 mod colormap;
 mod dataflow;
-// mod dot;
 mod network;
 mod ui;
 
@@ -9,15 +8,11 @@ use anyhow::{Context, Result};
 use args::Args;
 use colormap::{select_color, Color};
 use dataflow::{make_streams, Channel, CrossbeamExtractor, DataflowSenders, OperatorStats};
-// use dot::Graph;
 use network::{wait_for_connections, wait_for_input};
-use sequence_trie::SequenceTrie;
 use std::{
     collections::HashMap,
-    fs::{self, File},
-    io::Write,
+    fs,
     sync::{atomic::AtomicBool, Arc},
-    thread,
     time::Instant,
 };
 use structopt::StructOpt;
@@ -164,11 +159,11 @@ fn main() -> Result<()> {
     tracing::info!("finished extracting {} stats events", stats_events.len());
 
     for (operator, stats) in stats_events.clone() {
-        operator_stats.insert(operator, stats);
-
         if !subgraph_ids.contains(&operator) {
             raw_timings.push(stats.total);
         }
+
+        operator_stats.insert(operator, stats);
     }
 
     let mut edge_events = CrossbeamExtractor::new(edge_receiver).extract_all();
@@ -189,6 +184,7 @@ fn main() -> Result<()> {
                 average,
                 total,
                 invocations,
+                ref activation_durations,
                 ..
             } = operator_stats[&id];
 
@@ -206,6 +202,12 @@ fn main() -> Result<()> {
                 invocations,
                 fill_color: format!("{}", fill_color),
                 text_color: format!("{}", text_color),
+                activation_durations: activation_durations
+                    .iter()
+                    .map(|(duration, time)| {
+                        (duration.as_secs_f64() * 1000.0, time.as_secs_f64() * 1000.0)
+                    })
+                    .collect(),
             }
         })
         .collect();

@@ -51,7 +51,7 @@ pub fn render(
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub struct GraphData {
     nodes: Vec<Node>,
     subgraphs: Vec<Subgraph>,
@@ -59,7 +59,7 @@ pub struct GraphData {
     palette_colors: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub struct Node {
     pub id: usize,
     pub addr: Vec<usize>,
@@ -71,9 +71,10 @@ pub struct Node {
     pub invocations: usize,
     pub fill_color: String,
     pub text_color: String,
+    pub activation_durations: Vec<(f64, f64)>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub struct Subgraph {
     pub id: usize,
     pub addr: Vec<usize>,

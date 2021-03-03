@@ -97,20 +97,16 @@ const tooltip = d3.select("body")
 
 // Node tooltips
 svg.selectAll("g.node")
-    // Create the text to be displayed for each node
-    .attr("data-hovertext", node_id => {
+    // Reveal the tooltip on hover
+    .on("mouseover", () => tooltip.style("visibility", "visible"))
+    .on("mousemove", node_id => {
         const node = graph.node(node_id).data;
         const text = `ran for ${node.total_activation_time} over ${node.invocations} invocations<br>\
             average runtime of ${node.average_activation_time} \
             (max: ${node.max_activation_time}, min: ${node.min_activation_time})`;
 
-        return text;
-    })
-    // Reveal the tooltip on hover
-    .on("mouseover", () => tooltip.style("visibility", "visible"))
-    .on("mousemove", function () {
         tooltip
-            .html(this.dataset.hovertext)
+            .html(text)
             .style("top", (d3.event.pageY - 40) + "px")
             .style("left", (d3.event.pageX + 40) + "px");
     })
@@ -119,19 +115,15 @@ svg.selectAll("g.node")
 
 // Edge tooltips
 svg.selectAll("g.edgePath")
-    // Create the text to be displayed for each edge
-    .attr("data-hovertext", edge_id => {
+    // Reveal the tooltip on hover
+    .on("mouseover", () => tooltip.style("visibility", "visible"))
+    .on("mousemove", edge_id => {
         const edge = graph.edge(edge_id).data;
         const src = graph.node(edge.src).data,
             dest = graph.node(edge.dest).data;
 
-        return `channel from ${src.name} to ${dest.name}`;
-    })
-    // Reveal the tooltip on hover
-    .on("mouseover", () => tooltip.style("visibility", "visible"))
-    .on("mousemove", function () {
         tooltip
-            .html(this.dataset.hovertext)
+            .text(`channel from ${src.name} to ${dest.name}`)
             .style("top", (d3.event.pageY - 40) + "px")
             .style("left", (d3.event.pageX + 40) + "px");
     })
@@ -189,6 +181,85 @@ palette_legend
     .append("div")
     .attr("class", "palette-text")
     .text("faster");
+// Scatter plots for each operator's activation timings
+let scatter_plots = {};
+
+svg.selectAll("g.node")
+    .on("click", node_id => {
+        console.log(node_id);
+        const node = graph.node(node_id).data;
+
+        if (node.kind == "Node") {
+            if (!(node_id in scatter_plots)) {
+                const width = 500,
+                    height = 500,
+                    margin = { top: 10, right: 30, bottom: 30, left: 60 };
+
+                const max_duration = Math.max(node.max_activation_time, 1.0);
+                const max_time = Math.max(...node.activation_durations.map((_duration, time) => time), 0.0);
+
+                const plot_div = d3.select("body")
+                    .append("div")
+                    .style("visibility", "hidden")
+                    .style("z-index", "11")
+                    .attr("class", "scatterplot-div");
+
+                const plot_svg = plot_div
+                    .append("svg")
+                    .attr("width", width + margin.left + margin.right)
+                    .attr("height", height + margin.top + margin.bottom)
+                    .append("g")
+                    .attr("transform", `translate(${margin.left}, ${margin.top})`)
+                    .attr("class", "operator-scatterplot");
+
+                const x_axis = x = d3.scaleLinear()
+                    .domain([0.0, max_time])
+                    .range([0, width]);
+                plot_svg
+                    .append("g")
+                    .attr("transform", `translate(0, ${height})`)
+                    .call(d3.axisBottom(x_axis));
+
+                const y_axis = d3.scaleLog()
+                    .domain([0.0, max_duration])
+                    .range([height, 0]);
+                plot_svg
+                    .append("g")
+                    .call(d3.axisLeft(y_axis));
+
+                plot_svg
+                    .append("g")
+                    .selectAll("dot")
+                    .data(node.activation_durations)
+                    .enter()
+                    .append("circle")
+                    .attr("cx", ([_, time]) => time)
+                    .attr("cy", ([duration, _]) => duration)
+                    .attr("r", 1.5)
+                    .style("fill", "#69b3a2");
+
+                scatter_plots[node_id] = {
+                    activated: false,
+                    plot_div: plot_div,
+                };
+            }
+
+            const plot = scatter_plots[node_id];
+            console.log(plot);
+
+            if (plot.activated) {
+                plot.plot_div.style("visibility", "hidden");
+            } else {
+                plot.plot_div.style("visibility", "visible");
+
+                plot
+                    .plot_div
+                    .style("top", (d3.event.pageY - 40) + "px")
+                    .style("left", (d3.event.pageX + 40) + "px");
+            }
+            plot.activated = !plot.activated;
+        }
+    });
 
 // Center & scale the graph
 const initialScale = 1.00;

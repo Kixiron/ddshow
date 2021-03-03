@@ -43,7 +43,7 @@ ddshow --connections 1 --address 127.0.0.1:51317
 This will create the `dataflow-graph/` directory which contains everything that ddshow's UI needs
 to operate offline. Opening `dataflow-graph/graph.html` in a browser will allow viewing the graphed dataflow
 
-The full list of options ddshow supports and their options can be retrieved by running
+The full list of arguments ddshow supports and their options can be retrieved by running
 
 ```sh
 ddshow --help
@@ -65,7 +65,14 @@ For basic usage
 
 If the output is empty when it shouldn't be, make sure you aren't overwriting the default
 loggers set by Timely and DDflow by using `Worker::log_register()` with a `Logger`
-implementation that doesn't forward logging events
+implementation that doesn't forward logging events.
+
+Another common problem is a mismatch of timely versions. Because timely/ddflow don't have
+up-to-date publishes on crates.io and use [`abomonation`](https://docs.rs/abomonation/0.7.3/abomonation/)
+for sending events, their structure isn't consistent across timely versions which can cause
+errors and incompatibilities. The only known solution for this is to make sure ddshow and
+the target program use the same versions of timely and ddflow, but I'm working on a more stable
+solution.
 
 When looking for Differential Dataflow insights, make sure you have this (or an equivalent)
 snippet somewhere within your code in order to forward Differential Dataflow logs
