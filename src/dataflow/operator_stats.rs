@@ -1,4 +1,5 @@
 use super::{Diff, DiffDuration, Max, Min, TimelyLogBundle};
+use crate::dataflow::differential::ArrangementStats;
 use abomonation_derive::Abomonation;
 use differential_dataflow::{
     collection::AsCollection,
@@ -143,6 +144,7 @@ where
                         total,
                         invocations,
                         activation_durations: activation_durations.to_owned(),
+                        arrangement_size: None,
                     };
 
                     (id, stats)
@@ -161,6 +163,7 @@ pub struct OperatorStats {
     pub total: Duration,
     pub invocations: usize,
     pub activation_durations: Vec<(Duration, Duration)>,
+    pub arrangement_size: Option<ArrangementStats>,
     // pub messages_sent: usize,
     // pub messages_received: usize,
 }

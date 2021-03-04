@@ -101,9 +101,17 @@ svg.selectAll("g.node")
     .on("mouseover", () => tooltip.style("visibility", "visible"))
     .on("mousemove", node_id => {
         const node = graph.node(node_id).data;
-        const text = `ran for ${node.total_activation_time} over ${node.invocations} invocations<br>\
+        let text = `ran for ${node.total_activation_time} over ${node.invocations} invocations<br>\
             average runtime of ${node.average_activation_time} \
             (max: ${node.max_activation_time}, min: ${node.min_activation_time})`;
+
+        if (node.kind == "Node"
+            && node.max_arrangement_size != null
+            && node.min_arrangement_size != null
+        ) {
+            text += `<br>max arrangement size: ${node.max_arrangement_size}, \
+                min arrangement size: ${node.min_arrangement_size}`;
+        }
 
         tooltip
             .html(text)
@@ -262,8 +270,8 @@ svg.selectAll("g.node")
     });
 
 // Center & scale the graph
-const initialScale = 1.00;
+const initial_scale = 1.00;
 d3.zoomIdentity
-    .translate([(svg.attr("width") - graph.graph().width * initialScale) / 2, 20])
-    .scale(initialScale);
-dataflow_svg.attr("height", graph.graph().height * initialScale + 40);
+    .translate([(svg.attr("width") - graph.graph().width * initial_scale) / 2, 20])
+    .scale(initial_scale);
+dataflow_svg.attr("height", graph.graph().height * initial_scale + 40);

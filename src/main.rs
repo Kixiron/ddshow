@@ -79,6 +79,41 @@ fn main() -> Result<()> {
         elapsed,
     );
 
+    let differential_receivers = if args.differential_enabled {
+        println!(
+            "Waiting for {} Differential connection{} on {}...",
+            args.timely_connections,
+            if args.timely_connections.get() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            args.address,
+        );
+        let start_time = Instant::now();
+
+        let differential_connections =
+            wait_for_connections(args.differential_address, args.timely_connections)?;
+        let event_receivers =
+            make_streams(args.timely_connections.get(), differential_connections)?;
+
+        let elapsed = start_time.elapsed();
+        println!(
+            "Connected to {} Differential trace{} in {:#?}",
+            args.timely_connections,
+            if args.timely_connections.get() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            elapsed,
+        );
+
+        Some(event_receivers)
+    } else {
+        None
+    };
+
     let running = Arc::new(AtomicBool::new(true));
     let (replay_shutdown, moved_args) = (running.clone(), args.clone());
 
@@ -95,7 +130,12 @@ fn main() -> Result<()> {
         // Distribute the tcp streams across workers, converting each of them into an event reader
         let timely_traces = event_receivers[worker.index()]
             .recv()
-            .expect("failed to receive event traces");
+            .expect("failed to receive timely event traces");
+        let differential_traces = differential_receivers.as_ref().map(|recv| {
+            recv[worker.index()]
+                .recv()
+                .expect("failed to receive differential event traces")
+        });
 
         let senders = DataflowSenders {
             node_sender: node_sender.clone(),
@@ -109,6 +149,7 @@ fn main() -> Result<()> {
                 scope,
                 &*args,
                 timely_traces,
+                differential_traces,
                 replay_shutdown.clone(),
                 senders,
             )
@@ -185,6 +226,7 @@ fn main() -> Result<()> {
                 total,
                 invocations,
                 ref activation_durations,
+                ref arrangement_size,
                 ..
             } = operator_stats[&id];
 
@@ -208,6 +250,8 @@ fn main() -> Result<()> {
                         (duration.as_secs_f64() * 1000.0, time.as_secs_f64() * 1000.0)
                     })
                     .collect(),
+                max_arrangement_size: arrangement_size.as_ref().map(|arr| arr.max_size),
+                min_arrangement_size: arrangement_size.as_ref().map(|arr| arr.min_size),
             }
         })
         .collect();

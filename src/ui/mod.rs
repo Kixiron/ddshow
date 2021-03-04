@@ -72,6 +72,8 @@ pub struct Node {
     pub fill_color: String,
     pub text_color: String,
     pub activation_durations: Vec<(f64, f64)>,
+    pub max_arrangement_size: Option<usize>,
+    pub min_arrangement_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]

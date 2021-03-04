@@ -24,6 +24,13 @@ pub struct Args {
     #[structopt(long = "address", default_value = "127.0.0.1:51317")]
     pub address: SocketAddr,
 
+    /// Whether or not Differential Dataflow logs should be read from
+    #[structopt(short = "d", long = "differential")]
+    pub differential_enabled: bool,
+
+    #[structopt(long = "differential-address", default_value = "127.0.0.1:51318")]
+    pub differential_address: SocketAddr,
+
     // /// The file to write the generated graph to
     // #[structopt(long = "dot-file", default_value = "dataflow.dot")]
     // pub dot_file: PathBuf,

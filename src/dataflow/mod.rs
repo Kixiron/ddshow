@@ -1,4 +1,5 @@
 // mod channel_stats;
+mod differential;
 mod filter_map;
 mod inspect;
 mod min_max;
@@ -18,10 +19,12 @@ use crate::args::Args;
 use abomonation_derive::Abomonation;
 use anyhow::Result;
 use crossbeam_channel::Sender;
+use differential::arrangement_stats;
 use differential_dataflow::{
     collection::AsCollection,
     difference::{Abelian, Monoid, Semigroup},
     lattice::Lattice,
+    logging::DifferentialEvent,
     operators::{Consolidate, Join, ThresholdTotal},
     Collection, ExchangeData,
 };
@@ -48,6 +51,7 @@ use timely::{
 };
 
 type TimelyLogBundle = (Duration, WorkerIdentifier, TimelyEvent);
+type DifferentialLogBundle = (Duration, WorkerIdentifier, DifferentialEvent);
 type Diff = isize;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
@@ -101,6 +105,7 @@ pub fn dataflow<S>(
     scope: &mut S,
     _args: &Args,
     timely_traces: Vec<EventReader<Duration, TimelyLogBundle, TcpStream>>,
+    differential_traces: Option<Vec<EventReader<Duration, DifferentialLogBundle, TcpStream>>>,
     replay_shutdown: Arc<AtomicBool>,
     senders: DataflowSenders,
 ) -> Result<()>
@@ -108,8 +113,11 @@ where
     S: Scope<Timestamp = Duration>,
 {
     // The timely log stream filtered down to worker 0's events
-    let raw_timely_stream =
-        timely_traces.replay_with_shutdown_into_named("Timely Replay", scope, replay_shutdown);
+    let raw_timely_stream = timely_traces.replay_with_shutdown_into_named(
+        "Timely Replay",
+        scope,
+        replay_shutdown.clone(),
+    );
 
     let timely_stream = raw_timely_stream
         // This is a bit of a cop-out that should work for *most*
@@ -126,8 +134,41 @@ where
         // only shows 1/nth of the story
         .filter(|&(_, worker_id, _)| worker_id == 0);
 
+    let raw_differential_stream = differential_traces.map(|traces| {
+        traces.replay_with_shutdown_into_named("Differential Replay", scope, replay_shutdown)
+    });
+
     let operators = operator_creations(&timely_stream);
     let operator_stats = operator_stats(scope, &timely_stream);
+
+    let operator_stats = raw_differential_stream
+        .as_ref()
+        .map(|stream| {
+            let arrangement_stats = arrangement_stats(scope, stream)
+                .filter_map(|((worker, operator), stats)| {
+                    if worker == 0 {
+                        Some((operator, stats))
+                    } else {
+                        None
+                    }
+                })
+                .consolidate();
+
+            let modified_stats = operator_stats.join_map(
+                &arrangement_stats,
+                |&operator, stats, arrangement_stats| {
+                    let mut stats = stats.clone();
+                    stats.arrangement_size = Some(arrangement_stats.clone());
+
+                    (operator, stats)
+                },
+            );
+
+            operator_stats
+                .antijoin(&modified_stats.map(|(operator, _)| operator))
+                .concat(&modified_stats)
+        })
+        .unwrap_or(operator_stats);
 
     let (leaves, subgraphs) = sift_leaves_and_scopes(scope, &operators);
 
