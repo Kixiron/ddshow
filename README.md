@@ -78,11 +78,16 @@ When looking for Differential Dataflow insights, make sure you have this (or an 
 snippet somewhere within your code in order to forward Differential Dataflow logs
 
 ```rust
+// `worker` should be an `&mut Worker<A>`, generally acquired from the inner
+// closure of `timely::execute()`
+
 if let Ok(addr) = std::env::var("DIFFERENTIAL_LOG_ADDR") {
-    if let Ok(stream) = std::net::TcpStream::connect(&addr) {
-        differential_dataflow::logging::enable(worker, stream);
-    } else {
-        panic!("Could not connect to differential log address: {:?}", addr);
+    if !addr.is_empty() {
+        if let Ok(stream) = std::net::TcpStream::connect(&addr) {
+            differential_dataflow::logging::enable(worker, stream);
+        } else {
+            panic!("Could not connect to differential log address: {:?}", addr);
+        }
     }
 }
 ```

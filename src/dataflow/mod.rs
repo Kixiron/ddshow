@@ -1,4 +1,5 @@
 // mod channel_stats;
+mod diff_list;
 mod differential;
 mod filter_map;
 mod inspect;
@@ -120,6 +121,7 @@ where
     );
 
     let timely_stream = raw_timely_stream
+        .debug_inspect(|x| tracing::trace!("timely event: {:?}", x))
         // This is a bit of a cop-out that should work for *most*
         // dataflow programs. In most programs, every worker has the
         // exact same dataflows created, which means that ignoring
@@ -135,7 +137,9 @@ where
         .filter(|&(_, worker_id, _)| worker_id == 0);
 
     let raw_differential_stream = differential_traces.map(|traces| {
-        traces.replay_with_shutdown_into_named("Differential Replay", scope, replay_shutdown)
+        traces
+            .replay_with_shutdown_into_named("Differential Replay", scope, replay_shutdown)
+            .debug_inspect(|x| tracing::trace!("differential dataflow event: {:?}", x))
     });
 
     let operators = operator_creations(&timely_stream);

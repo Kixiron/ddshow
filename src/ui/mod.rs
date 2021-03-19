@@ -71,9 +71,15 @@ pub struct Node {
     pub invocations: usize,
     pub fill_color: String,
     pub text_color: String,
-    pub activation_durations: Vec<(f64, f64)>,
+    pub activation_durations: Vec<ActivationDuration>,
     pub max_arrangement_size: Option<usize>,
     pub min_arrangement_size: Option<usize>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
+pub struct ActivationDuration {
+    pub activation_time: u64,
+    pub activated_at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]

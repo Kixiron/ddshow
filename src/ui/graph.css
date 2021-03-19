@@ -1,24 +1,37 @@
+:root {
+    --soft-white: #EEEEEE;
+    --black: #333;
+}
+
 body,
 text {
     font-weight: 300;
     font-family: "Verdana", Helvetica, Arial, sans-serf;
     font-size: 14px;
-    background-color: #EEEEEE;
+    background-color: var(--soft-white);
+}
+
+#dataflow-graph-div {
+    width: calc(100% - 10px);
+    height: calc(100vh - 50px);
+    border-color: var(--black);
+    border-width: 8px;
+    border-style: solid;
 }
 
 #dataflow-graph {
-    width: 100vw;
-    height: 100vh;
+    width: 100%;
+    height: 100%;
 }
 
 .cluster rect {
-    stroke: #333;
-    fill: #fff;
+    stroke: var(--black);
+    fill: var(--soft-white);
 }
 
 .node rect {
-    stroke: #333;
-    fill: #fff;
+    stroke: var(--black);
+    fill: var(--soft-white);
 }
 
 .node text {
@@ -26,7 +39,60 @@ text {
 }
 
 .edgePath path {
-    stroke: #333;
-    fill: #333;
+    stroke: var(--black);
+    fill: var(--black);
     stroke-width: 1.5px;
+}
+
+#tooltip-template {
+    position: absolute;
+    background-color: var(--soft-white);
+    border: solid;
+    display: block;
+    border-width: 2px;
+    border-radius: 5px;
+    padding: 15px;
+    z-index: 10;
+    visibility: hidden;
+    font-size: 0.7vw;
+}
+
+#palette-legend {
+    position: absolute;
+    top: 0;
+    right: 0;
+    background-color: transparent;
+    border: solid;
+    border-width: 2px;
+    border-radius: 2px;
+    padding: 10px;
+    z-index: 10;
+    margin: 15px;
+    font-size: 0.7vw;
+    height: 15%;
+    width: 3.5%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    text-align: center;
+}
+
+#palette-gradient {
+    height: 100%;
+    width: 100%;
+    flex: 80%;
+    order: 2;
+}
+
+
+.palette-text {
+    flex: 10%;
+}
+
+#palette-top-text {
+    order: 1;
+}
+
+#palette-bottom-text {
+    order: 3;
 }

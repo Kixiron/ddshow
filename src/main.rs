@@ -23,9 +23,11 @@ use tracing_subscriber::{
 };
 use ui::EdgeKind;
 
+use crate::ui::ActivationDuration;
+
 // TODO: Library-ify a lot of this
 fn main() -> Result<()> {
-    let filter_layer = EnvFilter::from_env("TIMELY_VIZ_LOG");
+    let filter_layer = EnvFilter::from_env("DDSHOW_LOG");
     let fmt_layer = tracing_subscriber::fmt::layer()
         .pretty()
         .with_timer(Uptime::default())
@@ -88,7 +90,7 @@ fn main() -> Result<()> {
             } else {
                 "s"
             },
-            args.address,
+            args.differential_address,
         );
         let start_time = Instant::now();
 
@@ -246,8 +248,9 @@ fn main() -> Result<()> {
                 text_color: format!("{}", text_color),
                 activation_durations: activation_durations
                     .iter()
-                    .map(|(duration, time)| {
-                        (duration.as_secs_f64() * 1000.0, time.as_secs_f64() * 1000.0)
+                    .map(|(duration, time)| ActivationDuration {
+                        activation_time: duration.as_nanos() as u64,
+                        activated_at: time.as_nanos() as u64,
                     })
                     .collect(),
                 max_arrangement_size: arrangement_size.as_ref().map(|arr| arr.max_size),
