@@ -16,7 +16,10 @@ use std::{
     time::Instant,
 };
 use structopt::StructOpt;
-use timely::{communication::Config as ParallelConfig, execute::Config, logging::OperatesEvent};
+use timely::{
+    communication::Config as ParallelConfig, dataflow::operators::capture::Extract,
+    execute::Config, logging::OperatesEvent,
+};
 use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
     EnvFilter,
@@ -41,11 +44,13 @@ fn main() -> Result<()> {
 
     // Grab the args from the user and build the required configs
     let args = Arc::new(Args::from_args());
+    tracing::trace!("initialized and received cli args: {:?}", args);
+
     let config = {
-        let communication = if args.timely_connections.get() == 1 {
+        let communication = if args.workers.get() == 1 {
             ParallelConfig::Thread
         } else {
-            ParallelConfig::Process(args.timely_connections.get())
+            ParallelConfig::Process(args.workers.get())
         };
 
         Config {
@@ -53,7 +58,13 @@ fn main() -> Result<()> {
             worker: Default::default(),
         }
     };
+    tracing::trace!("created timely config");
 
+    tracing::info!(
+        "started waiting for {} timely connections on {}",
+        args.timely_connections,
+        args.address,
+    );
     println!(
         "Waiting for {} Timely connection{} on {}...",
         args.timely_connections,
@@ -67,7 +78,7 @@ fn main() -> Result<()> {
     let start_time = Instant::now();
 
     let timely_connections = wait_for_connections(args.address, args.timely_connections)?;
-    let event_receivers = make_streams(args.timely_connections.get(), timely_connections)?;
+    let event_receivers = make_streams(args.workers.get(), timely_connections)?;
 
     let elapsed = start_time.elapsed();
     println!(
@@ -82,6 +93,12 @@ fn main() -> Result<()> {
     );
 
     let differential_receivers = if args.differential_enabled {
+        tracing::info!(
+            "differential dataflow logging is enabled, started waiting for {} differential connections on {}",
+            args.timely_connections,
+            args.differential_address,
+        );
+
         println!(
             "Waiting for {} Differential connection{} on {}...",
             args.timely_connections,
@@ -96,8 +113,7 @@ fn main() -> Result<()> {
 
         let differential_connections =
             wait_for_connections(args.differential_address, args.timely_connections)?;
-        let event_receivers =
-            make_streams(args.timely_connections.get(), differential_connections)?;
+        let event_receivers = make_streams(args.workers.get(), differential_connections)?;
 
         let elapsed = start_time.elapsed();
         println!(
@@ -123,6 +139,9 @@ fn main() -> Result<()> {
     let (edge_sender, edge_receiver) = crossbeam_channel::unbounded();
     let (subgraph_sender, subgraph_receiver) = crossbeam_channel::unbounded();
     let (stats_sender, stats_receiver) = crossbeam_channel::unbounded();
+    let (timeline_sender, timeline_receiver) = crossbeam_channel::unbounded();
+
+    tracing::info!("starting compute dataflow");
 
     // Spin up the timely computation
     let worker_guards = timely::execute(config, move |worker| {
@@ -144,6 +163,7 @@ fn main() -> Result<()> {
             edge_sender: edge_sender.clone(),
             subgraph_sender: subgraph_sender.clone(),
             stats_sender: stats_sender.clone(),
+            timeline_sender: timeline_sender.clone(),
         };
 
         worker.dataflow_named(dataflow_name, |scope| {
@@ -216,6 +236,25 @@ fn main() -> Result<()> {
     let (max_time, min_time) = (
         raw_timings.iter().max().copied().unwrap_or_default(),
         raw_timings.iter().min().copied().unwrap_or_default(),
+    );
+
+    let mut timeline_events: Vec<_> = CrossbeamExtractor::new(timeline_receiver)
+        .extract()
+        .into_iter()
+        .flat_map(|(_, data)| {
+            data.into_iter()
+                .map(|((worker, event, duration), start_time, _diff)| ui::Event {
+                    worker,
+                    event,
+                    start_time: start_time.as_nanos() as u64,
+                    duration: duration.as_nanos() as u64,
+                })
+        })
+        .collect();
+    timeline_events.sort_unstable_by_key(|event| (event.worker, event.start_time));
+    tracing::info!(
+        "finished extracting {} timeline events",
+        timeline_events.len(),
     );
 
     let html_nodes: Vec<_> = node_events
@@ -320,6 +359,7 @@ fn main() -> Result<()> {
         html_subgraphs,
         html_edges,
         palette_colors,
+        dbg!(timeline_events),
     )?;
 
     println!(

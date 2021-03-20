@@ -2,6 +2,7 @@ const raw_nodes = {{ nodes | json_encode() }};
 const raw_subgraphs = {{ subgraphs | json_encode() }};
 const raw_edges = {{ edges | json_encode() }};
 const palette_colors = {{ palette_colors | json_encode() }};
+const timeline_events = {{ timeline_events | json_encode() }};
 
 const dataflow_svg = d3.select("#dataflow-graph");
 const svg = dataflow_svg.append("g");

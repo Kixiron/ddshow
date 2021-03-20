@@ -16,6 +16,10 @@ use structopt::StructOpt;
 #[derive(Debug, Clone, StructOpt)]
 #[structopt(rename_all = "kebab-case")]
 pub struct Args {
+    /// The number of ddshow workers to run
+    #[structopt(short = "w", long = "workers", default_value = "1")]
+    pub workers: NonZeroUsize,
+
     /// The number of timely workers running in the target computation
     #[structopt(short = "c", long = "connections", default_value = "1")]
     pub timely_connections: NonZeroUsize,

@@ -8,6 +8,7 @@ mod operator_stats;
 mod replay_with_shutdown;
 mod subgraphs;
 mod util;
+mod worker_timeline;
 
 pub use filter_map::FilterMap;
 pub use inspect::InspectExt;
@@ -15,6 +16,7 @@ pub use min_max::{DiffDuration, Max, Min};
 pub use operator_stats::OperatorStats;
 pub(crate) use replay_with_shutdown::make_streams;
 pub use util::{CrossbeamExtractor, CrossbeamPusher, OperatorExt};
+pub use worker_timeline::TimelineEvent;
 
 use crate::args::Args;
 use abomonation_derive::Abomonation;
@@ -50,6 +52,7 @@ use timely::{
     logging::{ChannelsEvent, OperatesEvent, TimelyEvent, WorkerIdentifier},
     order::TotalOrder,
 };
+use worker_timeline::worker_timeline;
 
 type TimelyLogBundle = (Duration, WorkerIdentifier, TimelyEvent);
 type DifferentialLogBundle = (Duration, WorkerIdentifier, DifferentialEvent);
@@ -93,6 +96,7 @@ pub type EdgeBundle = (
 );
 pub type SubgraphBundle = ((Address, OperatesEvent), Duration, Diff);
 pub type StatsBundle = ((usize, OperatorStats), Duration, Diff);
+pub type TimelineBundle = ((WorkerIdentifier, TimelineEvent, Duration), Duration, Diff);
 
 #[derive(Debug, Clone)]
 pub struct DataflowSenders {
@@ -100,6 +104,7 @@ pub struct DataflowSenders {
     pub edge_sender: Sender<Event<Duration, EdgeBundle>>,
     pub subgraph_sender: Sender<Event<Duration, SubgraphBundle>>,
     pub stats_sender: Sender<Event<Duration, StatsBundle>>,
+    pub timeline_sender: Sender<Event<Duration, TimelineBundle>>,
 }
 
 pub fn dataflow<S>(
@@ -114,14 +119,11 @@ where
     S: Scope<Timestamp = Duration>,
 {
     // The timely log stream filtered down to worker 0's events
-    let raw_timely_stream = timely_traces.replay_with_shutdown_into_named(
-        "Timely Replay",
-        scope,
-        replay_shutdown.clone(),
-    );
+    let raw_timely_stream = timely_traces
+        .replay_with_shutdown_into_named("Timely Replay", scope, replay_shutdown.clone())
+        .debug_inspect(|x| tracing::trace!("timely event: {:?}", x));
 
     let timely_stream = raw_timely_stream
-        .debug_inspect(|x| tracing::trace!("timely event: {:?}", x))
         // This is a bit of a cop-out that should work for *most*
         // dataflow programs. In most programs, every worker has the
         // exact same dataflows created, which means that ignoring
@@ -181,6 +183,9 @@ where
 
     let edges = attach_operators(scope, &operators, &channels, &leaves);
 
+    let worker_timeline =
+        worker_timeline(scope, &raw_timely_stream, raw_differential_stream.as_ref());
+
     operators
         .map(|operator| (Address::new(operator.addr.clone()), operator))
         .semijoin(&leaves)
@@ -204,6 +209,11 @@ where
         .consolidate()
         .inner
         .capture_into(CrossbeamPusher::new(senders.stats_sender));
+
+    worker_timeline
+        .consolidate()
+        .inner
+        .capture_into(CrossbeamPusher::new(senders.timeline_sender));
 
     // TODO: Fix this
     // // If saving logs is enabled, write all log messages to the `save_logs` file
