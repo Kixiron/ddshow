@@ -56,9 +56,9 @@ fn main() {
         //         .probe_with(&mut probe);
         // });
 
-        for i in 1..1000 {
+        for i in 1..100 {
             if worker.index() == 0 {
-                for elem in 0..1000000 {
+                for elem in 0..10000 {
                     input.insert(elem);
                 }
             }

@@ -261,7 +261,7 @@ d3.zoomIdentity
     .scale(initial_scale);
 dataflow_svg.attr("height", graph.graph().height * initial_scale + 40);
 
-function worker_timeline(timeline_events, operator_nodes) {
+function worker_timeline(timeline_events) {
     // TODO: Give events ids via timely
     const items = new vis.DataSet();
     const groups = new vis.DataSet();
@@ -280,39 +280,28 @@ function worker_timeline(timeline_events, operator_nodes) {
             content = event.event;
 
         } else if (event.event.OperatorActivation) {
-            // TODO: Calculate this in timely
-            const operator = operator_nodes.find(node => node.id === event.event.OperatorActivation.operator_id);
-
-            if (operator) {
-                content = `Operator: ${operator.name}`;
-            } else {
-                console.log("created invalid timeline operates event that referenced an operator that doesn't exist", event.event);
-                continue;
-            }
+            content = `Operator: ${event.event.OperatorActivation.operator_name}`;
 
         } else if (event.event.Merge) {
-            // TODO: Calculate this in timely
-            const operator = operator_nodes.find(node => node.id === event.event.Merge.operator_id);
-
-            if (operator) {
-                content = `Merge: ${operator.name}`;
-            } else {
-                console.log("created invalid timeline merge event that referenced an operator that doesn't exist", event.event);
-                continue;
-            }
+            content = `Merge: ${event.event.Merge.operator_name}`;
 
         } else {
             console.log("created invalid timeline event", event.event);
             continue;
         }
 
+        if (event.start_time / 1_000_000 < 0) {
+            continue;
+        }
+
         items.add({
             // TODO: Give events ids via timely
-            id: `${event.start_time}-${event.duration}-${event.worker}`,
+            id: event.id,
             group: event.worker,
             content: content,
             start: new Date(event.start_time / 1_000_000),
             end: new Date((event.start_time + event.duration) / 1_000_000),
+            type: "box",
         });
 
         if (!groups.get(event.worker)) {
@@ -325,7 +314,7 @@ function worker_timeline(timeline_events, operator_nodes) {
     }
 
     const container = document.getElementById("worker-timeline");
-    const options = { editable: true };
+    const options = {};
 
     const timeline = new vis.Timeline(container);
     timeline.setOptions(options);
@@ -334,4 +323,4 @@ function worker_timeline(timeline_events, operator_nodes) {
     timeline.fit();
 }
 
-worker_timeline(timeline_events, raw_nodes);
+worker_timeline(timeline_events);

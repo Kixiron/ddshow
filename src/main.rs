@@ -357,7 +357,7 @@ fn main() -> Result<()> {
         html_subgraphs,
         html_edges,
         palette_colors,
-        dbg!(timeline_events),
+        timeline_events,
     )?;
 
     println!(
