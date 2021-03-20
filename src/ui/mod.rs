@@ -1,9 +1,8 @@
-use crate::{args::Args, dataflow::TimelineEvent};
+use crate::{args::Args, dataflow::WorkerTimelineEvent};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use tera::{Context, Tera};
-use timely::logging::WorkerIdentifier;
 
 const GRAPH_HTML: &str = include_str!("graph.html");
 const GRAPH_CSS: &str = include_str!("graph.css");
@@ -17,7 +16,7 @@ pub fn render(
     subgraphs: Vec<Subgraph>,
     edges: Vec<Edge>,
     palette_colors: Vec<String>,
-    timeline_events: Vec<Event>,
+    timeline_events: Vec<WorkerTimelineEvent>,
 ) -> Result<()> {
     let output_dir = &args.output_dir;
 
@@ -59,15 +58,7 @@ pub struct GraphData {
     subgraphs: Vec<Subgraph>,
     edges: Vec<Edge>,
     palette_colors: Vec<String>,
-    timeline_events: Vec<Event>,
-}
-
-#[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
-pub struct Event {
-    pub worker: WorkerIdentifier,
-    pub event: TimelineEvent,
-    pub start_time: u64,
-    pub duration: u64,
+    timeline_events: Vec<WorkerTimelineEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]

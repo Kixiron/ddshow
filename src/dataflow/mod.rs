@@ -2,6 +2,7 @@
 mod diff_list;
 mod differential;
 mod filter_map;
+mod filter_split;
 mod inspect;
 mod min_max;
 mod operator_stats;
@@ -11,12 +12,13 @@ mod util;
 mod worker_timeline;
 
 pub use filter_map::FilterMap;
+pub use filter_split::FilterSplit;
 pub use inspect::InspectExt;
 pub use min_max::{DiffDuration, Max, Min};
 pub use operator_stats::OperatorStats;
 pub(crate) use replay_with_shutdown::make_streams;
 pub use util::{CrossbeamExtractor, CrossbeamPusher, OperatorExt};
-pub use worker_timeline::TimelineEvent;
+pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 
 use crate::args::Args;
 use abomonation_derive::Abomonation;
@@ -28,7 +30,7 @@ use differential_dataflow::{
     difference::{Abelian, Monoid, Semigroup},
     lattice::Lattice,
     logging::DifferentialEvent,
-    operators::{Consolidate, Join, ThresholdTotal},
+    operators::{arrange::ArrangeByKey, Consolidate, Join, ThresholdTotal},
     Collection, ExchangeData,
 };
 use operator_stats::operator_stats;
@@ -96,7 +98,7 @@ pub type EdgeBundle = (
 );
 pub type SubgraphBundle = ((Address, OperatesEvent), Duration, Diff);
 pub type StatsBundle = ((usize, OperatorStats), Duration, Diff);
-pub type TimelineBundle = ((WorkerIdentifier, TimelineEvent, Duration), Duration, Diff);
+pub type TimelineBundle = (WorkerTimelineEvent, Duration, Diff);
 
 #[derive(Debug, Clone)]
 pub struct DataflowSenders {
@@ -146,6 +148,9 @@ where
 
     let operators = operator_creations(&timely_stream);
     let operator_stats = operator_stats(scope, &timely_stream);
+    let operator_names = operators
+        .map(|operates| (operates.id, operates.name))
+        .arrange_by_key();
 
     let operator_stats = raw_differential_stream
         .as_ref()
@@ -183,8 +188,12 @@ where
 
     let edges = attach_operators(scope, &operators, &channels, &leaves);
 
-    let worker_timeline =
-        worker_timeline(scope, &raw_timely_stream, raw_differential_stream.as_ref());
+    let worker_timeline = worker_timeline(
+        scope,
+        &raw_timely_stream,
+        raw_differential_stream.as_ref(),
+        &operator_names,
+    );
 
     operators
         .map(|operator| (Address::new(operator.addr.clone()), operator))

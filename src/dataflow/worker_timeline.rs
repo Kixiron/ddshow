@@ -1,10 +1,18 @@
-use crate::dataflow::{Diff, DifferentialLogBundle, TimelyLogBundle};
+use crate::dataflow::{Diff, DifferentialLogBundle, FilterSplit, TimelyLogBundle};
 use abomonation_derive::Abomonation;
 use differential_dataflow::{
-    lattice::Lattice, logging::DifferentialEvent, AsCollection, Collection,
+    algorithms::identifiers::Identifiers,
+    lattice::Lattice,
+    logging::DifferentialEvent,
+    operators::{
+        arrange::{ArrangeByKey, Arranged},
+        JoinCore,
+    },
+    trace::TraceReader,
+    AsCollection, Collection,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, iter, time::Duration};
 use timely::{
     dataflow::{
         channels::pact::Pipeline,
@@ -14,13 +22,15 @@ use timely::{
     logging::{ParkEvent, StartStop, TimelyEvent, WorkerIdentifier},
 };
 
-pub fn worker_timeline<S>(
+pub fn worker_timeline<S, Trace>(
     scope: &mut S,
     timely_stream: &Stream<S, TimelyLogBundle>,
     differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
-) -> Collection<S, (WorkerIdentifier, TimelineEvent, Duration), Diff>
+    operator_names: &Arranged<S, Trace>,
+) -> Collection<S, WorkerTimelineEvent, Diff>
 where
     S: Scope<Timestamp = Duration>,
+    Trace: TraceReader<Key = usize, Val = String, Time = Duration, R = Diff> + Clone + 'static,
 {
     scope.region_named("Collect Worker Timelines", |region| {
         let (timely_stream, differential_stream) = (
@@ -69,7 +79,7 @@ where
                                                 output.session(&stored_capability).give((
                                                     (
                                                         worker,
-                                                        TimelineEvent::OperatorActivation {
+                                                        PartialTimelineEvent::OperatorActivation {
                                                             operator_id: schedule.id,
                                                         },
                                                         duration,
@@ -99,7 +109,7 @@ where
                                         );
 
                                         output.session(&stored_capability).give((
-                                            (worker, TimelineEvent::Application, duration),
+                                            (worker, PartialTimelineEvent::Application, duration),
                                             time,
                                             1,
                                         ));
@@ -123,7 +133,7 @@ where
                                         );
 
                                         output.session(&stored_capability).give((
-                                            (worker, TimelineEvent::Message, duration),
+                                            (worker, PartialTimelineEvent::Message, duration),
                                             time,
                                             1,
                                         ));
@@ -147,7 +157,7 @@ where
                                         );
 
                                         output.session(&stored_capability).give((
-                                            (worker, TimelineEvent::Progress, duration),
+                                            (worker, PartialTimelineEvent::Progress, duration),
                                             time,
                                             1,
                                         ));
@@ -179,7 +189,7 @@ where
                                                 );
 
                                                 output.session(&stored_capability).give((
-                                                    (worker, TimelineEvent::Input, duration),
+                                                    (worker, PartialTimelineEvent::Input, duration),
                                                     time,
                                                     1,
                                                 ));
@@ -213,7 +223,7 @@ where
                                                 );
 
                                                 output.session(&stored_capability).give((
-                                                    (worker, TimelineEvent::Parked, duration),
+                                                    (worker, PartialTimelineEvent::Parked, duration),
                                                     time,
                                                     1,
                                                 ));
@@ -274,7 +284,7 @@ where
                                             output.session(&stored_capability).give((
                                                 (
                                                     worker,
-                                                    TimelineEvent::Merge {
+                                                    PartialTimelineEvent::Merge {
                                                         operator_id: merge.operator,
                                                     },
                                                     duration,
@@ -299,10 +309,51 @@ where
             )
         });
 
-        differential_events
+        let partial_events = differential_events
             .map(|differential_events| timely_events.concat(&differential_events))
             .unwrap_or(timely_events)
             .as_collection()
+            .identifiers();
+
+        let (needs_operators, finished) = partial_events
+            .filter_split(|((worker_id, event, duration), event_id)| {
+                if let Some(operator_id) = event.operator_id() {
+                    (
+                        Some((
+                            operator_id,
+                            WorkerTimelineEvent {
+                                event_id,
+                                worker: worker_id,
+                                event: event.into(),
+                                duration: duration.as_nanos() as u64,
+                                start_time: duration.as_nanos() as u64,
+                            },
+                        )),
+                        None,
+                    )
+                } else {
+                    (
+                        None,
+                        Some(WorkerTimelineEvent {
+                            event_id,
+                            worker: worker_id,
+                            event: event.into(),
+                            duration: duration.as_nanos() as u64,
+                            start_time: duration.as_nanos() as u64,
+                        }),
+                    )
+                }
+            });
+
+        needs_operators
+            .arrange_by_key()
+            .join_core(&operator_names.enter_region(region), |_id, event, name| {
+                let mut event = event.to_owned();
+                *event.event.operator_name_mut().unwrap() = name.to_owned();
+
+                iter::once(event)
+            })
+            .concat(&finished)
             .leave_region()
     })
 }
@@ -321,7 +372,7 @@ enum EventKind {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Abomonation,
 )]
-pub enum TimelineEvent {
+enum PartialTimelineEvent {
     OperatorActivation { operator_id: usize },
     Application,
     Parked,
@@ -329,4 +380,79 @@ pub enum TimelineEvent {
     Message,
     Progress,
     Merge { operator_id: usize },
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<TimelineEvent> for PartialTimelineEvent {
+    fn into(self) -> TimelineEvent {
+        match self {
+            Self::OperatorActivation { operator_id } => TimelineEvent::OperatorActivation {
+                operator_id,
+                operator_name: String::new(),
+            },
+            Self::Application => TimelineEvent::Application,
+            Self::Parked => TimelineEvent::Parked,
+            Self::Input => TimelineEvent::Input,
+            Self::Message => TimelineEvent::Message,
+            Self::Progress => TimelineEvent::Progress,
+            Self::Merge { operator_id } => TimelineEvent::Merge {
+                operator_id,
+                operator_name: String::new(),
+            },
+        }
+    }
+}
+
+impl PartialTimelineEvent {
+    pub const fn operator_id(&self) -> Option<usize> {
+        match *self {
+            Self::OperatorActivation { operator_id } | Self::Merge { operator_id } => {
+                Some(operator_id)
+            }
+
+            _ => None,
+        }
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Abomonation,
+)]
+pub enum TimelineEvent {
+    OperatorActivation {
+        operator_id: usize,
+        operator_name: String,
+    },
+    Application,
+    Parked,
+    Input,
+    Message,
+    Progress,
+    Merge {
+        operator_id: usize,
+        operator_name: String,
+    },
+}
+
+impl TimelineEvent {
+    fn operator_name_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Self::OperatorActivation { operator_name, .. } | Self::Merge { operator_name, .. } => {
+                Some(operator_name)
+            }
+
+            _ => None,
+        }
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize, Abomonation,
+)]
+pub struct WorkerTimelineEvent {
+    pub event_id: u64,
+    pub worker: WorkerIdentifier,
+    pub event: TimelineEvent,
+    pub start_time: u64,
+    pub duration: u64,
 }

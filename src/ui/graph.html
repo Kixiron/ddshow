@@ -17,10 +17,18 @@
     <script src="./d3.v5.js"></script>
     <script src="./dagre-d3.js"></script>
 
+    <script type="text/javascript" src="https://unpkg.com/moment@2.29.1/moment.js"></script>
+    <script type="text/javascript" src="https://unpkg.com/vis-data@7.1.2/peer/umd/vis-data.min.js"></script>
+    <script type="text/javascript"
+        src="https://unpkg.com/vis-timeline@7.4.6/peer/umd/vis-timeline-graph2d.min.js"></script>
+    <link rel="stylesheet" type="text/css" href="https://unpkg.com/vis-timeline/styles/vis-timeline-graph2d.min.css" />
+
     <body>
         <div id="dataflow-graph-div">
             <svg id="dataflow-graph"></svg>
         </div>
+
+        <div id="worker-timeline"></div>
 
         <div id="operator-timing-scatter"></div>
     </body>

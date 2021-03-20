@@ -260,3 +260,78 @@ d3.zoomIdentity
     .translate([(svg.attr("width") - graph.graph().width * initial_scale) / 2, 20])
     .scale(initial_scale);
 dataflow_svg.attr("height", graph.graph().height * initial_scale + 40);
+
+function worker_timeline(timeline_events, operator_nodes) {
+    // TODO: Give events ids via timely
+    const items = new vis.DataSet();
+    const groups = new vis.DataSet();
+
+    for (let i = 0; i < timeline_events.length; i += 1) {
+        const event = timeline_events[i];
+
+        // TODO: Calculate this in timely
+        let content = "";
+        if (event.event === "Parked"
+            || event.event === "Application"
+            || event.event === "Input"
+            || event.event === "Message"
+            || event.event === "Progress"
+        ) {
+            content = event.event;
+
+        } else if (event.event.OperatorActivation) {
+            // TODO: Calculate this in timely
+            const operator = operator_nodes.find(node => node.id === event.event.OperatorActivation.operator_id);
+
+            if (operator) {
+                content = `Operator: ${operator.name}`;
+            } else {
+                console.log("created invalid timeline operates event that referenced an operator that doesn't exist", event.event);
+                continue;
+            }
+
+        } else if (event.event.Merge) {
+            // TODO: Calculate this in timely
+            const operator = operator_nodes.find(node => node.id === event.event.Merge.operator_id);
+
+            if (operator) {
+                content = `Merge: ${operator.name}`;
+            } else {
+                console.log("created invalid timeline merge event that referenced an operator that doesn't exist", event.event);
+                continue;
+            }
+
+        } else {
+            console.log("created invalid timeline event", event.event);
+            continue;
+        }
+
+        items.add({
+            // TODO: Give events ids via timely
+            id: `${event.start_time}-${event.duration}-${event.worker}`,
+            group: event.worker,
+            content: content,
+            start: new Date(event.start_time / 1_000_000),
+            end: new Date((event.start_time + event.duration) / 1_000_000),
+        });
+
+        if (!groups.get(event.worker)) {
+            groups.add({
+                // The group's id is the worker's id
+                id: event.worker,
+                content: `Worker ${event.worker}`,
+            });
+        }
+    }
+
+    const container = document.getElementById("worker-timeline");
+    const options = { editable: true };
+
+    const timeline = new vis.Timeline(container);
+    timeline.setOptions(options);
+    timeline.setGroups(groups);
+    timeline.setItems(items);
+    timeline.fit();
+}
+
+worker_timeline(timeline_events, raw_nodes);

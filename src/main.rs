@@ -7,7 +7,9 @@ mod ui;
 use anyhow::{Context, Result};
 use args::Args;
 use colormap::{select_color, Color};
-use dataflow::{make_streams, Channel, CrossbeamExtractor, DataflowSenders, OperatorStats};
+use dataflow::{
+    make_streams, Channel, CrossbeamExtractor, DataflowSenders, OperatorStats, WorkerTimelineEvent,
+};
 use network::{wait_for_connections, wait_for_input};
 use std::{
     collections::HashMap,
@@ -24,9 +26,7 @@ use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
     EnvFilter,
 };
-use ui::EdgeKind;
-
-use crate::ui::ActivationDuration;
+use ui::{ActivationDuration, EdgeKind};
 
 // TODO: Library-ify a lot of this
 fn main() -> Result<()> {
@@ -243,11 +243,9 @@ fn main() -> Result<()> {
         .into_iter()
         .flat_map(|(_, data)| {
             data.into_iter()
-                .map(|((worker, event, duration), start_time, _diff)| ui::Event {
-                    worker,
-                    event,
+                .map(|(event, start_time, _diff)| WorkerTimelineEvent {
                     start_time: start_time.as_nanos() as u64,
-                    duration: duration.as_nanos() as u64,
+                    ..event
                 })
         })
         .collect();
