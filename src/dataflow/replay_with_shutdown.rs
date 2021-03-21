@@ -143,7 +143,6 @@ where
             }
 
             let mut fuel: usize = 1_000_000;
-
             for event_stream in event_streams.iter_mut() {
                 while let Some(event) = event_stream.next() {
                     match event {

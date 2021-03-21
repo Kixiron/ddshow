@@ -271,6 +271,7 @@ function worker_timeline(timeline_events) {
 
         // TODO: Calculate this in timely
         let content = "";
+        let subgroup = "";
         if (event.event === "Parked"
             || event.event === "Application"
             || event.event === "Input"
@@ -278,12 +279,15 @@ function worker_timeline(timeline_events) {
             || event.event === "Progress"
         ) {
             content = event.event;
+            subgroup = event.event;
 
         } else if (event.event.OperatorActivation) {
             content = `Operator: ${event.event.OperatorActivation.operator_name}`;
+            subgroup = event.event.OperatorActivation.operator_id;
 
         } else if (event.event.Merge) {
             content = `Merge: ${event.event.Merge.operator_name}`;
+            subgroup = event.event.Merge.operator_id;
 
         } else {
             console.log("created invalid timeline event", event.event);
@@ -314,7 +318,17 @@ function worker_timeline(timeline_events) {
     }
 
     const container = document.getElementById("worker-timeline");
-    const options = {};
+    const options = {
+        align: "left",
+        cluster: {
+            clusterCriteria: (a, b) => a.event == b.event,
+            titleTemplate: "{count} Events",
+        },
+        editable: false,
+        selectable: false,
+        showCurrentTime: false,
+        showMajorLabels: false,
+    };
 
     const timeline = new vis.Timeline(container);
     timeline.setOptions(options);
