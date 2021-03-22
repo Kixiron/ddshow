@@ -96,3 +96,7 @@ text {
 #palette-bottom-text {
     order: 3;
 }
+
+.vis-item .vis-item-overflow {
+    overflow: visible;
+}

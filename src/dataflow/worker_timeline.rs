@@ -1,7 +1,8 @@
-use crate::dataflow::{Diff, DifferentialLogBundle, FilterSplit, TimelyLogBundle};
+use crate::dataflow::{Diff, DifferentialLogBundle, FilterSplit, Split, TimelyLogBundle};
 use abomonation_derive::Abomonation;
 use differential_dataflow::{
     algorithms::identifiers::Identifiers,
+    difference::Abelian,
     lattice::Lattice,
     logging::DifferentialEvent,
     operators::{
@@ -9,14 +10,14 @@ use differential_dataflow::{
         JoinCore,
     },
     trace::TraceReader,
-    AsCollection, Collection,
+    AsCollection, Collection, ExchangeData,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, iter, time::Duration};
+use std::{collections::HashMap, iter, mem, ops::Mul, time::Duration};
 use timely::{
     dataflow::{
         channels::pact::Pipeline,
-        operators::{Concat, Enter, Operator},
+        operators::{aggregation::StateMachine, Concat, Delay, Enter, Map, Operator},
         Scope, Stream,
     },
     logging::{ParkEvent, StartStop, TimelyEvent, WorkerIdentifier},
@@ -317,35 +318,29 @@ where
 
         let (needs_operators, finished) = partial_events
             .filter_split(|((worker_id, event, duration), event_id)| {
+                let timeline_event = WorkerTimelineEvent {
+                    event_id,
+                    worker: worker_id,
+                    event: event.into(),
+                    duration: duration.as_nanos() as u64,
+                    start_time: duration.as_nanos() as u64,
+                    collapsed_events: 1,
+                };
+
                 if let Some(operator_id) = event.operator_id() {
                     (
                         Some((
                             operator_id,
-                            WorkerTimelineEvent {
-                                event_id,
-                                worker: worker_id,
-                                event: event.into(),
-                                duration: duration.as_nanos() as u64,
-                                start_time: duration.as_nanos() as u64,
-                            },
+                            timeline_event,
                         )),
                         None,
                     )
                 } else {
-                    (
-                        None,
-                        Some(WorkerTimelineEvent {
-                            event_id,
-                            worker: worker_id,
-                            event: event.into(),
-                            duration: duration.as_nanos() as u64,
-                            start_time: duration.as_nanos() as u64,
-                        }),
-                    )
+                    (None, Some(timeline_event))
                 }
             });
 
-        needs_operators
+        let events = needs_operators
             .arrange_by_key()
             .join_core(&operator_names.enter_region(region), |_id, event, name| {
                 let mut event = event.to_owned();
@@ -353,9 +348,134 @@ where
 
                 iter::once(event)
             })
-            .concat(&finished)
+            .concat(&finished);
+
+        collapse_events(&events)
             .leave_region()
     })
+}
+
+fn collapse_events<S, R>(
+    events: &Collection<S, WorkerTimelineEvent, R>,
+) -> Collection<S, WorkerTimelineEvent, R>
+where
+    S: Scope<Timestamp = Duration>,
+    S::Timestamp: Lattice,
+    R: Abelian + ExchangeData + Mul<Output = R> + From<i8>,
+{
+    const MARGIN_NS: u64 = 500_000;
+
+    fn fold_timeline_events(
+        _key: &usize,
+        input: State,
+        state: &mut Option<WorkerTimelineEvent>,
+    ) -> (
+        bool,
+        impl IntoIterator<Item = WorkerTimelineEvent> + 'static,
+    ) {
+        match input {
+            State::Event(input) => {
+                (
+                    false,
+                    match state {
+                        state @ None => {
+                            *state = Some(input);
+                            None
+                        }
+
+                        Some(old_state) => {
+                            let (state_start, input_start) =
+                                (old_state.start_time, input.start_time);
+                            let (state_end, input_end) = (
+                                old_state.start_time + old_state.duration,
+                                input.start_time + input.duration,
+                            );
+
+                            // Make sure the events are the same and are also overlapping
+                            // in their time windows (`event_start..event_end`) by using
+                            // a simple bounding box. Note that the state's time window
+                            // is expanded by `MARGIN_NS` so that there's a small grace
+                            // period that allows events not directly adjacent to be collapsed
+                            if old_state.event == input.event
+                                && state_start.saturating_sub(MARGIN_NS) <= input_end
+                                && (state_end + MARGIN_NS) >= input_start
+                            {
+                                old_state.duration += input.duration;
+                                old_state.collapsed_events += 1;
+
+                                None
+                            } else {
+                                Some(mem::replace(old_state, input))
+                            }
+                        }
+                    },
+                )
+            }
+
+            State::Flush(input) => {
+                if let Some(state_val) = state.clone() {
+                    if state_val.start_time + state_val.duration
+                        <= input.start_time + input.duration
+                    {
+                        return (true, state.take());
+                    }
+                }
+
+                (false, None)
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
+    pub enum State {
+        Event(WorkerTimelineEvent),
+        Flush(WorkerTimelineEvent),
+    }
+
+    impl State {
+        const fn worker(&self) -> usize {
+            match self {
+                Self::Event(event) | Self::Flush(event) => event.worker,
+            }
+        }
+    }
+
+    let (normal, delayed) = events
+        .inner
+        .delay(|&(_, timestamp, _), _| timestamp)
+        // Note: This code is kinda sketchy all-around, it takes the current *stream time* and uses it as
+        //       the timestamp the flush messages will be delayed at. This means that instead of using
+        //       `event_start_time + event_duration` as the delayed timestamp we're using
+        //       `stream_time + event_duration`. The purpose of delaying the flush stream is so that the
+        //       flush message arrives *after* any potentially collapsible messages, thereby making sure
+        //       that there's actually an opportunity for events to be collapsed
+        .split(|(event, time, _diff)| {
+            let end_time = time + Duration::from_nanos(event.duration + MARGIN_NS);
+
+            (
+                // Note: the time of this stream is entirely ignored
+                (State::Event(event.clone()), time),
+                (State::Flush(event), end_time),
+            )
+        });
+
+    let collapsed = normal
+        .concat(&delayed.delay(|&(_, end_time), _| end_time))
+        .map(|(event, _)| (event.worker(), event))
+        .state_machine(fold_timeline_events, move |&worker_id| worker_id as u64)
+        .map(|event| {
+            let timestamp = Duration::from_nanos(event.start_time + event.duration);
+            (event, timestamp, R::from(1))
+        })
+        .as_collection();
+
+    if cfg!(debug_assertions) {
+        collapsed
+            .filter(|event| event.collapsed_events > 1)
+            .inspect(|x| tracing::trace!("Collapsed timeline event: {:?}", x));
+    }
+
+    collapsed
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
@@ -455,4 +575,6 @@ pub struct WorkerTimelineEvent {
     pub event: TimelineEvent,
     pub start_time: u64,
     pub duration: u64,
+    /// The number of events that have been collapsed within the current timeline event
+    pub collapsed_events: usize,
 }

@@ -7,6 +7,7 @@ mod inspect;
 mod min_max;
 mod operator_stats;
 mod replay_with_shutdown;
+mod split;
 mod subgraphs;
 mod util;
 mod worker_timeline;
@@ -17,6 +18,7 @@ pub use inspect::InspectExt;
 pub use min_max::{DiffDuration, Max, Min};
 pub use operator_stats::OperatorStats;
 pub(crate) use replay_with_shutdown::make_streams;
+pub use split::Split;
 pub use util::{CrossbeamExtractor, CrossbeamPusher, OperatorExt};
 pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 

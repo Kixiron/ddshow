@@ -294,18 +294,14 @@ function worker_timeline(timeline_events) {
             continue;
         }
 
-        if (event.start_time / 1_000_000 < 0) {
-            continue;
-        }
-
         items.add({
-            // TODO: Give events ids via timely
             id: event.id,
             group: event.worker,
             content: content,
+            title: `${event.collapsed_events} event${event.collapsed_events == 1 ? "" : "s"} over ${event.duration / 1_000_000}ms`,
             start: new Date(event.start_time / 1_000_000),
             end: new Date((event.start_time + event.duration) / 1_000_000),
-            type: "box",
+            type: "range",
         });
 
         if (!groups.get(event.worker)) {
@@ -320,14 +316,15 @@ function worker_timeline(timeline_events) {
     const container = document.getElementById("worker-timeline");
     const options = {
         align: "left",
-        cluster: {
-            clusterCriteria: (a, b) => a.event == b.event,
-            titleTemplate: "{count} Events",
-        },
         editable: false,
         selectable: false,
         showCurrentTime: false,
-        showMajorLabels: false,
+        tooltip: {
+            followMouse: true,
+            overflowMethod: "none",
+        },
+        start: new Date(0),
+        min: new Date(0),
     };
 
     const timeline = new vis.Timeline(container);
