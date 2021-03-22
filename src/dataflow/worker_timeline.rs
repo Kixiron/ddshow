@@ -249,6 +249,8 @@ where
             },
         );
 
+        // TODO: Emit trace drops & shares to a separate stream so that we can make markers
+        //       with `timeline.setCustomTime()`
         let differential_events = differential_stream.map(|stream| {
             stream.unary(
                 Pipeline,
@@ -270,10 +272,31 @@ where
                                         };
 
                                         if merge.complete.is_none() {
-                                            event_map.insert(
+                                            let result = event_map.insert(
                                                 (worker, event),
                                                 (time, capability.clone()),
                                             );
+
+                                            // Sometimes nested(?) merges happen, so simply complete the previous
+                                            // merge event
+                                            if let Some((start_time, mut stored_capability)) = result {
+                                                let duration = time - start_time;
+                                                stored_capability.downgrade(
+                                                    &stored_capability.time().join(capability.time()),
+                                                );
+
+                                                output.session(&stored_capability).give((
+                                                    (
+                                                        worker,
+                                                        PartialTimelineEvent::Merge {
+                                                            operator_id: merge.operator,
+                                                        },
+                                                        duration,
+                                                    ),
+                                                    time,
+                                                    1,
+                                                ));
+                                            }
                                         } else if let Some((start_time, mut stored_capability)) =
                                             event_map.remove(&(worker, event))
                                         {
@@ -298,12 +321,70 @@ where
                                         }
                                     }
 
+                                    DifferentialEvent::MergeShortfall(shortfall) => {
+                                        let event = EventKind::Merge {
+                                            operator_id: shortfall.operator,
+                                        };
+
+                                        if let Some((start_time, mut stored_capability)) =
+                                            event_map.remove(&(worker, event))
+                                        {
+                                            let duration = time - start_time;
+                                            stored_capability.downgrade(
+                                                &stored_capability.time().join(capability.time()),
+                                            );
+
+                                            output.session(&stored_capability).give((
+                                                (
+                                                    worker,
+                                                    PartialTimelineEvent::Merge {
+                                                        operator_id: shortfall.operator,
+                                                    },
+                                                    duration,
+                                                ),
+                                                time,
+                                                1,
+                                            ));
+                                        } else {
+                                            tracing::error!("attempted to remove a short merge event that was never started");
+                                        }
+                                    }
+
+                                    // Sometimes merges don't complete since they're dropped part way through
+                                    DifferentialEvent::Drop(drop) => {
+                                        let event = EventKind::Merge {
+                                            operator_id: drop.operator,
+                                        };
+
+                                        if let Some((start_time, mut stored_capability)) =
+                                            event_map.remove(&(worker, event))
+                                        {
+                                            tracing::warn!("trace was dropped part way though a merge event");
+
+                                            let duration = time - start_time;
+                                            stored_capability.downgrade(
+                                                &stored_capability.time().join(capability.time()),
+                                            );
+
+                                            output.session(&stored_capability).give((
+                                                (
+                                                    worker,
+                                                    PartialTimelineEvent::Merge {
+                                                        operator_id: drop.operator,
+                                                    },
+                                                    duration,
+                                                ),
+                                                time,
+                                                1,
+                                            ));
+                                        }
+                                    }
+
                                     DifferentialEvent::Batch(_)
-                                    | DifferentialEvent::Drop(_)
-                                    | DifferentialEvent::MergeShortfall(_)
                                     | DifferentialEvent::TraceShare(_) => {}
                                 }
                             }
+
                         })
                     }
                 },

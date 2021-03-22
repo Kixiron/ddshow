@@ -325,6 +325,7 @@ function worker_timeline(timeline_events) {
         },
         start: new Date(0),
         min: new Date(0),
+        // TODO: `format` for major and minor labels
     };
 
     const timeline = new vis.Timeline(container);
