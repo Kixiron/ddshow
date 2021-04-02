@@ -1,8 +1,12 @@
-use crate::dataflow::{Diff, FilterMap, Max, Min};
+use crate::dataflow::{
+    operators::{Max, Min},
+    Diff, FilterMap,
+};
 use abomonation_derive::Abomonation;
+#[cfg(not(feature = "timely-next"))]
+use differential_dataflow::difference::DiffPair;
 use differential_dataflow::{
-    difference::DiffPair, logging::DifferentialEvent, operators::CountTotal, AsCollection,
-    Collection,
+    logging::DifferentialEvent, operators::CountTotal, AsCollection, Collection,
 };
 use std::time::Duration;
 use timely::{
@@ -20,7 +24,7 @@ where
     scope.region_named("Collect arrangement statistics", |region| {
         let differential_trace = differential_trace.enter(region);
 
-        differential_trace
+        let merge_diffs = differential_trace
             .filter_map(|(time, worker, event)| match event {
                 DifferentialEvent::Batch(batch) => {
                     Some((((worker, batch.operator), batch.length as isize), time, 1))
@@ -33,7 +37,27 @@ where
                 | DifferentialEvent::Drop(_)
                 | DifferentialEvent::TraceShare(_) => None,
             })
-            .as_collection()
+            .as_collection();
+
+        #[cfg(feature = "timely-next")]
+        let merge_stats = merge_diffs
+            .explode(|(key, size)| {
+                let (min, max) = (Min::new(size), Max::new(size));
+
+                Some((key, (1, size, min, max)))
+            })
+            .count_total()
+            .map(|(key, (_count, _total, min, max))| {
+                let stats = ArrangementStats {
+                    max_size: max.value as usize,
+                    min_size: min.value as usize,
+                };
+
+                (key, stats)
+            });
+
+        #[cfg(not(feature = "timely-next"))]
+        let merge_stats = merge_diffs
             .explode(|(key, size)| {
                 let (min, max) = (Min::new(size), Max::new(size));
 
@@ -66,8 +90,9 @@ where
 
                     (key, stats)
                 },
-            )
-            .leave_region()
+            );
+
+        merge_stats.leave_region()
     })
 }
 

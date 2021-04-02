@@ -1,25 +1,13 @@
 // mod channel_stats;
-mod diff_list;
 mod differential;
-mod filter_map;
-mod filter_split;
-mod inspect;
-mod min_max;
 mod operator_stats;
-mod replay_with_shutdown;
-mod split;
+pub mod operators;
+mod reachability;
 mod subgraphs;
-mod util;
+mod summation;
 mod worker_timeline;
 
-pub use filter_map::FilterMap;
-pub use filter_split::FilterSplit;
-pub use inspect::InspectExt;
-pub use min_max::{DiffDuration, Max, Min};
 pub use operator_stats::OperatorStats;
-pub(crate) use replay_with_shutdown::make_streams;
-pub use split::Split;
-pub use util::{CrossbeamExtractor, CrossbeamPusher, OperatorExt};
 pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 
 use crate::args::Args;
@@ -36,11 +24,11 @@ use differential_dataflow::{
     Collection, ExchangeData,
 };
 use operator_stats::operator_stats;
-use replay_with_shutdown::ReplayWithShutdown;
+use operators::{CrossbeamPusher, FilterMap, InspectExt, Multiply, ReplayWithShutdown};
 use std::{
     fmt::{self, Debug},
     net::TcpStream,
-    ops::{Deref, Mul},
+    ops::Deref,
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
@@ -279,7 +267,7 @@ fn sift_leaves_and_scopes<S, D>(
 where
     S: Scope,
     S::Timestamp: Lattice + TotalOrder,
-    D: Semigroup + Monoid + Abelian + ExchangeData + Mul<isize, Output = D>,
+    D: Semigroup + Monoid + Abelian + ExchangeData + Multiply<isize, Output = D>,
 {
     scope.region_named("Sift Leaves and Scopes", |region| {
         let operators = operators
@@ -319,7 +307,7 @@ fn attach_operators<S, D>(
 where
     S: Scope,
     S::Timestamp: Lattice,
-    D: Semigroup + ExchangeData + Mul<Output = D>,
+    D: Semigroup + ExchangeData + Multiply<Output = D>,
 {
     // TODO: Make `Graph` nested so that subgraphs contain a `Vec<Graph>` of all children
     scope.region_named("Attach Operators to Channels", |region| {

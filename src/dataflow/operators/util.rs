@@ -1,4 +1,4 @@
-use super::Diff;
+use crate::dataflow::Diff;
 use crossbeam_channel::{Receiver, Sender};
 use differential_dataflow::{
     difference::{Abelian, Semigroup},

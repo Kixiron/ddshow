@@ -1,11 +1,10 @@
-use super::{Diff, DiffDuration, Max, Min, TimelyLogBundle};
-use crate::dataflow::differential::ArrangementStats;
+use super::{summation::summation, Diff, TimelyLogBundle};
+use crate::dataflow::{differential::ArrangementStats, summation::Summation};
 use abomonation_derive::Abomonation;
 use differential_dataflow::{
     collection::AsCollection,
-    difference::DiffPair,
     lattice::Lattice,
-    operators::{CountTotal, Join, Reduce},
+    operators::{Join, Reduce},
     Collection,
 };
 use std::{collections::HashMap, time::Duration};
@@ -92,50 +91,20 @@ where
                 output.push((durations, 1));
             });
 
-        let execution_statistics = execution_durations
-            .explode(|(id, duration)| {
-                let duration = DiffDuration::new(duration);
-                let (min, max) = (Min::new(duration), Max::new(duration));
-
-                Some((
-                    id,
-                    DiffPair::new(1, DiffPair::new(duration, DiffPair::new(min, max))),
-                ))
-            })
-            .count_total()
-            .map(
-                |(
-                    id,
-                    DiffPair {
-                        element1: count,
-                        element2:
-                            DiffPair {
-                                element1: total,
-                                element2:
-                                    DiffPair {
-                                        element1: min,
-                                        element2: max,
-                                    },
-                            },
-                    },
-                )| {
-                    (
-                        id,
-                        (
-                            max.value.0,
-                            min.value.0,
-                            total.0,
-                            total.0 / count as u32,
-                            count as usize,
-                        ),
-                    )
-                },
-            );
+        let execution_statistics = summation(&execution_durations);
 
         aggregated_durations
             .join_map(
                 &execution_statistics,
-                |&id, activation_durations, &(max, min, total, average, invocations)| {
+                |&id,
+                 activation_durations,
+                 &Summation {
+                     max,
+                     min,
+                     total,
+                     average,
+                     count: invocations,
+                 }| {
                     let stats = OperatorStats {
                         id,
                         max,

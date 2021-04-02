@@ -1,4 +1,6 @@
 use abomonation_derive::Abomonation;
+#[cfg(feature = "timely-next")]
+use differential_dataflow::difference::Multiply;
 use differential_dataflow::difference::{Monoid, Semigroup};
 use num::Bounded;
 use std::{
@@ -103,6 +105,35 @@ where
     fn is_zero(&self) -> bool {
         self.value == T::max_value()
     }
+
+    #[cfg(feature = "timely-next")]
+    fn plus_equals(&mut self, rhs: &Self) {
+        *self += rhs;
+    }
+}
+
+#[cfg(feature = "timely-next")]
+impl<T> Multiply<Self> for Min<T>
+where
+    T: Add<T, Output = T> + Clone,
+{
+    type Output = Self;
+
+    fn multiply(self, rhs: &Self) -> Self::Output {
+        self * rhs.clone()
+    }
+}
+
+#[cfg(feature = "timely-next")]
+impl<T> Multiply<isize> for Min<T>
+where
+    T: Monoid + Bounded,
+{
+    type Output = Self;
+
+    fn multiply(self, &rhs: &isize) -> Self {
+        self * rhs
+    }
 }
 
 /// A type for getting the maximum value of a stream
@@ -200,6 +231,35 @@ where
     fn is_zero(&self) -> bool {
         self.value == T::min_value()
     }
+
+    #[cfg(feature = "timely-next")]
+    fn plus_equals(&mut self, rhs: &Self) {
+        *self += rhs;
+    }
+}
+
+#[cfg(feature = "timely-next")]
+impl<T> Multiply<Self> for Max<T>
+where
+    T: Add<T, Output = T> + Clone,
+{
+    type Output = Self;
+
+    fn multiply(self, rhs: &Self) -> Self::Output {
+        self * rhs.clone()
+    }
+}
+
+#[cfg(feature = "timely-next")]
+impl<T> Multiply<isize> for Max<T>
+where
+    T: Monoid + Bounded,
+{
+    type Output = Self;
+
+    fn multiply(self, &rhs: &isize) -> Self {
+        self * rhs
+    }
 }
 
 /// A utility type to allow using [`Duration`]s within [`Max`] and [`Min`]
@@ -240,6 +300,15 @@ impl Mul<isize> for DiffDuration {
     }
 }
 
+#[cfg(feature = "timely-next")]
+impl Multiply<isize> for DiffDuration {
+    type Output = Self;
+
+    fn multiply(self, &rhs: &isize) -> Self::Output {
+        Self(self.0 * rhs as u32)
+    }
+}
+
 impl Monoid for DiffDuration {
     fn zero() -> Self {
         Self::new(Duration::from_secs(0))
@@ -249,6 +318,11 @@ impl Monoid for DiffDuration {
 impl Semigroup for DiffDuration {
     fn is_zero(&self) -> bool {
         self.0 == Duration::from_secs(0)
+    }
+
+    #[cfg(feature = "timely-next")]
+    fn plus_equals(&mut self, rhs: &Self) {
+        *self += rhs;
     }
 }
 

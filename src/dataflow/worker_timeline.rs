@@ -1,4 +1,7 @@
-use crate::dataflow::{Diff, DifferentialLogBundle, FilterSplit, Split, TimelyLogBundle};
+use crate::dataflow::{
+    operators::{FilterSplit, Multiply, Split},
+    Diff, DifferentialLogBundle, TimelyLogBundle,
+};
 use abomonation_derive::Abomonation;
 use differential_dataflow::{
     algorithms::identifiers::Identifiers,
@@ -13,7 +16,7 @@ use differential_dataflow::{
     AsCollection, Collection, ExchangeData,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, iter, mem, ops::Mul, time::Duration};
+use std::{collections::HashMap, iter, mem, time::Duration};
 use timely::{
     dataflow::{
         channels::pact::Pipeline,
@@ -443,7 +446,7 @@ fn collapse_events<S, R>(
 where
     S: Scope<Timestamp = Duration>,
     S::Timestamp: Lattice,
-    R: Abelian + ExchangeData + Mul<Output = R> + From<i8>,
+    R: Abelian + ExchangeData + Multiply<Output = R> + From<i8>,
 {
     const MARGIN_NS: u64 = 500_000;
 

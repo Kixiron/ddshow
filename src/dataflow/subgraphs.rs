@@ -1,11 +1,10 @@
-use super::{Address, Channel, FilterMap};
+use super::{Address, Channel, FilterMap, Multiply};
 use differential_dataflow::{
-    difference::{Abelian, Monoid, Semigroup},
+    difference::Abelian,
     lattice::Lattice,
     operators::{arrange::ArrangeByKey, Consolidate, Iterate, Join, JoinCore, Threshold},
     Collection, ExchangeData,
 };
-use std::ops::{Mul, Neg};
 use timely::{dataflow::Scope, logging::ChannelsEvent};
 
 pub fn rewire_channels<S, D>(
@@ -16,7 +15,7 @@ pub fn rewire_channels<S, D>(
 where
     S: Scope,
     S::Timestamp: Lattice,
-    D: Semigroup + Monoid + ExchangeData + Mul<Output = D> + Neg<Output = D> + From<i8>,
+    D: Abelian + ExchangeData + Multiply<Output = D> + From<i8>,
 {
     scope.region_named("Rewire Channels", |region| {
         let (channels, subgraphs) = (
@@ -42,7 +41,7 @@ fn subgraph_crosses<S, D>(
 where
     S: Scope,
     S::Timestamp: Lattice,
-    D: Abelian + ExchangeData + Mul<Output = D> + From<i8>,
+    D: Abelian + ExchangeData + Multiply<Output = D> + From<i8>,
 {
     scope.region_named("Subgraph Crosses", |region| {
         let (channels, subgraphs) = (
@@ -155,7 +154,7 @@ fn subgraph_normal<S, D>(
 where
     S: Scope,
     S::Timestamp: Lattice,
-    D: Semigroup + Monoid + ExchangeData + Mul<Output = D> + Neg<Output = D>,
+    D: Abelian + ExchangeData + Multiply<Output = D>,
 {
     scope.region_named("Subgraph Normal", |region| {
         let (channels, subgraphs) = (

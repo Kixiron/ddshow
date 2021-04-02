@@ -8,7 +8,8 @@ use anyhow::{Context, Result};
 use args::Args;
 use colormap::{select_color, Color};
 use dataflow::{
-    make_streams, Channel, CrossbeamExtractor, DataflowSenders, OperatorStats, WorkerTimelineEvent,
+    operators::{make_streams, CrossbeamExtractor},
+    Channel, DataflowSenders, OperatorStats, WorkerTimelineEvent,
 };
 use network::{wait_for_connections, wait_for_input};
 use std::{
