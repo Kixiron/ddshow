@@ -201,6 +201,7 @@ dependencies = [
  "num",
  "sequence_trie",
  "serde",
+ "serde_json",
  "structopt",
  "tera",
  "timely",

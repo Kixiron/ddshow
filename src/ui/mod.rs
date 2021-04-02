@@ -1,7 +1,10 @@
 use crate::{args::Args, dataflow::WorkerTimelineEvent};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::{
+    fs::{self, File},
+    io::BufWriter,
+};
 use tera::{Context, Tera};
 
 const GRAPH_HTML: &str = include_str!("graph.html");
@@ -34,14 +37,22 @@ pub fn render(
     fs::write(output_dir.join("dagre-d3.js"), DAGRE_JS)
         .context("failed to write output graph to file")?;
 
-    let context = Context::from_serialize(GraphData {
+    let graph_data = GraphData {
         nodes,
         subgraphs,
         edges,
         palette_colors,
         timeline_events,
-    })
-    .context("failed to render graph context as json")?;
+    };
+
+    serde_json::to_writer(
+        BufWriter::new(File::create(output_dir.join("data.json")).unwrap()),
+        &graph_data,
+    )
+    .unwrap();
+
+    let context =
+        Context::from_serialize(graph_data).context("failed to render graph context as json")?;
 
     let rendered_js =
         Tera::one_off(GRAPH_JS, &context, false).context("failed to render output graph")?;

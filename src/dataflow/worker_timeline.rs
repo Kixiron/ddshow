@@ -244,7 +244,7 @@ where
                                 | TimelyEvent::Text(_) => {}
                             }
                         }
-                    })
+                    });
                 }
             },
         );
@@ -279,23 +279,24 @@ where
 
                                             // Sometimes nested(?) merges happen, so simply complete the previous
                                             // merge event
-                                            if let Some((start_time, mut stored_capability)) = result {
-                                                let duration = time - start_time;
-                                                stored_capability.downgrade(
-                                                    &stored_capability.time().join(capability.time()),
-                                                );
-
-                                                output.session(&stored_capability).give((
-                                                    (
-                                                        worker,
-                                                        PartialTimelineEvent::Merge {
-                                                            operator_id: merge.operator,
-                                                        },
-                                                        duration,
-                                                    ),
-                                                    time,
-                                                    1,
-                                                ));
+                                            if let Some((_start_time, mut _stored_capability)) = result {
+                                                // TODO: Figure out how to handle this?
+                                                // let duration = time - start_time;
+                                                // stored_capability.downgrade(
+                                                //     &stored_capability.time().join(capability.time()),
+                                                // );
+                                                // 
+                                                // output.session(&stored_capability).give((
+                                                //     (
+                                                //         worker,
+                                                //         PartialTimelineEvent::Merge {
+                                                //             operator_id: merge.operator,
+                                                //         },
+                                                //         duration,
+                                                //     ),
+                                                //     time,
+                                                //     1,
+                                                // ));
                                             }
                                         } else if let Some((start_time, mut stored_capability)) =
                                             event_map.remove(&(worker, event))
@@ -384,15 +385,15 @@ where
                                     | DifferentialEvent::TraceShare(_) => {}
                                 }
                             }
-
-                        })
+                        });
                     }
                 },
             )
         });
 
         let partial_events = differential_events
-            .map(|differential_events| timely_events.concat(&differential_events))
+            .as_ref()
+            .map(|differential_events| timely_events.concat(differential_events))
             .unwrap_or(timely_events)
             .as_collection()
             .identifiers();
@@ -553,7 +554,7 @@ where
     if cfg!(debug_assertions) {
         collapsed
             .filter(|event| event.collapsed_events > 1)
-            .inspect(|x| tracing::trace!("Collapsed timeline event: {:?}", x));
+            .inspect(|x| tracing::debug!("Collapsed timeline event: {:?}", x));
     }
 
     collapsed
