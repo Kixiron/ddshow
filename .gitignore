@@ -5,3 +5,4 @@ dataflow.png
 dataflow.svg
 /.cargo
 /dataflow-graph
+**/node_modules

@@ -317,7 +317,7 @@ fn main() -> Result<()> {
                 addr: addr.addr,
                 name,
                 max_activation_time: format!("{:#?}", max),
-                mix_activation_time: format!("{:#?}", min),
+                min_activation_time: format!("{:#?}", min),
                 average_activation_time: format!("{:#?}", average),
                 total_activation_time: format!("{:#?}", total),
                 invocations,

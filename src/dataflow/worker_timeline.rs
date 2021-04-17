@@ -42,6 +42,14 @@ where
             differential_stream.map(|stream| stream.enter(region)),
         );
 
+        // FIXME: Both event processors should be split into functions
+        //        and use stacks for storing events instead of blindly
+        //        opening/closing them. Additionally, some events have
+        //        unique identifiers such as `ApplicationEvent.id`,
+        //       `ChannelsEvent.addr`, `OperatesEvent.addr`,
+        //       `(MessagesEvent.seq_no, MessagesEvent.channel,
+        //       MessagesEvent.source, MessagesEvent.target)`, etc.
+        //       which should be used to determine their termination
         let timely_events = timely_stream.unary(
             Pipeline,
             "Associate Timely Start/Stop Events",
@@ -435,11 +443,14 @@ where
             })
             .concat(&finished);
 
-        collapse_events(&events)
+        // collapse_events(&events)
+        events
             .leave_region()
     })
 }
 
+// TODO: This may be slightly unreliable
+#[allow(dead_code)]
 fn collapse_events<S, R>(
     events: &Collection<S, WorkerTimelineEvent, R>,
 ) -> Collection<S, WorkerTimelineEvent, R>

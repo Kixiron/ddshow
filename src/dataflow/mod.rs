@@ -2,6 +2,7 @@
 mod differential;
 mod operator_stats;
 pub mod operators;
+#[cfg(feature = "timely-next")]
 mod reachability;
 mod subgraphs;
 mod summation;
@@ -25,6 +26,8 @@ use differential_dataflow::{
 };
 use operator_stats::operator_stats;
 use operators::{CrossbeamPusher, FilterMap, InspectExt, Multiply, ReplayWithShutdown};
+#[cfg(feature = "timely-next")]
+use reachability::TrackerEvent;
 use std::{
     fmt::{self, Debug},
     net::TcpStream,
@@ -48,6 +51,8 @@ use worker_timeline::worker_timeline;
 
 type TimelyLogBundle = (Duration, WorkerIdentifier, TimelyEvent);
 type DifferentialLogBundle = (Duration, WorkerIdentifier, DifferentialEvent);
+#[cfg(feature = "timely-next")]
+type ReachabilityLogBundle = (Duration, WorkerIdentifier, TrackerEvent);
 type Diff = isize;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]

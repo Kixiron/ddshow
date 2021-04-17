@@ -262,81 +262,254 @@ d3.zoomIdentity
 dataflow_svg.attr("height", graph.graph().height * initial_scale + 40);
 
 function worker_timeline(timeline_events) {
-    // TODO: Give events ids via timely
-    const items = new vis.DataSet();
-    const groups = new vis.DataSet();
+    let data = [];
 
-    for (let i = 0; i < timeline_events.length; i += 1) {
-        const event = timeline_events[i];
+    for (const event of timeline_events) {
+        let group = data.find(group => group.group === `Worker ${event.worker}`);
+        if (!group) {
+            data.push({
+                group: `Worker ${event.worker}`,
+                data: [],
+            });
+            group = data.find(group => group.group === `Worker ${event.worker}`);
+        }
 
         // TODO: Calculate this in timely
-        let content = "";
-        let subgroup = "";
+        let label = "";
         if (event.event === "Parked"
             || event.event === "Application"
             || event.event === "Input"
             || event.event === "Message"
             || event.event === "Progress"
         ) {
-            content = event.event;
-            subgroup = event.event;
+            label = event.event;
 
         } else if (event.event.OperatorActivation) {
-            content = `Operator: ${event.event.OperatorActivation.operator_name}`;
-            subgroup = event.event.OperatorActivation.operator_id;
+            label = `Operator ${event.event.OperatorActivation.operator_id}: ${event.event.OperatorActivation.operator_name}`;
 
         } else if (event.event.Merge) {
-            content = `Merge: ${event.event.Merge.operator_name}`;
-            subgroup = event.event.Merge.operator_id;
+            label = `Merge ${event.event.Merge.operator_id}: ${event.event.Merge.operator_name}`;
 
         } else {
             console.log("created invalid timeline event", event.event);
             continue;
         }
 
-        items.add({
-            id: event.id,
-            group: event.worker,
-            content: content,
-            title: `${event.collapsed_events} event${event.collapsed_events == 1 ? "" : "s"} over ${event.duration / 1_000_000}ms`,
-            start: new Date(event.start_time / 1_000_000),
-            end: new Date((event.start_time + event.duration) / 1_000_000),
-            type: "range",
-        });
-
-        if (!groups.get(event.worker)) {
-            groups.add({
-                // The group's id is the worker's id
-                id: event.worker,
-                content: `Worker ${event.worker}`,
+        let group_data = group.data.find(item => item.label === label);
+        if (!group_data) {
+            group.data.push({
+                label: label,
+                data: [],
             });
+            group_data = group.data.find(item => item.label === label);
         }
+
+        group_data.data.push({
+            timeRange: [new Date(event.start_time), new Date(event.start_time + event.duration)],
+            val: event.duration,
+        });
     }
 
-    const container = document.getElementById("worker-timeline");
-    const options = {
-        align: "left",
-        editable: false,
-        selectable: false,
-        showCurrentTime: false,
-        tooltip: {
-            followMouse: true,
-            overflowMethod: "none",
-        },
-        start: new Date(0),
-        min: new Date(0),
-        cluster: {
-            maxItems: 10,
-            titleTemplate: `{count} Events`,
-        },
-        // TODO: `format` for major and minor labels
-    };
-
-    const timeline = new vis.Timeline(container);
-    timeline.setOptions(options);
-    timeline.setGroups(groups);
-    timeline.setItems(items);
-    timeline.fit();
+    TimelinesChart()(document.getElementById("worker-timeline"))
+        .xTickFormat(n => +n)
+        .timeFormat("%Q")
+        .rightMargin(500)
+        .topMargin(100)
+        .bottomMargin(50)
+        .zQualitative(true)
+        .xTickFormat(format_duration)
+        .sortChrono(true)
+        .maxHeight(4096)
+        .maxLineHeight(200)
+        .data(data);
 }
 
 worker_timeline(timeline_events);
+
+function format_id(id) {
+    let buf = "[";
+    let started = false;
+
+    for (const segment of id) {
+        if (started) {
+            buf += `, ${segment}`;
+        } else {
+            buf += `${segment}`;
+        }
+    }
+    buf += "]";
+
+    return buf;
+}
+
+function format_duration(input_nanos) {
+    function item_plural(buf, started, name, value) {
+        if (value > 0) {
+            buf += `${value}${name}`;
+            if (value > 1) {
+                buf += "s";
+            }
+
+            return [true, buf];
+        } else {
+            return [started, buf];
+        }
+    }
+
+    function item(buf, started, name, value) {
+        if (value > 0) {
+            if (started) {
+                buf += " ";
+            }
+            buf += `${value}${name}`;
+
+            return [true, buf];
+        } else {
+            return [started, buf];
+        }
+    }
+
+    let buf = "";
+
+    let secs = Math.trunc(input_nanos / 1_000_000_000);
+    let nanos = input_nanos % 1_000_000_000;
+
+    if (secs === 0 && nanos === 0) {
+        return "0s";
+    }
+
+    let years = Math.trunc(secs / 31_557_600);  // 365.25d
+    let ydays = secs % 31_557_600;
+    let months = Math.trunc(ydays / 2_630_016);  // 30.44d
+    let mdays = ydays % 2_630_016;
+    let days = Math.trunc(mdays / 86400);
+    let day_secs = mdays % 86400;
+    let hours = Math.trunc(day_secs / 3600);
+    let minutes = Math.trunc(day_secs % 3600 / 60);
+    let seconds = day_secs % 60;
+
+    let millis = Math.trunc(nanos / 1_000_000);
+    let micros = Math.trunc(nanos / 1000 % 1000);
+    let nanosec = nanos % 1000;
+
+    let started = false;
+    [started, buf] = item_plural(buf, started, "year", years);
+    [started, buf] = item_plural(buf, started, "month", months);
+    [started, buf] = item_plural(buf, started, "day", days);
+
+    [started, buf] = item(buf, started, "h", hours);
+    [started, buf] = item(buf, started, "m", minutes);
+    [started, buf] = item(buf, started, "s", seconds);
+    [started, buf] = item(buf, started, "ms", millis);
+    [started, buf] = item(buf, started, "us", micros);
+    [started, buf] = item(buf, started, "ns", nanosec);
+
+    return buf;
+}
+
+function time_sink_radar(events) {
+    const operator_graph_div = document.getElementById("operator-graph");
+    const chart = echarts.init(operator_graph_div);
+
+    let workers = [];
+    for (const event of events) {
+        if (!workers.includes(event.worker)) {
+            workers.push(event.worker);
+        }
+    }
+
+    let time_sink_data = {};
+    for (const worker of workers) {
+        time_sink_data[worker] = {
+            "OperatorActivation": 0,
+            "Message": 0,
+            "Parked": 0,
+            "Merge": 0,
+            "Progress": 0,
+            "Input": 0,
+            "Application": 0,
+        };
+    }
+
+    for (const event of events) {
+        let event_name = "";
+        if (typeof event.event === "string") {
+            event_name = event.event;
+        } else {
+            event_name = Object.keys(event.event)[0];
+        }
+
+        time_sink_data[event.worker][event_name] += event.duration;
+    }
+
+    let max_event_stats = [
+        { name: "OperatorActivation", max: 0 },
+        { name: "Message", max: 0 },
+        { name: "Parked", max: 0 },
+        { name: "Merge", max: 0 },
+        { name: "Progress", max: 0 },
+        { name: "Input", max: 0 },
+        { name: "Application", max: 0 },
+    ];
+    let event_data = [];
+
+    for (const worker in time_sink_data) {
+        let worker_event = event_data.find(event => event.name == `Worker ${worker}`);
+        if (!worker_event) {
+            event_data.push({
+                name: `Worker ${worker}`,
+                value: [],
+            });
+            worker_event = event_data.find(event => event.name == `Worker ${worker}`);
+        }
+
+        for (const event_kind in time_sink_data[worker]) {
+            let event_stats = max_event_stats.find(stats => stats.name === event_kind);
+            if (event_stats.max < time_sink_data[worker][event_kind]) {
+                event_stats.max = time_sink_data[worker][event_kind];
+            }
+
+            worker_event.value.push(time_sink_data[worker][event_kind]);
+        }
+    }
+
+    // Add 10% onto each maximum to make the charts look a little better
+    for (let event of max_event_stats) {
+        if (event.max === 0) {
+            event.max = 1000;
+        } else {
+            event.max += event.max * 0.10;
+        }
+    }
+
+    chart.setOption({
+        title: {
+            text: "Program Time Allocation",
+        },
+        legend: {
+            data: workers.map(worker => `Worker ${worker}`),
+        },
+        radar: {
+            axisName: {
+                color: "#fff",
+                backgroundColor: "#999",
+                borderRadius: 3,
+                padding: [3, 5],
+            },
+            indicator: max_event_stats,
+        },
+        series: [{
+            name: "Worker Time Comparison",
+            type: "radar",
+            data: event_data,
+        }],
+        tooltip: {
+            trigger: "item",
+            renderMode: "richText",
+            triggerOn: "mousemove",
+        },
+    });
+    console.log(chart.getOption());
+}
+
+time_sink_radar(timeline_events);

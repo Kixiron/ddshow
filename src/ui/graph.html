@@ -10,8 +10,6 @@
         <!-- TODO: Maybe name this by the targeted project? -->
         <title>Dataflow Graph</title>
 
-        <link rel="stylesheet" type="text/css"
-            href="https://unpkg.com/vis-timeline/styles/vis-timeline-graph2d.min.css" />
         <link rel="stylesheet" type="text/css" href="./graph.css">
     </head>
 
@@ -19,10 +17,9 @@
     <script src="./d3.v5.js"></script>
     <script src="./dagre-d3.js"></script>
 
-    <script type="text/javascript" src="https://unpkg.com/moment@2.29.1/moment.js"></script>
-    <script type="text/javascript" src="https://unpkg.com/vis-data@7.1.2/peer/umd/vis-data.min.js"></script>
-    <script type="text/javascript"
-        src="https://unpkg.com/vis-timeline@7.4.6/peer/umd/vis-timeline-graph2d.min.js"></script>
+    <script type="text/javascript" src="https://unpkg.com/timelines-chart@2.11.1/dist/timelines-chart.min.js"></script>
+
+    <script type="text/javascript" src="./echarts.min.js"></script>
 
     <body>
         <div id="dataflow-graph-div">
@@ -31,9 +28,9 @@
 
         <div id="worker-timeline"></div>
 
-        <div id="operator-timing-scatter"></div>
-    </body>
+        <canvas id="operator-graph" width="1920" height="1080" style="z-index: 100; position: absolute;"></canvas>
 
-    <script src="./graph.js"></script>
+        <script type="text/javascript" src="./graph.js"></script>
+    </body>
 
 </html>

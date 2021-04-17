@@ -101,7 +101,7 @@ pub struct Subgraph {
     pub addr: Vec<usize>,
     pub name: String,
     pub max_activation_time: String,
-    pub mix_activation_time: String,
+    pub min_activation_time: String,
     pub average_activation_time: String,
     pub total_activation_time: String,
     pub invocations: usize,
