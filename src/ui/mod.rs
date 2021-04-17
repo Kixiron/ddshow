@@ -12,6 +12,7 @@ const GRAPH_CSS: &str = include_str!("graph.css");
 const GRAPH_JS: &str = include_str!("graph.js");
 const D3_JS: &str = include_str!("d3.v5.js");
 const DAGRE_JS: &str = include_str!("dagre-d3.js");
+const ECHARTS_JS: &str = include_str!("echarts.min.js");
 
 pub fn render(
     args: &Args,
@@ -35,6 +36,9 @@ pub fn render(
         .context("failed to write output graph to file")?;
 
     fs::write(output_dir.join("dagre-d3.js"), DAGRE_JS)
+        .context("failed to write output graph to file")?;
+
+    fs::write(output_dir.join("echarts.min.js"), ECHARTS_JS)
         .context("failed to write output graph to file")?;
 
     let graph_data = GraphData {
