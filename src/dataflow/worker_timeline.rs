@@ -19,8 +19,11 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, iter, mem, time::Duration};
 use timely::{
     dataflow::{
-        channels::pact::Pipeline,
-        operators::{aggregation::StateMachine, Concat, Delay, Enter, Map, Operator},
+        channels::{pact::Pipeline, pushers::Tee},
+        operators::{
+            aggregation::StateMachine, generic::OutputHandle, Capability, Concat, Delay, Enter,
+            Map, Operator,
+        },
         Scope, Stream,
     },
     logging::{ParkEvent, StartStop, TimelyEvent, WorkerIdentifier},
@@ -50,215 +53,7 @@ where
         //       `(MessagesEvent.seq_no, MessagesEvent.channel,
         //       MessagesEvent.source, MessagesEvent.target)`, etc.
         //       which should be used to determine their termination
-        let timely_events = timely_stream.unary(
-            Pipeline,
-            "Associate Timely Start/Stop Events",
-            |_capability, _info| {
-                let mut buffer = Vec::new();
-                let mut event_map = HashMap::new();
-
-                move |input, output| {
-                    input.for_each(|capability, data| {
-                        let capability = capability.retain();
-                        data.swap(&mut buffer);
-
-                        for (time, worker, event) in buffer.drain(..) {
-                            match event {
-                                TimelyEvent::Schedule(schedule) => {
-                                    let event = EventKind::OperatorActivation {
-                                        operator_id: schedule.id,
-                                    };
-
-                                    match schedule.start_stop {
-                                        StartStop::Start => {
-                                            event_map.insert(
-                                                (worker, event),
-                                                (time, capability.clone()),
-                                            );
-                                        }
-
-                                        StartStop::Stop => {
-                                            if let Some((start_time, mut stored_capability)) =
-                                                event_map.remove(&(worker, event))
-                                            {
-                                                let duration = time - start_time;
-                                                stored_capability.downgrade(
-                                                    &stored_capability
-                                                        .time()
-                                                        .join(capability.time()),
-                                                );
-
-                                                output.session(&stored_capability).give((
-                                                    (
-                                                        worker,
-                                                        PartialTimelineEvent::OperatorActivation {
-                                                            operator_id: schedule.id,
-                                                        },
-                                                        duration,
-                                                    ),
-                                                    time,
-                                                    1,
-                                                ));
-                                            } else {
-                                                tracing::error!("attempted to remove schedule event that was never started");
-                                            }
-                                        }
-                                    }
-                                }
-
-                                TimelyEvent::Application(app) => {
-                                    let event = EventKind::Application { id: app.id };
-
-                                    if app.is_start {
-                                        event_map
-                                            .insert((worker, event), (time, capability.clone()));
-                                    } else if let Some((start_time, mut stored_capability)) =
-                                        event_map.remove(&(worker, event))
-                                    {
-                                        let duration = time - start_time;
-                                        stored_capability.downgrade(
-                                            &stored_capability.time().join(capability.time()),
-                                        );
-
-                                        output.session(&stored_capability).give((
-                                            (worker, PartialTimelineEvent::Application, duration),
-                                            time,
-                                            1,
-                                        ));
-                                    } else {
-                                        tracing::error!("attempted to remove application event that was never started");
-                                    }
-                                }
-
-                                TimelyEvent::GuardedMessage(message) => {
-                                    let event = EventKind::Message;
-
-                                    if message.is_start {
-                                        event_map
-                                            .insert((worker, event), (time, capability.clone()));
-                                    } else if let Some((start_time, mut stored_capability)) =
-                                        event_map.remove(&(worker, event))
-                                    {
-                                        let duration = time - start_time;
-                                        stored_capability.downgrade(
-                                            &stored_capability.time().join(capability.time()),
-                                        );
-
-                                        output.session(&stored_capability).give((
-                                            (worker, PartialTimelineEvent::Message, duration),
-                                            time,
-                                            1,
-                                        ));
-                                    } else {
-                                        tracing::error!("attempted to remove guarded message event that was never started");
-                                    }
-                                }
-
-                                TimelyEvent::GuardedProgress(progress) => {
-                                    let event = EventKind::Progress;
-
-                                    if progress.is_start {
-                                        event_map
-                                            .insert((worker, event), (time, capability.clone()));
-                                    } else if let Some((start_time, mut stored_capability)) =
-                                        event_map.remove(&(worker, event))
-                                    {
-                                        let duration = time - start_time;
-                                        stored_capability.downgrade(
-                                            &stored_capability.time().join(capability.time()),
-                                        );
-
-                                        output.session(&stored_capability).give((
-                                            (worker, PartialTimelineEvent::Progress, duration),
-                                            time,
-                                            1,
-                                        ));
-                                    } else {
-                                        tracing::error!("attempted to remove guarded progress event that was never started");
-                                    }
-                                }
-
-                                TimelyEvent::Input(input) => {
-                                    let event = EventKind::Input;
-
-                                    match input.start_stop {
-                                        StartStop::Start => {
-                                            event_map.insert(
-                                                (worker, event),
-                                                (time, capability.clone()),
-                                            );
-                                        }
-
-                                        StartStop::Stop => {
-                                            if let Some((start_time, mut stored_capability)) =
-                                                event_map.remove(&(worker, event))
-                                            {
-                                                let duration = time - start_time;
-                                                stored_capability.downgrade(
-                                                    &stored_capability
-                                                        .time()
-                                                        .join(capability.time()),
-                                                );
-
-                                                output.session(&stored_capability).give((
-                                                    (worker, PartialTimelineEvent::Input, duration),
-                                                    time,
-                                                    1,
-                                                ));
-                                            } else {
-                                                tracing::error!("attempted to remove input event that was never started");
-                                            }
-                                        }
-                                    }
-                                }
-
-                                TimelyEvent::Park(park) => {
-                                    let event = EventKind::Park;
-
-                                    match park {
-                                        ParkEvent::Park(_) => {
-                                            event_map.insert(
-                                                (worker, event),
-                                                (time, capability.clone()),
-                                            );
-                                        }
-
-                                        ParkEvent::Unpark => {
-                                            if let Some((start_time, mut stored_capability)) =
-                                                event_map.remove(&(worker, event))
-                                            {
-                                                let duration = time - start_time;
-                                                stored_capability.downgrade(
-                                                    &stored_capability
-                                                        .time()
-                                                        .join(capability.time()),
-                                                );
-
-                                                output.session(&stored_capability).give((
-                                                    (worker, PartialTimelineEvent::Parked, duration),
-                                                    time,
-                                                    1,
-                                                ));
-                                            } else {
-                                                tracing::error!("attempted to remove park event that was never started");
-                                            }
-                                        }
-                                    }
-                                }
-
-                                TimelyEvent::Operates(_)
-                                | TimelyEvent::Channels(_)
-                                | TimelyEvent::PushProgress(_)
-                                | TimelyEvent::Messages(_)
-                                | TimelyEvent::Shutdown(_)
-                                | TimelyEvent::CommChannels(_)
-                                | TimelyEvent::Text(_) => {}
-                            }
-                        }
-                    });
-                }
-            },
-        );
+        let timely_events = collect_timely_events(&timely_stream);
 
         // TODO: Emit trace drops & shares to a separate stream so that we can make markers
         //       with `timeline.setCustomTime()`
@@ -329,7 +124,7 @@ where
                                                 1,
                                             ));
                                         } else {
-                                            tracing::error!("attempted to remove merge event that was never started");
+                                            tracing::warn!("attempted to remove merge event that was never started");
                                         }
                                     }
 
@@ -358,7 +153,7 @@ where
                                                 1,
                                             ));
                                         } else {
-                                            tracing::error!("attempted to remove a short merge event that was never started");
+                                            tracing::warn!("attempted to remove a short merge event that was never started");
                                         }
                                     }
 
@@ -447,6 +242,284 @@ where
         events
             .leave_region()
     })
+}
+
+type TimelineStreamEvent = (
+    (WorkerIdentifier, PartialTimelineEvent, Duration),
+    Duration,
+    Diff,
+);
+type TimelineEventStream<S> = Stream<S, TimelineStreamEvent>;
+
+fn collect_timely_events<S>(event_stream: &Stream<S, TimelyLogBundle>) -> TimelineEventStream<S>
+where
+    S: Scope<Timestamp = Duration>,
+{
+    event_stream.unary(
+        Pipeline,
+        "Gather Timely Event Durations",
+        |_capability, _info| {
+            let mut buffer = Vec::new();
+            let (mut event_map, mut map_buffer, mut stack_buffer) =
+                (HashMap::new(), HashMap::new(), Vec::new());
+
+            move |input, output| {
+                input.for_each(|capability, data| {
+                    let capability = capability.retain();
+                    data.swap(&mut buffer);
+
+                    for (time, worker, event) in buffer.drain(..) {
+                        let mut event_processor = EventProcessor::new(
+                            &mut event_map,
+                            &mut map_buffer,
+                            &mut stack_buffer,
+                            output,
+                            &capability,
+                            worker,
+                            time,
+                        );
+
+                        process_timely_event(&mut event_processor, event);
+                    }
+                });
+            }
+        },
+    )
+}
+
+type EventMap = HashMap<(WorkerIdentifier, EventKind), Vec<(Duration, Capability<Duration>)>>;
+type EventOutput<'a> =
+    OutputHandle<'a, Duration, TimelineStreamEvent, Tee<Duration, TimelineStreamEvent>>;
+
+fn process_timely_event(event_processor: &mut EventProcessor<'_, '_>, event: TimelyEvent) {
+    match event {
+        TimelyEvent::Schedule(schedule) => {
+            let event_kind = EventKind::OperatorActivation {
+                operator_id: schedule.id,
+            };
+            let partial_event = PartialTimelineEvent::OperatorActivation {
+                operator_id: schedule.id,
+            };
+            event_processor.start_stop(event_kind, partial_event, schedule.start_stop);
+        }
+
+        TimelyEvent::Application(app) => {
+            let event_kind = EventKind::Application { id: app.id };
+            let partial_event = PartialTimelineEvent::Application;
+            event_processor.is_start(event_kind, partial_event, app.is_start);
+        }
+
+        TimelyEvent::GuardedMessage(message) => {
+            let event_kind = EventKind::Message;
+            let partial_event = PartialTimelineEvent::Message;
+            event_processor.is_start(event_kind, partial_event, message.is_start);
+        }
+
+        TimelyEvent::GuardedProgress(progress) => {
+            let event_kind = EventKind::Progress;
+            let partial_event = PartialTimelineEvent::Progress;
+            event_processor.is_start(event_kind, partial_event, progress.is_start);
+        }
+
+        TimelyEvent::Input(input) => {
+            let event_kind = EventKind::Input;
+            let partial_event = PartialTimelineEvent::Input;
+            event_processor.start_stop(event_kind, partial_event, input.start_stop);
+        }
+
+        TimelyEvent::Park(park) => {
+            let event_kind = EventKind::Park;
+
+            match park {
+                ParkEvent::Park(_) => event_processor.insert(event_kind),
+                ParkEvent::Unpark => {
+                    event_processor.remove(event_kind, PartialTimelineEvent::Parked);
+                }
+            }
+        }
+
+        // When an operator shuts down, release all capabilities associated with it.
+        // This works to counteract dataflow stalling
+        TimelyEvent::Shutdown(shutdown) => event_processor.remove_referencing(shutdown.id),
+
+        TimelyEvent::Operates(_)
+        | TimelyEvent::Channels(_)
+        | TimelyEvent::PushProgress(_)
+        | TimelyEvent::Messages(_)
+        | TimelyEvent::CommChannels(_)
+        | TimelyEvent::Text(_) => {}
+    }
+}
+
+struct EventProcessor<'a, 'b> {
+    event_map: &'a mut EventMap,
+    map_buffer: &'a mut EventMap,
+    stack_buffer: &'a mut Vec<Vec<(Duration, Capability<Duration>)>>,
+    output: &'a mut EventOutput<'b>,
+    capability: &'a Capability<Duration>,
+    worker: WorkerIdentifier,
+    time: Duration,
+}
+
+impl<'a, 'b> EventProcessor<'a, 'b> {
+    fn new(
+        event_map: &'a mut EventMap,
+        map_buffer: &'a mut EventMap,
+        stack_buffer: &'a mut Vec<Vec<(Duration, Capability<Duration>)>>,
+        output: &'a mut EventOutput<'b>,
+        capability: &'a Capability<Duration>,
+        worker: WorkerIdentifier,
+        time: Duration,
+    ) -> Self {
+        Self {
+            event_map,
+            map_buffer,
+            stack_buffer,
+            output,
+            capability,
+            worker,
+            time,
+        }
+    }
+
+    fn insert(&mut self, event_kind: EventKind) {
+        let Self {
+            event_map,
+            stack_buffer,
+            worker,
+            time,
+            capability,
+            ..
+        } = self;
+
+        event_map
+            .entry((*worker, event_kind))
+            .or_insert_with(|| stack_buffer.pop().unwrap_or_else(Vec::new))
+            .push((*time, capability.clone()));
+    }
+
+    fn remove(&mut self, event_kind: EventKind, partial_event: PartialTimelineEvent) {
+        if let Some((start_time, stored_capability)) = self
+            .event_map
+            .get_mut(&(self.worker, event_kind))
+            .and_then(Vec::pop)
+        {
+            self.output_event(start_time, stored_capability, partial_event)
+        } else {
+            tracing::warn!("attempted to remove event that was never started");
+        }
+    }
+
+    fn output_event(
+        &mut self,
+        start_time: Duration,
+        mut stored_capability: Capability<Duration>,
+        partial_event: PartialTimelineEvent,
+    ) {
+        let duration = self.time - start_time;
+        stored_capability.downgrade(&stored_capability.time().join(self.capability.time()));
+
+        self.output.session(&stored_capability).give((
+            (self.worker, partial_event, duration),
+            self.time,
+            1,
+        ));
+    }
+
+    fn start_stop(
+        &mut self,
+        event_kind: EventKind,
+        partial_event: PartialTimelineEvent,
+        start_stop: StartStop,
+    ) {
+        match start_stop {
+            StartStop::Start => self.insert(event_kind),
+            StartStop::Stop => self.remove(event_kind, partial_event),
+        }
+    }
+
+    fn is_start(
+        &mut self,
+        event_kind: EventKind,
+        partial_event: PartialTimelineEvent,
+        is_start: bool,
+    ) {
+        self.start_stop(
+            event_kind,
+            partial_event,
+            if is_start {
+                StartStop::Start
+            } else {
+                StartStop::Stop
+            },
+        )
+    }
+
+    /// Remove all events that reference the given operator id,
+    /// releasing their associated capabilities
+    fn remove_referencing(&mut self, operator: usize) {
+        mem::swap(self.event_map, self.map_buffer);
+
+        let mut removed_refs = 0;
+        for ((worker, event_kind), mut value_stack) in self.map_buffer.drain() {
+            match event_kind {
+                // If the event doesn't reference the operator id, release all associated capabilities
+                EventKind::OperatorActivation { operator_id }
+                | EventKind::Merge { operator_id }
+                    if operator_id == operator =>
+                {
+                    let partial_event = match event_kind {
+                        EventKind::OperatorActivation { operator_id } => {
+                            PartialTimelineEvent::OperatorActivation { operator_id }
+                        }
+                        EventKind::Merge { operator_id } => {
+                            PartialTimelineEvent::Merge { operator_id }
+                        }
+                        _ => unreachable!(),
+                    };
+
+                    // Drain the value stack, sending all dangling events
+                    for (start_time, mut stored_capability) in value_stack.drain(..) {
+                        let duration = self.time - start_time;
+                        stored_capability
+                            .downgrade(&stored_capability.time().join(self.capability.time()));
+
+                        self.output.session(&stored_capability).give((
+                            (self.worker, partial_event, duration),
+                            self.time,
+                            1,
+                        ));
+                    }
+
+                    // Save the value stack by stashing it into the stack buffer
+                    self.stack_buffer.push(value_stack);
+
+                    removed_refs += 1;
+                }
+
+                // If the event doesn't reference the operator id, insert it back into the event map
+                EventKind::OperatorActivation { .. }
+                | EventKind::Merge { .. }
+                | EventKind::Message
+                | EventKind::Progress
+                | EventKind::Input
+                | EventKind::Park
+                | EventKind::Application { .. } => {
+                    self.event_map.insert((worker, event_kind), value_stack);
+                }
+            }
+        }
+
+        if removed_refs != 0 {
+            tracing::warn!(
+                operator = operator,
+                removed_refs = removed_refs,
+                "removed {} dangling event{} pointing to a dropped operator",
+                removed_refs,
+                if removed_refs == 1 { "" } else { "s" },
+            );
+        }
+    }
 }
 
 // TODO: This may be slightly unreliable

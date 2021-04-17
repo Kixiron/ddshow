@@ -454,13 +454,13 @@ function time_sink_radar(events) {
     let event_data = [];
 
     for (const worker in time_sink_data) {
-        let worker_event = event_data.find(event => event.name == `Worker ${worker}`);
+        let worker_event = event_data.find(event => event.name === `Worker ${worker}`);
         if (!worker_event) {
             event_data.push({
                 name: `Worker ${worker}`,
                 value: [],
             });
-            worker_event = event_data.find(event => event.name == `Worker ${worker}`);
+            worker_event = event_data.find(event => event.name === `Worker ${worker}`);
         }
 
         for (const event_kind in time_sink_data[worker]) {
@@ -482,6 +482,7 @@ function time_sink_radar(events) {
         }
     }
 
+    // TODO: Formatting for tooltips
     chart.setOption({
         title: {
             text: "Program Time Allocation",
@@ -509,7 +510,6 @@ function time_sink_radar(events) {
             triggerOn: "mousemove",
         },
     });
-    console.log(chart.getOption());
 }
 
 time_sink_radar(timeline_events);
