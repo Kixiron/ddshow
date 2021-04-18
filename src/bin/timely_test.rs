@@ -1,5 +1,8 @@
-use differential_dataflow::{input::Input, operators::arrange::ArrangeBySelf};
-use std::env;
+use differential_dataflow::{
+    input::Input,
+    operators::{arrange::ArrangeBySelf, Iterate, Threshold},
+};
+use std::{env, net::TcpStream};
 use timely::dataflow::Scope;
 
 type Time = usize;
@@ -7,8 +10,8 @@ type Diff = isize;
 
 fn main() {
     timely::execute_from_args(env::args(), |worker| {
-        if let Ok(addr) = std::env::var("DIFFERENTIAL_LOG_ADDR") {
-            if let Ok(stream) = std::net::TcpStream::connect(&addr) {
+        if let Ok(addr) = env::var("DIFFERENTIAL_LOG_ADDR") {
+            if let Ok(stream) = TcpStream::connect(&addr) {
                 differential_dataflow::logging::enable(worker, stream);
             } else {
                 panic!("Could not connect to differential log address: {:?}", addr);
@@ -16,45 +19,47 @@ fn main() {
         }
 
         // create a new input, exchange data, and inspect its output
-        let (mut input, probe) = worker.dataflow::<Time, _, _>(|scope| {
+        let (mut input, mut probe, mut trace) = worker.dataflow::<Time, _, _>(|scope| {
             let (input, stream) = scope.new_collection::<usize, Diff>();
             let (_, stream2) = scope.new_collection::<usize, Diff>();
 
-            let probe = scope
-                .region_named("a middle region", |scope| {
-                    let stream = stream.enter_region(scope);
-                    stream2.enter_region(scope);
+            let output_stream = scope.region_named("a middle region", |scope| {
+                let stream = stream.enter_region(scope);
+                stream2.enter_region(scope);
 
-                    let out_of_scope = scope.region_named("An inner region", |region| {
-                        let (_, stream3) = region.new_collection::<usize, Diff>();
-                        stream3.leave();
+                let out_of_scope = scope.region_named("An inner region", |region| {
+                    let (_, stream3) = region.new_collection::<usize, Diff>();
+                    stream3.leave();
 
-                        stream.enter_region(region).filter(|&x| x != 4).leave()
-                    });
+                    stream.enter_region(region).filter(|&x| x != 4).leave()
+                });
 
-                    out_of_scope
-                        .arrange_by_self()
-                        .as_collection(|&x, &()| x)
-                        .leave()
-                })
-                .probe();
+                out_of_scope
+                    .arrange_by_self()
+                    .as_collection(|&x, &()| x)
+                    .leave()
+            });
 
-            (input, probe)
+            (
+                input,
+                output_stream.probe(),
+                output_stream.arrange_by_self().trace,
+            )
         });
 
-        // worker.dataflow_named("Arrangement Importer", |scope| {
-        //     let arranged = trace.import(scope);
-        //
-        //     arranged
-        //         .flat_map_ref(|&x, &()| if x % 2 == 0 { Some(x) } else { None })
-        //         .iterate(|stream| {
-        //             stream
-        //                 .map(|x| x.saturating_sub(1))
-        //                 .concat(&stream)
-        //                 .distinct()
-        //         })
-        //         .probe_with(&mut probe);
-        // });
+        worker.dataflow_named("Arrangement Importer", |scope| {
+            let arranged = trace.import(scope);
+
+            arranged
+                .flat_map_ref(|&x, &()| if x % 2 == 0 { Some(x) } else { None })
+                .iterate(|stream| {
+                    stream
+                        .map(|x| x.saturating_sub(1))
+                        .concat(&stream)
+                        .distinct()
+                })
+                .probe_with(&mut probe);
+        });
 
         for i in 1..100 {
             if worker.index() == 0 {
@@ -67,9 +72,7 @@ fn main() {
         }
 
         input.flush();
-        while probe.less_than(input.time()) {
-            worker.step_or_park(None);
-        }
+        worker.step_or_park_while(None, || probe.less_than(input.time()));
     })
     .unwrap();
 }

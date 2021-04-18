@@ -1,5 +1,8 @@
 #![cfg(test)]
 
+mod proptest_utils;
+mod proptests;
+
 use crate::dataflow::worker_timeline::{
     collect_differential_events, collect_timely_events, EventData, PartialTimelineEvent,
 };
@@ -16,9 +19,10 @@ use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
 };
 
-fn init_logging() {
+fn init_test_logging() {
     let fmt_layer = tracing_subscriber::fmt::layer()
         .pretty()
+        .with_test_writer()
         .with_timer(Uptime::default())
         .with_thread_names(true)
         .with_ansi(true);
@@ -36,7 +40,7 @@ fn init_logging() {
 
 #[test]
 fn timely_event_association() {
-    init_logging();
+    init_test_logging();
 
     let (send, recv) = mpsc::channel();
     let send = Arc::new(Mutex::new(Some(send)));
@@ -93,7 +97,7 @@ fn timely_event_association() {
 
 #[test]
 fn differential_event_association() {
-    init_logging();
+    init_test_logging();
 
     let (send, recv) = mpsc::channel();
     let send = Arc::new(Mutex::new(Some(send)));

@@ -41,7 +41,8 @@ use timely::{
     dataflow::{
         operators::{
             capture::{Capture, Event, EventReader},
-            Filter, Map,
+            probe::Handle as ProbeHandle,
+            Filter, Map, Probe,
         },
         Scope, Stream,
     },
@@ -96,13 +97,31 @@ pub type SubgraphBundle = ((Address, OperatesEvent), Duration, Diff);
 pub type StatsBundle = ((usize, OperatorStats), Duration, Diff);
 pub type TimelineBundle = (WorkerTimelineEvent, Duration, Diff);
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DataflowSenders {
     pub node_sender: Sender<Event<Duration, NodeBundle>>,
     pub edge_sender: Sender<Event<Duration, EdgeBundle>>,
     pub subgraph_sender: Sender<Event<Duration, SubgraphBundle>>,
     pub stats_sender: Sender<Event<Duration, StatsBundle>>,
     pub timeline_sender: Sender<Event<Duration, TimelineBundle>>,
+}
+
+impl DataflowSenders {
+    pub fn new(
+        node_sender: Sender<Event<Duration, NodeBundle>>,
+        edge_sender: Sender<Event<Duration, EdgeBundle>>,
+        subgraph_sender: Sender<Event<Duration, SubgraphBundle>>,
+        stats_sender: Sender<Event<Duration, StatsBundle>>,
+        timeline_sender: Sender<Event<Duration, TimelineBundle>>,
+    ) -> Self {
+        Self {
+            node_sender,
+            edge_sender,
+            subgraph_sender,
+            stats_sender,
+            timeline_sender,
+        }
+    }
 }
 
 pub fn dataflow<S>(
@@ -112,10 +131,12 @@ pub fn dataflow<S>(
     differential_traces: Option<Vec<EventReader<Duration, DifferentialLogBundle, TcpStream>>>,
     replay_shutdown: Arc<AtomicBool>,
     senders: DataflowSenders,
-) -> Result<()>
+) -> Result<ProbeHandle<Duration>>
 where
     S: Scope<Timestamp = Duration>,
 {
+    let mut probe = ProbeHandle::new();
+
     // The timely log stream filtered down to worker 0's events
     let raw_timely_stream = timely_traces
         .replay_with_shutdown_into_named("Timely Replay", scope, replay_shutdown.clone())
@@ -196,6 +217,7 @@ where
         .semijoin(&leaves)
         .consolidate()
         .inner
+        .probe_with(&mut probe)
         .capture_into(CrossbeamPusher::new(senders.node_sender));
 
     operators
@@ -203,21 +225,25 @@ where
         .semijoin(&subgraphs)
         .consolidate()
         .inner
+        .probe_with(&mut probe)
         .capture_into(CrossbeamPusher::new(senders.subgraph_sender));
 
     edges
         .consolidate()
         .inner
+        .probe_with(&mut probe)
         .capture_into(CrossbeamPusher::new(senders.edge_sender));
 
     operator_stats
         .consolidate()
         .inner
+        .probe_with(&mut probe)
         .capture_into(CrossbeamPusher::new(senders.stats_sender));
 
     worker_timeline
         .consolidate()
         .inner
+        .probe_with(&mut probe)
         .capture_into(CrossbeamPusher::new(senders.timeline_sender));
 
     // TODO: Fix this
@@ -229,7 +255,7 @@ where
     //     }
     // }
 
-    Ok(())
+    Ok(probe)
 }
 
 fn operator_creations<S>(

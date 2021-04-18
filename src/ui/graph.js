@@ -18,6 +18,28 @@ graph.setGraph({ nodesep: 50, ranksep: 50 });
 
 const render = new dagreD3.render();
 
+let error_nodes = {};
+
+const node_id_exists = target_addr => {
+    return raw_nodes.some(node => node.addr.toString() === target_addr)
+        || raw_subgraphs.some(subgraph => subgraph.addr.toString() === target_addr)
+        || Object.prototype.hasOwnProperty(error_nodes, target_addr);
+};
+
+const create_error_node = target_addr => {
+    error_nodes[target_addr] = 0;
+
+    graph.setNode(
+        target_addr,
+        {
+            label: `Error: ${target_addr}`,
+            style: "",
+            labelStyle: "",
+            data: { kind: "Error" },
+        },
+    );
+};
+
 for (const node of raw_nodes) {
     const node_id = node.addr.toString();
     graph.setNode(
@@ -30,8 +52,12 @@ for (const node of raw_nodes) {
         },
     );
 
-    const parent_addr = node.addr.slice(0, node.addr.length - 1);
-    graph.setParent(node_id, parent_addr.toString());
+    const parent_addr = node.addr.slice(0, node.addr.length - 1).toString();
+    if (!node_id_exists(parent_addr)) {
+        create_error_node(parent_addr);
+    }
+
+    graph.setParent(node_id, parent_addr);
 }
 
 for (const subgraph of raw_subgraphs) {
@@ -47,8 +73,12 @@ for (const subgraph of raw_subgraphs) {
     );
 
     if (subgraph.addr.length > 1) {
-        const parent_addr = subgraph.addr.slice(0, subgraph.addr.length - 1);
-        graph.setParent(subgraph_id, parent_addr.toString());
+        const parent_addr = subgraph.addr.slice(0, subgraph.addr.length - 1).toString();
+        if (!node_id_exists(parent_addr)) {
+            create_error_node(parent_addr);
+        }
+
+        graph.setParent(subgraph_id, parent_addr);
     }
 }
 
@@ -64,12 +94,23 @@ for (const edge of raw_edges) {
             break;
 
         default:
-            throw "Invalid edge kind received";
+            console.error(`invalid edge kind received: ${edge.edge_kind}"`);
+            break;
+    }
+
+    const src_id = edge.src.toString();
+    const dest_id = edge.dest.toString();
+
+    if (!node_id_exists(src_id)) {
+        create_error_node(src_id);
+    }
+    if (!node_id_exists(dest_id)) {
+        create_error_node(dest_id);
     }
 
     graph.setEdge(
-        edge.src.toString(),
-        edge.dest.toString(),
+        src_id,
+        dest_id,
         {
             style: style,
             data: { kind: "Edge", ...edge },
@@ -85,98 +126,18 @@ const tooltip = d3.select("#dataflow-graph-div")
     .append("div")
     .attr("id", "tooltip-template");
 
-const margin = { top: 10, right: 30, bottom: 30, left: 60 };
-const width = 1080 - margin.left - margin.right;
-const height = 750 - margin.top - margin.bottom;
-
-const scatter_plot = d3.select("#operator-timing-scatter")
-    .append("svg")
-    .attr("width", width + margin.left + margin.right)
-    .attr("height", height + margin.top + margin.bottom)
-    .append("g")
-    .attr("transform", `translate(${margin.left}, ${margin.top})`);
-
-const scatter_tooltip = d3.select("#operator-timing-scatter")
-    .append("div")
-    .style("opacity", 0)
-    .attr("class", "tooltip")
-    .style("background-color", "white")
-    .style("border", "solid")
-    .style("border-width", "1px")
-    .style("border-radius", "5px")
-    .style("padding", "10px")
-    .style("z-index", 5);
-
-const x_axis = scatter_plot.append("g");
-const y_axis = scatter_plot.append("g");
-const scatter_dots = scatter_plot.append("g");
-
-const operator_scatter_plot = (node) => {
-    const x = d3.scaleLinear()
-        .domain([
-            Math.min(...node.activation_durations.map(duration => duration.activated_at)),
-            Math.max(...node.activation_durations.map(duration => duration.activated_at)),
-        ])
-        .range([0, width]);
-
-    x_axis
-        .attr("transform", `translate(0, ${height})`)
-        .call(d3.axisBottom(x));
-
-    const y = d3.scaleLinear()
-        .domain([
-            Math.min(...node.activation_durations.map(duration => duration.activation_time)),
-            Math.max(...node.activation_durations.map(duration => duration.activation_time)),
-        ])
-        .range([height, 0]);
-
-    y_axis.call(d3.axisLeft(y));
-
-    const mouseover = duration => {
-        scatter_tooltip
-            .text(`activated for ${duration.activation_time}ns`)
-            // It is important to put the +90: otherwise the tooltip
-            // is exactly where the point is an it creates a weird effect
-            .style("left", (d3.event.pageX + 90) + "px")
-            .style("top", d3.event.pageY + "px")
-            .style("opacity", 1);
-    };
-
-    const mouseleave = _duration => {
-        scatter_tooltip
-            .transition()
-            .duration(200)
-            .style("opacity", 0);
-    };
-
-    scatter_dots
-        .selectAll(".scatter-circle")
-        .remove();
-
-    console.log(node.activation_durations);
-    scatter_dots
-        .selectAll("dot")
-        .data(node.activation_durations)
-        .enter()
-        .append("circle")
-        .attr("class", "scatter-circle")
-        .attr("cx", activation => x(activation.activated_at))
-        .attr("cy", activation => y(activation.activation_time))
-        .attr("r", 7)
-        .style("fill", "#69b3a2")
-        .style("opacity", 1)
-        .style("stroke", "white")
-        .on("mouseover", mouseover)
-        .on("mousemove", mouseover)
-        .on("mouseleave", mouseleave);
-};
-
 // Node tooltips
 svg.selectAll("g.node")
     // Reveal the tooltip on hover
     .on("mouseover", () => tooltip.style("visibility", "visible"))
     .on("mousemove", node_id => {
-        const node = graph.node(node_id).data;
+        const unsafe_node = graph.node(node_id);
+        if (!unsafe_node || !unsafe_node.data || !unsafe_node.data.name || unsafe_node.data.kind === "Error") {
+            tooltip.style("visibility", "hidden");
+            return;
+        }
+
+        const node = unsafe_node.data;
         let text = `ran for ${node.total_activation_time} over ${node.invocations} invocations<br>\
             average runtime of ${node.average_activation_time} \
             (max: ${node.max_activation_time}, min: ${node.min_activation_time})`;
@@ -195,23 +156,39 @@ svg.selectAll("g.node")
             .style("left", (d3.event.pageX + 40) + "px");
     })
     // Hide the tooltip on mouseout
-    .on("mouseout", () => tooltip.style("visibility", "hidden"))
-    .on("click", node_id => {
-        const node = graph.node(node_id).data;
-        operator_scatter_plot(node);
-    });
+    .on("mouseout", () => tooltip.style("visibility", "hidden"));
 
 // Edge tooltips
 svg.selectAll("g.edgePath")
     // Reveal the tooltip on hover
     .on("mouseover", () => tooltip.style("visibility", "visible"))
     .on("mousemove", edge_id => {
-        const edge = graph.edge(edge_id).data;
-        const src = graph.node(edge.src).data,
-            dest = graph.node(edge.dest).data;
+        const unsafe_edge = graph.edge(edge_id);
+        if (!unsafe_edge || !unsafe_edge.data || !unsafe_edge.data.kind || unsafe_edge.data.kind === "Error") {
+            tooltip.style("visibility", "hidden");
+            return;
+        }
+
+        const edge = unsafe_edge.data;
+
+        const get_node_name = node_addr => {
+            const node = graph.node(node_addr);
+
+            let node_name = "";
+            if (!node || !node.data || !node.data.name || !node.data.kind || node.data.kind === "Error") {
+                node_name = "Error";
+            } else {
+                node_name = node.data.name;
+            }
+
+            return node_name;
+        };
+
+        const src_name = get_node_name(edge.src);
+        const dest_name = get_node_name(edge.dest);
 
         tooltip
-            .text(`channel from ${src.name} to ${dest.name}`)
+            .text(`channel from ${src_name} to ${dest_name}`)
             .style("top", (d3.event.pageY - 40) + "px")
             .style("left", (d3.event.pageX + 40) + "px");
     })

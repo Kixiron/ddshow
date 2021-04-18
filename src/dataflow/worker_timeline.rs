@@ -334,14 +334,36 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
     fn output_event(
         &mut self,
         start_time: Duration,
-        mut stored_capability: Capability<Duration>,
+        stored_capability: Capability<Duration>,
         partial_event: PartialTimelineEvent,
     ) {
-        let duration = self.time - start_time;
-        stored_capability.downgrade(&stored_capability.time().join(self.capability.time()));
+        Self::output_event_inner(
+            self.output,
+            self.time,
+            start_time,
+            &self.capability,
+            stored_capability,
+            partial_event,
+            self.worker,
+        )
+    }
 
-        self.output.session(&stored_capability).give((
-            EventData::new(self.worker, partial_event, start_time, duration),
+    /// The inner workings of `self.output_event()`, abstracted away so that it can be used within
+    /// `self.remove_referencing()`
+    fn output_event_inner(
+        output: &mut EventOutput,
+        current_time: Duration,
+        start_time: Duration,
+        current_capability: &Capability<Duration>,
+        mut stored_capability: Capability<Duration>,
+        partial_event: PartialTimelineEvent,
+        worker: WorkerIdentifier,
+    ) {
+        let duration = current_time - start_time;
+        stored_capability.downgrade(&stored_capability.time().join(current_capability.time()));
+
+        output.session(&stored_capability).give((
+            EventData::new(worker, partial_event, start_time, duration),
             *stored_capability.time(),
             1,
         ));
@@ -401,16 +423,16 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
                     };
 
                     // Drain the value stack, sending all dangling events
-                    for (start_time, mut stored_capability) in value_stack.drain(..) {
-                        let duration = self.time - start_time;
-                        stored_capability
-                            .downgrade(&stored_capability.time().join(self.capability.time()));
-
-                        self.output.session(&stored_capability).give((
-                            EventData::new(self.worker, partial_event, start_time, duration),
+                    for (start_time, stored_capability) in value_stack.drain(..) {
+                        Self::output_event_inner(
+                            self.output,
                             self.time,
-                            1,
-                        ));
+                            start_time,
+                            &self.capability,
+                            stored_capability,
+                            partial_event,
+                            self.worker,
+                        )
                     }
 
                     // Save the value stack by stashing it into the stack buffer

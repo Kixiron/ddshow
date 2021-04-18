@@ -3,6 +3,7 @@ use crossbeam_channel::Receiver;
 use std::{
     io::Read,
     iter,
+    panic::{self, AssertUnwindSafe},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -115,6 +116,7 @@ where
         N: Into<String>,
         S: Scope<Timestamp = T>,
     {
+        let worker_index = scope.index();
         let mut builder = OperatorBuilder::new(name.into(), scope.clone());
 
         let address = builder.operator_info().address;
@@ -143,26 +145,47 @@ where
             }
 
             let mut fuel: usize = 1_000_000;
-            for event_stream in event_streams.iter_mut() {
-                while let Some(event) = event_stream.next() {
-                    match event {
-                        Event::Progress(vec) => {
-                            progress.internals[0].extend(vec.iter().cloned());
-                            antichain.update_iter(vec.iter().cloned());
+            'event_loop: for event_stream in event_streams.iter_mut() {
+                'stream_loop: loop {
+                    let mut event_stream = AssertUnwindSafe(&mut *event_stream);
+                    let next = panic::catch_unwind(move || event_stream.next().cloned());
+
+                    match next {
+                        Ok(Some(event)) => {
+                            match event {
+                                Event::Progress(vec) => {
+                                    progress.internals[0].extend(vec.iter().cloned());
+                                    antichain.update_iter(vec.into_iter());
+                                }
+                                Event::Messages(time, mut data) => {
+                                    fuel = fuel.saturating_sub(data.len());
+                                    output.session(&time).give_vec(&mut data);
+                                }
+                            }
+
+                            if !is_running.load(Ordering::Acquire) || fuel == 0 {
+                                break 'event_loop;
+                            }
                         }
-                        Event::Messages(time, data) => {
-                            output.session(time).give_iterator(data.iter().cloned());
-                            fuel = fuel.saturating_sub(data.len());
+
+                        Ok(None) => {
+                            if !is_running.load(Ordering::Acquire) || fuel == 0 {
+                                break 'event_loop;
+                            } else {
+                                break 'stream_loop;
+                            }
+                        }
+
+                        Err(err) => {
+                            tracing::error!(
+                                "encountered an error from the event stream: {:?}",
+                                err,
+                            );
+                            is_running.store(false, Ordering::Release);
+
+                            break 'event_loop;
                         }
                     }
-
-                    if fuel == 0 {
-                        break;
-                    }
-                }
-
-                if fuel == 0 {
-                    break;
                 }
             }
 
@@ -177,6 +200,11 @@ where
                     .borrow_mut()
                     .drain_into(&mut progress.produceds[0]);
             } else {
+                tracing::info!(
+                    worker = worker_index,
+                    "received shutdown signal within event replay",
+                );
+
                 while !antichain.is_empty() {
                     let elements = antichain
                         .frontier()

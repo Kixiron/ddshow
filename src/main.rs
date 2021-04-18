@@ -15,8 +15,11 @@ use network::{wait_for_connections, wait_for_input};
 use std::{
     collections::HashMap,
     fs,
-    sync::{atomic::AtomicBool, Arc},
-    time::Instant,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
 };
 use structopt::StructOpt;
 use timely::{
@@ -159,15 +162,16 @@ fn main() -> Result<()> {
                 .expect("failed to receive differential event traces")
         });
 
-        let senders = DataflowSenders {
-            node_sender: node_sender.clone(),
-            edge_sender: edge_sender.clone(),
-            subgraph_sender: subgraph_sender.clone(),
-            stats_sender: stats_sender.clone(),
-            timeline_sender: timeline_sender.clone(),
-        };
+        let senders = DataflowSenders::new(
+            node_sender.clone(),
+            edge_sender.clone(),
+            subgraph_sender.clone(),
+            stats_sender.clone(),
+            timeline_sender.clone(),
+        );
 
-        worker.dataflow_named(dataflow_name, |scope| {
+        let dataflow_id = worker.next_dataflow_index();
+        let probe = worker.dataflow_named(dataflow_name, |scope| {
             dataflow::dataflow(
                 scope,
                 &*args,
@@ -176,7 +180,29 @@ fn main() -> Result<()> {
                 replay_shutdown.clone(),
                 senders,
             )
-        })
+        })?;
+
+        'work_loop: while !probe.done() {
+            // TODO: Propagate info into some of the more important operators so that
+            //       we can get a semi-clean shutdown and retain some information
+            //       instead of brutally cutting everything off.
+            if !replay_shutdown.load(Ordering::Acquire) {
+                tracing::info!(
+                    worker_id = worker.index(),
+                    dataflow_id = dataflow_id,
+                    "shutting down dataflow {} on worker {}",
+                    dataflow_id,
+                    worker.index(),
+                );
+
+                worker.drop_dataflow(dataflow_id);
+                break 'work_loop;
+            }
+
+            worker.step_or_park(Some(Duration::from_millis(500)));
+        }
+
+        Ok(())
     })
     .map_err(|err| anyhow::anyhow!("failed to start up timely computation: {}", err))?;
 
@@ -258,8 +284,8 @@ fn main() -> Result<()> {
 
     let html_nodes: Vec<_> = node_events
         .into_iter()
-        .map(|(addr, OperatesEvent { id, name, .. })| {
-            let OperatorStats {
+        .filter_map(|(addr, OperatesEvent { id, name, .. })| {
+            let &OperatorStats {
                 max,
                 min,
                 average,
@@ -268,12 +294,12 @@ fn main() -> Result<()> {
                 ref activation_durations,
                 ref arrangement_size,
                 ..
-            } = operator_stats[&id];
+            } = operator_stats.get(&id)?;
 
             let fill_color = select_color(&args.palette, total, (max_time, min_time));
             let text_color = fill_color.text_color();
 
-            ui::Node {
+            Some(ui::Node {
                 id,
                 addr: addr.addr,
                 name,
@@ -293,13 +319,13 @@ fn main() -> Result<()> {
                     .collect(),
                 max_arrangement_size: arrangement_size.as_ref().map(|arr| arr.max_size),
                 min_arrangement_size: arrangement_size.as_ref().map(|arr| arr.min_size),
-            }
+            })
         })
         .collect();
 
     let html_subgraphs: Vec<_> = subgraph_events
         .into_iter()
-        .map(|(addr, OperatesEvent { id, name, .. })| {
+        .filter_map(|(addr, OperatesEvent { id, name, .. })| {
             let OperatorStats {
                 max,
                 min,
@@ -307,12 +333,12 @@ fn main() -> Result<()> {
                 total,
                 invocations,
                 ..
-            } = operator_stats[&id];
+            } = *operator_stats.get(&id)?;
 
             let fill_color = select_color(&args.palette, total, (max, min));
             let text_color = fill_color.text_color();
 
-            ui::Subgraph {
+            Some(ui::Subgraph {
                 id,
                 addr: addr.addr,
                 name,
@@ -323,7 +349,7 @@ fn main() -> Result<()> {
                 invocations,
                 fill_color: format!("{}", fill_color),
                 text_color: format!("{}", text_color),
-            }
+            })
         })
         .collect();
 

@@ -3,7 +3,7 @@ use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     num::NonZeroUsize,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{self, AtomicBool, Ordering},
     time::Duration,
 };
 use timely::communication::WorkerGuards;
@@ -31,12 +31,13 @@ pub fn wait_for_connections(
                 .set_nonblocking(true)
                 .context("failed to set socket to non-blocking mode")?;
 
-            socket.set_read_timeout(TCP_READ_TIMEOUT).with_context(|| {
-                format!(
-                    "failed to set socket to a read timeout of {:?}",
+            if let Err(err) = socket.set_read_timeout(TCP_READ_TIMEOUT) {
+                tracing::error!(
+                    "failed to set socket to a read timeout of {:?}: {:?}",
                     TCP_READ_TIMEOUT,
-                )
-            })?;
+                    err,
+                );
+            };
 
             println!("Connected to socket {}/{}", i + 1, connections);
             Ok(socket)
@@ -68,9 +69,14 @@ pub fn wait_for_input(running: &AtomicBool, worker_guards: WorkerGuards<Result<(
 
     // Terminate the replay
     running.store(false, Ordering::Release);
+    atomic::fence(Ordering::Acquire);
 
     writeln!(stdout, "Processing data...").context("failed to write to stdout")?;
     stdout.flush().context("failed to flush stdout")?;
+
+    for thread in worker_guards.guards() {
+        thread.thread().unpark();
+    }
 
     // Join all timely worker threads
     for result in worker_guards.join() {

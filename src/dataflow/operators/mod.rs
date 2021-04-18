@@ -1,3 +1,4 @@
+mod activate_capability_set;
 #[cfg(not(feature = "timely-next"))]
 mod diff_list;
 mod filter_map;
@@ -9,6 +10,8 @@ mod split;
 mod timely_version_hack;
 mod util;
 
+#[cfg(test)]
+pub use activate_capability_set::ActivateCapabilitySet;
 pub use filter_map::FilterMap;
 pub use filter_split::FilterSplit;
 pub use inspect::InspectExt;
