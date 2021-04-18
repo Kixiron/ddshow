@@ -45,157 +45,13 @@ where
             differential_stream.map(|stream| stream.enter(region)),
         );
 
-        // FIXME: Both event processors should be split into functions
-        //        and use stacks for storing events instead of blindly
-        //        opening/closing them. Additionally, some events have
-        //        unique identifiers such as `ApplicationEvent.id`,
-        //       `ChannelsEvent.addr`, `OperatesEvent.addr`,
-        //       `(MessagesEvent.seq_no, MessagesEvent.channel,
-        //       MessagesEvent.source, MessagesEvent.target)`, etc.
-        //       which should be used to determine their termination
         let timely_events = collect_timely_events(&timely_stream);
 
         // TODO: Emit trace drops & shares to a separate stream so that we can make markers
         //       with `timeline.setCustomTime()`
-        let differential_events = differential_stream.map(|stream| {
-            stream.unary(
-                Pipeline,
-                "Associate Differential Start/Stop Events",
-                |_capability, _info| {
-                    let mut buffer = Vec::new();
-                    let mut event_map = HashMap::new();
-
-                    move |input, output| {
-                        input.for_each(|capability, data| {
-                            let capability = capability.retain();
-                            data.swap(&mut buffer);
-
-                            for (time, worker, event) in buffer.drain(..) {
-                                match event {
-                                    DifferentialEvent::Merge(merge) => {
-                                        let event = EventKind::Merge {
-                                            operator_id: merge.operator,
-                                        };
-
-                                        if merge.complete.is_none() {
-                                            let result = event_map.insert(
-                                                (worker, event),
-                                                (time, capability.clone()),
-                                            );
-
-                                            // Sometimes nested(?) merges happen, so simply complete the previous
-                                            // merge event
-                                            if let Some((_start_time, mut _stored_capability)) = result {
-                                                // TODO: Figure out how to handle this?
-                                                // let duration = time - start_time;
-                                                // stored_capability.downgrade(
-                                                //     &stored_capability.time().join(capability.time()),
-                                                // );
-                                                // 
-                                                // output.session(&stored_capability).give((
-                                                //     (
-                                                //         worker,
-                                                //         PartialTimelineEvent::Merge {
-                                                //             operator_id: merge.operator,
-                                                //         },
-                                                //         duration,
-                                                //     ),
-                                                //     time,
-                                                //     1,
-                                                // ));
-                                            }
-                                        } else if let Some((start_time, mut stored_capability)) =
-                                            event_map.remove(&(worker, event))
-                                        {
-                                            let duration = time - start_time;
-                                            stored_capability.downgrade(
-                                                &stored_capability.time().join(capability.time()),
-                                            );
-
-                                            output.session(&stored_capability).give((
-                                                (
-                                                    worker,
-                                                    PartialTimelineEvent::Merge {
-                                                        operator_id: merge.operator,
-                                                    },
-                                                    duration,
-                                                ),
-                                                time,
-                                                1,
-                                            ));
-                                        } else {
-                                            tracing::warn!("attempted to remove merge event that was never started");
-                                        }
-                                    }
-
-                                    DifferentialEvent::MergeShortfall(shortfall) => {
-                                        let event = EventKind::Merge {
-                                            operator_id: shortfall.operator,
-                                        };
-
-                                        if let Some((start_time, mut stored_capability)) =
-                                            event_map.remove(&(worker, event))
-                                        {
-                                            let duration = time - start_time;
-                                            stored_capability.downgrade(
-                                                &stored_capability.time().join(capability.time()),
-                                            );
-
-                                            output.session(&stored_capability).give((
-                                                (
-                                                    worker,
-                                                    PartialTimelineEvent::Merge {
-                                                        operator_id: shortfall.operator,
-                                                    },
-                                                    duration,
-                                                ),
-                                                time,
-                                                1,
-                                            ));
-                                        } else {
-                                            tracing::warn!("attempted to remove a short merge event that was never started");
-                                        }
-                                    }
-
-                                    // Sometimes merges don't complete since they're dropped part way through
-                                    DifferentialEvent::Drop(drop) => {
-                                        let event = EventKind::Merge {
-                                            operator_id: drop.operator,
-                                        };
-
-                                        if let Some((start_time, mut stored_capability)) =
-                                            event_map.remove(&(worker, event))
-                                        {
-                                            tracing::warn!("trace was dropped part way though a merge event");
-
-                                            let duration = time - start_time;
-                                            stored_capability.downgrade(
-                                                &stored_capability.time().join(capability.time()),
-                                            );
-
-                                            output.session(&stored_capability).give((
-                                                (
-                                                    worker,
-                                                    PartialTimelineEvent::Merge {
-                                                        operator_id: drop.operator,
-                                                    },
-                                                    duration,
-                                                ),
-                                                time,
-                                                1,
-                                            ));
-                                        }
-                                    }
-
-                                    DifferentialEvent::Batch(_)
-                                    | DifferentialEvent::TraceShare(_) => {}
-                                }
-                            }
-                        });
-                    }
-                },
-            )
-        });
+        // TODO: Emit the # of batches received
+        let differential_events =
+            differential_stream.map(|event_stream| collect_differential_events(&event_stream));
 
         let partial_events = differential_events
             .as_ref()
@@ -204,29 +60,32 @@ where
             .as_collection()
             .identifiers();
 
-        let (needs_operators, finished) = partial_events
-            .filter_split(|((worker_id, event, duration), event_id)| {
+        let (needs_operators, finished) = partial_events.filter_split(
+            |(
+                EventData {
+                    worker,
+                    partial_event,
+                    start_time,
+                    duration,
+                },
+                event_id,
+            )| {
                 let timeline_event = WorkerTimelineEvent {
                     event_id,
-                    worker: worker_id,
-                    event: event.into(),
+                    worker,
+                    event: partial_event.into(),
                     duration: duration.as_nanos() as u64,
-                    start_time: duration.as_nanos() as u64,
+                    start_time: start_time.as_nanos() as u64,
                     collapsed_events: 1,
                 };
 
-                if let Some(operator_id) = event.operator_id() {
-                    (
-                        Some((
-                            operator_id,
-                            timeline_event,
-                        )),
-                        None,
-                    )
+                if let Some(operator_id) = partial_event.operator_id() {
+                    (Some((operator_id, timeline_event)), None)
                 } else {
                     (None, Some(timeline_event))
                 }
-            });
+            },
+        );
 
         let events = needs_operators
             .arrange_by_key()
@@ -239,19 +98,19 @@ where
             .concat(&finished);
 
         // collapse_events(&events)
-        events
-            .leave_region()
+        events.leave_region()
     })
 }
 
-type TimelineStreamEvent = (
-    (WorkerIdentifier, PartialTimelineEvent, Duration),
-    Duration,
-    Diff,
-);
+type TimelineStreamEvent = (EventData, Duration, Diff);
 type TimelineEventStream<S> = Stream<S, TimelineStreamEvent>;
+type EventMap = HashMap<(WorkerIdentifier, EventKind), Vec<(Duration, Capability<Duration>)>>;
+type EventOutput<'a> =
+    OutputHandle<'a, Duration, TimelineStreamEvent, Tee<Duration, TimelineStreamEvent>>;
 
-fn collect_timely_events<S>(event_stream: &Stream<S, TimelyLogBundle>) -> TimelineEventStream<S>
+pub(super) fn collect_timely_events<S>(
+    event_stream: &Stream<S, TimelyLogBundle>,
+) -> TimelineEventStream<S>
 where
     S: Scope<Timestamp = Duration>,
 {
@@ -287,43 +146,40 @@ where
     )
 }
 
-type EventMap = HashMap<(WorkerIdentifier, EventKind), Vec<(Duration, Capability<Duration>)>>;
-type EventOutput<'a> =
-    OutputHandle<'a, Duration, TimelineStreamEvent, Tee<Duration, TimelineStreamEvent>>;
-
 fn process_timely_event(event_processor: &mut EventProcessor<'_, '_>, event: TimelyEvent) {
     match event {
         TimelyEvent::Schedule(schedule) => {
-            let event_kind = EventKind::OperatorActivation {
-                operator_id: schedule.id,
-            };
-            let partial_event = PartialTimelineEvent::OperatorActivation {
-                operator_id: schedule.id,
-            };
+            let event_kind = EventKind::activation(schedule.id);
+            let partial_event = PartialTimelineEvent::activation(schedule.id);
+
             event_processor.start_stop(event_kind, partial_event, schedule.start_stop);
         }
 
         TimelyEvent::Application(app) => {
-            let event_kind = EventKind::Application { id: app.id };
+            let event_kind = EventKind::application(app.id);
             let partial_event = PartialTimelineEvent::Application;
+
             event_processor.is_start(event_kind, partial_event, app.is_start);
         }
 
         TimelyEvent::GuardedMessage(message) => {
             let event_kind = EventKind::Message;
             let partial_event = PartialTimelineEvent::Message;
+
             event_processor.is_start(event_kind, partial_event, message.is_start);
         }
 
         TimelyEvent::GuardedProgress(progress) => {
             let event_kind = EventKind::Progress;
             let partial_event = PartialTimelineEvent::Progress;
+
             event_processor.is_start(event_kind, partial_event, progress.is_start);
         }
 
         TimelyEvent::Input(input) => {
             let event_kind = EventKind::Input;
             let partial_event = PartialTimelineEvent::Input;
+
             event_processor.start_stop(event_kind, partial_event, input.start_stop);
         }
 
@@ -348,6 +204,71 @@ fn process_timely_event(event_processor: &mut EventProcessor<'_, '_>, event: Tim
         | TimelyEvent::Messages(_)
         | TimelyEvent::CommChannels(_)
         | TimelyEvent::Text(_) => {}
+    }
+}
+
+pub(super) fn collect_differential_events<S>(
+    event_stream: &Stream<S, DifferentialLogBundle>,
+) -> TimelineEventStream<S>
+where
+    S: Scope<Timestamp = Duration>,
+{
+    event_stream.unary(
+        Pipeline,
+        "Gather Differential Event Durations",
+        |_capability, _info| {
+            let mut buffer = Vec::new();
+            let (mut event_map, mut map_buffer, mut stack_buffer) =
+                (HashMap::new(), HashMap::new(), Vec::new());
+
+            move |input, output| {
+                input.for_each(|capability, data| {
+                    let capability = capability.retain();
+                    data.swap(&mut buffer);
+
+                    for (time, worker, event) in buffer.drain(..) {
+                        let mut event_processor = EventProcessor::new(
+                            &mut event_map,
+                            &mut map_buffer,
+                            &mut stack_buffer,
+                            output,
+                            &capability,
+                            worker,
+                            time,
+                        );
+
+                        process_differential_event(&mut event_processor, event);
+                    }
+                });
+            }
+        },
+    )
+}
+
+fn process_differential_event(
+    event_processor: &mut EventProcessor<'_, '_>,
+    event: DifferentialEvent,
+) {
+    match event {
+        DifferentialEvent::Merge(merge) => {
+            let event_kind = EventKind::merge(merge.operator);
+            let partial_event = PartialTimelineEvent::merge(merge.operator);
+            let is_start = merge.complete.is_none();
+
+            event_processor.is_start(event_kind, partial_event, is_start);
+        }
+
+        DifferentialEvent::MergeShortfall(shortfall) => {
+            let event_kind = EventKind::merge(shortfall.operator);
+            let partial_event = PartialTimelineEvent::merge(shortfall.operator);
+
+            event_processor.remove(event_kind, partial_event);
+        }
+
+        // Sometimes merges don't complete since they're dropped part way through
+        DifferentialEvent::Drop(drop) => event_processor.remove_referencing(drop.operator),
+
+        DifferentialEvent::Batch(_) | DifferentialEvent::TraceShare(_) => {}
     }
 }
 
@@ -420,8 +341,8 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
         stored_capability.downgrade(&stored_capability.time().join(self.capability.time()));
 
         self.output.session(&stored_capability).give((
-            (self.worker, partial_event, duration),
-            self.time,
+            EventData::new(self.worker, partial_event, start_time, duration),
+            *stored_capability.time(),
             1,
         ));
     }
@@ -470,11 +391,12 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
                 {
                     let partial_event = match event_kind {
                         EventKind::OperatorActivation { operator_id } => {
-                            PartialTimelineEvent::OperatorActivation { operator_id }
+                            PartialTimelineEvent::activation(operator_id)
                         }
                         EventKind::Merge { operator_id } => {
-                            PartialTimelineEvent::Merge { operator_id }
+                            PartialTimelineEvent::merge(operator_id)
                         }
+
                         _ => unreachable!(),
                     };
 
@@ -485,7 +407,7 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
                             .downgrade(&stored_capability.time().join(self.capability.time()));
 
                         self.output.session(&stored_capability).give((
-                            (self.worker, partial_event, duration),
+                            EventData::new(self.worker, partial_event, start_time, duration),
                             self.time,
                             1,
                         ));
@@ -648,7 +570,31 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
-enum EventKind {
+pub(super) struct EventData {
+    worker: WorkerIdentifier,
+    partial_event: PartialTimelineEvent,
+    start_time: Duration,
+    duration: Duration,
+}
+
+impl EventData {
+    pub const fn new(
+        worker: WorkerIdentifier,
+        partial_event: PartialTimelineEvent,
+        start_time: Duration,
+        duration: Duration,
+    ) -> Self {
+        Self {
+            worker,
+            partial_event,
+            start_time,
+            duration,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
+pub(super) enum EventKind {
     OperatorActivation { operator_id: usize },
     Message,
     Progress,
@@ -658,10 +604,24 @@ enum EventKind {
     Merge { operator_id: usize },
 }
 
+impl EventKind {
+    pub const fn activation(operator_id: usize) -> Self {
+        Self::OperatorActivation { operator_id }
+    }
+
+    pub const fn application(id: usize) -> Self {
+        Self::Application { id }
+    }
+
+    pub const fn merge(operator_id: usize) -> Self {
+        Self::Merge { operator_id }
+    }
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Abomonation,
 )]
-enum PartialTimelineEvent {
+pub(super) enum PartialTimelineEvent {
     OperatorActivation { operator_id: usize },
     Application,
     Parked,
@@ -669,6 +629,25 @@ enum PartialTimelineEvent {
     Message,
     Progress,
     Merge { operator_id: usize },
+}
+
+impl PartialTimelineEvent {
+    pub const fn activation(operator_id: usize) -> Self {
+        Self::OperatorActivation { operator_id }
+    }
+
+    pub const fn merge(operator_id: usize) -> Self {
+        Self::Merge { operator_id }
+    }
+
+    pub const fn operator_id(&self) -> Option<usize> {
+        match *self {
+            Self::OperatorActivation { operator_id } | Self::Merge { operator_id } => {
+                Some(operator_id)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[allow(clippy::from_over_into)]
@@ -688,18 +667,6 @@ impl Into<TimelineEvent> for PartialTimelineEvent {
                 operator_id,
                 operator_name: String::new(),
             },
-        }
-    }
-}
-
-impl PartialTimelineEvent {
-    pub const fn operator_id(&self) -> Option<usize> {
-        match *self {
-            Self::OperatorActivation { operator_id } | Self::Merge { operator_id } => {
-                Some(operator_id)
-            }
-
-            _ => None,
         }
     }
 }
@@ -724,7 +691,7 @@ pub enum TimelineEvent {
 }
 
 impl TimelineEvent {
-    fn operator_name_mut(&mut self) -> Option<&mut String> {
+    pub fn operator_name_mut(&mut self) -> Option<&mut String> {
         match self {
             Self::OperatorActivation { operator_name, .. } | Self::Merge { operator_name, .. } => {
                 Some(operator_name)

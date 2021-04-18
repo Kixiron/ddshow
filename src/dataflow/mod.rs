@@ -6,6 +6,7 @@ pub mod operators;
 mod reachability;
 mod subgraphs;
 mod summation;
+mod tests;
 mod worker_timeline;
 
 pub use operator_stats::OperatorStats;

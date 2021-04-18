@@ -4,10 +4,14 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     num::NonZeroUsize,
     sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
 };
 use timely::communication::WorkerGuards;
 
 pub type Connections = Vec<TcpStream>;
+
+/// The read timeout to impose on tcp connections
+const TCP_READ_TIMEOUT: Option<Duration> = Some(Duration::from_millis(200));
 
 /// Connect to the given address and collect `connections` streams, returning all of them
 /// in non-blocking mode
@@ -22,9 +26,17 @@ pub fn wait_for_connections(
         .zip(timely_listener.incoming())
         .map(|(i, socket)| {
             let socket = socket.context("failed to accept socket connection")?;
+
             socket
                 .set_nonblocking(true)
                 .context("failed to set socket to non-blocking mode")?;
+
+            socket.set_read_timeout(TCP_READ_TIMEOUT).with_context(|| {
+                format!(
+                    "failed to set socket to a read timeout of {:?}",
+                    TCP_READ_TIMEOUT,
+                )
+            })?;
 
             println!("Connected to socket {}/{}", i + 1, connections);
             Ok(socket)
