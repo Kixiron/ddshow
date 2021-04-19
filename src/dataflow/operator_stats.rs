@@ -1,5 +1,8 @@
-use super::{summation::summation, Diff, TimelyLogBundle};
-use crate::dataflow::{differential::ArrangementStats, summation::Summation};
+use crate::dataflow::{
+    differential::ArrangementStats,
+    summation::{summation, Summation},
+    Diff, TimelyLogBundle,
+};
 use abomonation_derive::Abomonation;
 use differential_dataflow::{
     collection::AsCollection,
@@ -14,22 +17,22 @@ use timely::{
         operators::{Enter, Map, Operator},
         Scope, Stream,
     },
-    logging::{StartStop, TimelyEvent},
+    logging::{StartStop, TimelyEvent, WorkerIdentifier},
 };
 
 pub fn operator_stats<S>(
     scope: &mut S,
     log_stream: &Stream<S, TimelyLogBundle>,
-) -> Collection<S, (usize, OperatorStats), Diff>
+) -> Collection<S, ((WorkerIdentifier, usize), OperatorStats), Diff>
 where
     S: Scope<Timestamp = Duration>,
 {
     scope.region_named("Collect Operator Execution Durations", |region| {
         let log_stream = log_stream.enter(region);
 
-        let scheduling_events = log_stream.flat_map(|(time, _worker, event)| {
+        let scheduling_events = log_stream.flat_map(|(time, worker, event)| {
             if let TimelyEvent::Schedule(event) = event {
-                Some((event, time, 1))
+                Some(((worker, event), time, 1))
             } else {
                 None
             }
@@ -48,15 +51,16 @@ where
                             let capability = capability.retain();
                             data.swap(&mut buffer);
 
-                            for (event, time, _diff) in buffer.drain(..) {
+                            for ((worker, event), time, _diff) in buffer.drain(..) {
                                 match event.start_stop {
                                     StartStop::Start => {
-                                        schedule_map.insert(event.id, (time, capability.clone()));
+                                        schedule_map
+                                            .insert((worker, event.id), (time, capability.clone()));
                                     }
 
                                     StartStop::Stop => {
                                         if let Some((start_time, mut stored_capability)) =
-                                            schedule_map.remove(&event.id)
+                                            schedule_map.remove(&(worker, event.id))
                                         {
                                             let duration = time - start_time;
                                             stored_capability.downgrade(
@@ -64,7 +68,7 @@ where
                                             );
 
                                             output.session(&stored_capability).give((
-                                                (event.id, duration),
+                                                ((worker, event.id), duration),
                                                 time,
                                                 // Product::new(start_time, time),
                                                 1,
@@ -96,7 +100,7 @@ where
         aggregated_durations
             .join_map(
                 &execution_statistics,
-                |&id,
+                |&(worker, id),
                  activation_durations,
                  &Summation {
                      max,
@@ -116,7 +120,7 @@ where
                         arrangement_size: None,
                     };
 
-                    (id, stats)
+                    ((worker, id), stats)
                 },
             )
             .leave_region()

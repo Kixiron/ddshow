@@ -42,7 +42,7 @@ use timely::{
         operators::{
             capture::{Capture, Event, EventReader},
             probe::Handle as ProbeHandle,
-            Filter, Map, Probe,
+            Map, Probe,
         },
         Scope, Stream,
     },
@@ -50,6 +50,8 @@ use timely::{
     order::TotalOrder,
 };
 use worker_timeline::worker_timeline;
+
+// TODO: Newtype channel ids, operators ids, channel addrs and operator addrs and worker ids
 
 type TimelyLogBundle = (Duration, WorkerIdentifier, TimelyEvent);
 type DifferentialLogBundle = (Duration, WorkerIdentifier, DifferentialEvent);
@@ -82,9 +84,10 @@ impl Debug for Address {
     }
 }
 
-pub type NodeBundle = ((Address, OperatesEvent), Duration, Diff);
+pub type NodeBundle = (((WorkerIdentifier, Address), OperatesEvent), Duration, Diff);
 pub type EdgeBundle = (
     (
+        WorkerIdentifier,
         OperatesEvent,
         Channel,
         OperatesEvent,
@@ -93,8 +96,8 @@ pub type EdgeBundle = (
     Duration,
     Diff,
 );
-pub type SubgraphBundle = ((Address, OperatesEvent), Duration, Diff);
-pub type StatsBundle = ((usize, OperatorStats), Duration, Diff);
+pub type SubgraphBundle = (((WorkerIdentifier, Address), OperatesEvent), Duration, Diff);
+pub type StatsBundle = (((WorkerIdentifier, usize), OperatorStats), Duration, Diff);
 pub type TimelineBundle = (WorkerTimelineEvent, Duration, Diff);
 
 #[derive(Clone)]
@@ -138,24 +141,9 @@ where
     let mut probe = ProbeHandle::new();
 
     // The timely log stream filtered down to worker 0's events
-    let raw_timely_stream = timely_traces
+    let timely_stream = timely_traces
         .replay_with_shutdown_into_named("Timely Replay", scope, replay_shutdown.clone())
         .debug_inspect(|x| tracing::trace!("timely event: {:?}", x));
-
-    let timely_stream = raw_timely_stream
-        // This is a bit of a cop-out that should work for *most*
-        // dataflow programs. In most programs, every worker has the
-        // exact same dataflows created, which means that ignoring
-        // every worker other than worker 0 works perfectly fine.
-        // However, if a program that has unique dataflows per-worker,
-        // we'll need to rework how some things are done to distinguish
-        // between workers on an end-to-end basis. This also isn't
-        // accurate on a profiling basis, as it only shows the stats
-        // of worker 0 and ignores all others. Ideally, we'll be able
-        // to show total and per-worker times on each operator, since
-        // they should vary from worker to worker and this workaround
-        // only shows 1/nth of the story
-        .filter(|&(_, worker_id, _)| worker_id == 0);
 
     let raw_differential_stream = differential_traces.map(|traces| {
         traces
@@ -164,23 +152,16 @@ where
     });
 
     let operators = operator_creations(&timely_stream);
+
     let operator_stats = operator_stats(scope, &timely_stream);
     let operator_names = operators
-        .map(|operates| (operates.id, operates.name))
+        .map(|(worker, operates)| ((worker, operates.id), operates.name))
         .arrange_by_key();
 
     let operator_stats = raw_differential_stream
         .as_ref()
         .map(|stream| {
-            let arrangement_stats = arrangement_stats(scope, stream)
-                .filter_map(|((worker, operator), stats)| {
-                    if worker == 0 {
-                        Some((operator, stats))
-                    } else {
-                        None
-                    }
-                })
-                .consolidate();
+            let arrangement_stats = arrangement_stats(scope, stream).consolidate();
 
             let modified_stats = operator_stats.join_map(
                 &arrangement_stats,
@@ -207,21 +188,22 @@ where
 
     let worker_timeline = worker_timeline(
         scope,
-        &raw_timely_stream,
+        &timely_stream,
         raw_differential_stream.as_ref(),
         &operator_names,
     );
 
-    operators
-        .map(|operator| (Address::new(operator.addr.clone()), operator))
+    let addressed_operators = operators
+        .map(|(worker, operator)| ((worker, Address::new(operator.addr.clone())), operator));
+
+    addressed_operators
         .semijoin(&leaves)
         .consolidate()
         .inner
         .probe_with(&mut probe)
         .capture_into(CrossbeamPusher::new(senders.node_sender));
 
-    operators
-        .map(|operator| (Address::new(operator.addr.clone()), operator))
+    addressed_operators
         .semijoin(&subgraphs)
         .consolidate()
         .inner
@@ -260,14 +242,14 @@ where
 
 fn operator_creations<S>(
     log_stream: &Stream<S, TimelyLogBundle>,
-) -> Collection<S, OperatesEvent, Diff>
+) -> Collection<S, (WorkerIdentifier, OperatesEvent), Diff>
 where
     S: Scope<Timestamp = Duration>,
 {
     log_stream
-        .flat_map(|(time, _worker, event)| {
+        .flat_map(|(time, worker, event)| {
             if let TimelyEvent::Operates(event) = event {
-                Some((event, time, 1))
+                Some(((worker, event), time, 1))
             } else {
                 None
             }
@@ -277,14 +259,14 @@ where
 
 fn channel_creations<S>(
     log_stream: &Stream<S, TimelyLogBundle>,
-) -> Collection<S, ChannelsEvent, Diff>
+) -> Collection<S, (WorkerIdentifier, ChannelsEvent), Diff>
 where
     S: Scope<Timestamp = Duration>,
 {
     log_stream
-        .flat_map(|(time, _worker, event)| {
+        .flat_map(|(time, worker, event)| {
             if let TimelyEvent::Channels(event) = event {
-                Some((event, time, 1))
+                Some(((worker, event), time, 1))
             } else {
                 None
             }
@@ -292,10 +274,15 @@ where
         .as_collection()
 }
 
+type LeavesAndScopes<S, D> = (
+    Collection<S, (WorkerIdentifier, Address), D>,
+    Collection<S, (WorkerIdentifier, Address), D>,
+);
+
 fn sift_leaves_and_scopes<S, D>(
     scope: &mut S,
-    operators: &Collection<S, OperatesEvent, D>,
-) -> (Collection<S, Address, D>, Collection<S, Address, D>)
+    operators: &Collection<S, (WorkerIdentifier, OperatesEvent), D>,
+) -> LeavesAndScopes<S, D>
 where
     S: Scope,
     S::Timestamp: Lattice + TotalOrder,
@@ -304,13 +291,13 @@ where
     scope.region_named("Sift Leaves and Scopes", |region| {
         let operators = operators
             .enter_region(region)
-            .map(|operator| (Address::new(operator.addr), ()));
+            .map(|(worker, operator)| ((worker, Address::new(operator.addr)), ()));
 
         // The addresses of potential scopes, excluding leaf operators
         let potential_scopes = operators
-            .map(|(mut addr, ())| {
+            .map(|((worker, mut addr), ())| {
                 addr.addr.pop();
-                addr
+                (worker, addr)
             })
             .distinct_total();
 
@@ -332,10 +319,10 @@ where
 
 fn attach_operators<S, D>(
     scope: &mut S,
-    operators: &Collection<S, OperatesEvent, D>,
-    channels: &Collection<S, Channel, D>,
-    leaves: &Collection<S, Address, D>,
-) -> Collection<S, (OperatesEvent, Channel, OperatesEvent), D>
+    operators: &Collection<S, (WorkerIdentifier, OperatesEvent), D>,
+    channels: &Collection<S, (WorkerIdentifier, Channel), D>,
+    leaves: &Collection<S, (WorkerIdentifier, Address), D>,
+) -> Collection<S, (WorkerIdentifier, OperatesEvent, Channel, OperatesEvent), D>
 where
     S: Scope,
     S::Timestamp: Lattice,
@@ -349,24 +336,25 @@ where
             leaves.enter_region(region),
         );
 
-        let operators_by_address =
-            operators.map(|operator| (Address::new(operator.addr.clone()), operator));
+        let operators_by_address = operators
+            .map(|(worker, operator)| ((worker, Address::new(operator.addr.clone())), operator));
 
         operators_by_address
             .semijoin(&leaves)
             .join_map(
-                &channels.map(|channel| (channel.source_addr(), channel)),
-                |_src_addr, src_operator, channel| {
+                &channels.map(|(worker, channel)| ((worker, channel.source_addr()), channel)),
+                |&(worker, ref _src_addr), src_operator, channel| {
                     (
-                        channel.target_addr(),
+                        (worker, channel.target_addr()),
                         (src_operator.clone(), channel.clone()),
                     )
                 },
             )
             .join_map(
                 &operators_by_address,
-                |_target_addr, (src_operator, channel), target_operator| {
+                |&(worker, ref _target_addr), (src_operator, channel), target_operator| {
                     (
+                        worker,
                         src_operator.clone(),
                         channel.clone(),
                         target_operator.clone(),

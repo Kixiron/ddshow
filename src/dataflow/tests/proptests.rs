@@ -23,7 +23,7 @@ proptest! {
     }
 
     #[test]
-    fn timely_event_association_stress(pairs in proptest::collection::vec(gen_timely_event_pair(), 1..1000)) {
+    fn timely_event_association_stress(pairs in proptest::collection::vec(gen_timely_event_pair(), 1..500)) {
         timely_event_association_stress_inner(pairs)?;
     }
 }

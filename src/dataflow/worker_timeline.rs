@@ -10,7 +10,7 @@ use differential_dataflow::{
     logging::DifferentialEvent,
     operators::{
         arrange::{ArrangeByKey, Arranged},
-        JoinCore,
+        JoinCore, Threshold,
     },
     trace::TraceReader,
     AsCollection, Collection, ExchangeData,
@@ -37,7 +37,9 @@ pub fn worker_timeline<S, Trace>(
 ) -> Collection<S, WorkerTimelineEvent, Diff>
 where
     S: Scope<Timestamp = Duration>,
-    Trace: TraceReader<Key = usize, Val = String, Time = Duration, R = Diff> + Clone + 'static,
+    Trace: TraceReader<Key = (WorkerIdentifier, usize), Val = String, Time = Duration, R = Diff>
+        + Clone
+        + 'static,
 {
     scope.region_named("Collect Worker Timelines", |region| {
         let (timely_stream, differential_stream) = (
@@ -58,6 +60,7 @@ where
             .map(|differential_events| timely_events.concat(differential_events))
             .unwrap_or(timely_events)
             .as_collection()
+            .distinct_core::<Diff>()
             .identifiers();
 
         let (needs_operators, finished) = partial_events.filter_split(
@@ -80,13 +83,14 @@ where
                 };
 
                 if let Some(operator_id) = partial_event.operator_id() {
-                    (Some((operator_id, timeline_event)), None)
+                    (Some(((worker, operator_id), timeline_event)), None)
                 } else {
                     (None, Some(timeline_event))
                 }
             },
         );
 
+        // FIXME: Add errors for `needs_operators` that fail the join
         let events = needs_operators
             .arrange_by_key()
             .join_core(&operator_names.enter_region(region), |_id, event, name| {

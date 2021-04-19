@@ -182,11 +182,19 @@ fn main() -> Result<()> {
             )
         })?;
 
+        let mut flush_delay: Option<Instant> = None;
         'work_loop: while !probe.done() {
+            // TODO: Reactivate select operators to try and get data flushed through?
+            if let Some(flush_start) = flush_delay {
+                if flush_start.elapsed() > Duration::from_secs(1) {
+                    worker.drop_dataflow(dataflow_id);
+                    break 'work_loop;
+                }
+
             // TODO: Propagate info into some of the more important operators so that
             //       we can get a semi-clean shutdown and retain some information
             //       instead of brutally cutting everything off.
-            if !replay_shutdown.load(Ordering::Acquire) {
+            } else if !replay_shutdown.load(Ordering::Acquire) {
                 tracing::info!(
                     worker_id = worker.index(),
                     dataflow_id = dataflow_id,
@@ -195,8 +203,7 @@ fn main() -> Result<()> {
                     worker.index(),
                 );
 
-                worker.drop_dataflow(dataflow_id);
-                break 'work_loop;
+                flush_delay = Some(Instant::now());
             }
 
             worker.step_or_park(Some(Duration::from_millis(500)));
@@ -234,13 +241,13 @@ fn main() -> Result<()> {
         subgraph_events.len(),
     );
 
-    for (_addr, event) in subgraph_events.iter() {
+    for &((worker, ref _addr), ref event) in subgraph_events.iter() {
         let id = event.id;
 
         // operator_names.insert(id, event.name.clone());
         // graph_nodes.insert(&addr.addr, Graph::Subgraph(event));
         // operator_addresses.insert(id, addr);
-        subgraph_ids.push(id);
+        subgraph_ids.push((worker, id));
     }
 
     let (mut operator_stats, mut raw_timings) = (HashMap::new(), Vec::new());
@@ -257,7 +264,7 @@ fn main() -> Result<()> {
     }
 
     let mut edge_events = CrossbeamExtractor::new(edge_receiver).extract_all();
-    edge_events.sort_unstable_by_key(|(_, channel, _)| channel.channel_id());
+    edge_events.sort_unstable_by_key(|(worker, _, channel, _)| (*worker, channel.channel_id()));
     tracing::info!("finished extracting {} edge events", edge_events.len());
 
     let (max_time, min_time) = (
@@ -265,17 +272,27 @@ fn main() -> Result<()> {
         raw_timings.iter().min().copied().unwrap_or_default(),
     );
 
-    let mut timeline_events: Vec<_> = CrossbeamExtractor::new(timeline_receiver)
-        .extract()
+    let mut timeline_events = HashMap::new();
+    for (_time, data) in CrossbeamExtractor::new(timeline_receiver).extract() {
+        for (event, start_time, diff) in data {
+            timeline_events.entry(event).or_insert((start_time, 0)).1 += diff;
+        }
+    }
+
+    let mut timeline_events: Vec<_> = timeline_events
         .into_iter()
-        .flat_map(|(_, data)| {
-            data.into_iter()
-                .map(|(event, start_time, _diff)| WorkerTimelineEvent {
+        .filter_map(|(event, (start_time, diff))| {
+            if diff >= 1 {
+                Some(WorkerTimelineEvent {
                     start_time: start_time.as_nanos() as u64,
                     ..event
                 })
+            } else {
+                None
+            }
         })
         .collect();
+
     timeline_events.sort_unstable_by_key(|event| (event.worker, event.start_time));
     tracing::info!(
         "finished extracting {} timeline events",
@@ -284,7 +301,7 @@ fn main() -> Result<()> {
 
     let html_nodes: Vec<_> = node_events
         .into_iter()
-        .filter_map(|(addr, OperatesEvent { id, name, .. })| {
+        .filter_map(|((worker, addr), OperatesEvent { id, name, .. })| {
             let &OperatorStats {
                 max,
                 min,
@@ -294,13 +311,14 @@ fn main() -> Result<()> {
                 ref activation_durations,
                 ref arrangement_size,
                 ..
-            } = operator_stats.get(&id)?;
+            } = operator_stats.get(&(worker, id))?;
 
             let fill_color = select_color(&args.palette, total, (max_time, min_time));
             let text_color = fill_color.text_color();
 
             Some(ui::Node {
                 id,
+                worker,
                 addr: addr.addr,
                 name,
                 max_activation_time: format!("{:#?}", max),
@@ -325,7 +343,7 @@ fn main() -> Result<()> {
 
     let html_subgraphs: Vec<_> = subgraph_events
         .into_iter()
-        .filter_map(|(addr, OperatesEvent { id, name, .. })| {
+        .filter_map(|((worker, addr), OperatesEvent { id, name, .. })| {
             let OperatorStats {
                 max,
                 min,
@@ -333,13 +351,14 @@ fn main() -> Result<()> {
                 total,
                 invocations,
                 ..
-            } = *operator_stats.get(&id)?;
+            } = *operator_stats.get(&(worker, id))?;
 
             let fill_color = select_color(&args.palette, total, (max, min));
             let text_color = fill_color.text_color();
 
             Some(ui::Subgraph {
                 id,
+                worker,
                 addr: addr.addr,
                 name,
                 max_activation_time: format!("{:#?}", max),
@@ -357,10 +376,16 @@ fn main() -> Result<()> {
         // .clone()
         .into_iter()
         .map(
-            |(OperatesEvent { addr: src, .. }, channel, OperatesEvent { addr: dest, .. })| {
+            |(
+                worker,
+                OperatesEvent { addr: src, .. },
+                channel,
+                OperatesEvent { addr: dest, .. },
+            )| {
                 ui::Edge {
                     src,
                     dest,
+                    worker,
                     channel_id: channel.channel_id(),
                     edge_kind: match channel {
                         Channel::Normal { .. } => EdgeKind::Normal,

@@ -5,13 +5,16 @@ use differential_dataflow::{
     operators::{arrange::ArrangeByKey, Consolidate, Iterate, Join, JoinCore, Threshold},
     Collection, ExchangeData,
 };
-use timely::{dataflow::Scope, logging::ChannelsEvent};
+use timely::{
+    dataflow::Scope,
+    logging::{ChannelsEvent, WorkerIdentifier},
+};
 
 pub fn rewire_channels<S, D>(
     scope: &mut S,
-    channels: &Collection<S, ChannelsEvent, D>,
-    subgraphs: &Collection<S, Address, D>,
-) -> Collection<S, Channel, D>
+    channels: &Collection<S, (WorkerIdentifier, ChannelsEvent), D>,
+    subgraphs: &Collection<S, (WorkerIdentifier, Address), D>,
+) -> Collection<S, (WorkerIdentifier, Channel), D>
 where
     S: Scope,
     S::Timestamp: Lattice,
@@ -35,9 +38,9 @@ where
 
 fn subgraph_crosses<S, D>(
     scope: &mut S,
-    channels: &Collection<S, ChannelsEvent, D>,
-    subgraphs: &Collection<S, Address, D>,
-) -> Collection<S, Channel, D>
+    channels: &Collection<S, (WorkerIdentifier, ChannelsEvent), D>,
+    subgraphs: &Collection<S, (WorkerIdentifier, Address), D>,
+) -> Collection<S, (WorkerIdentifier, Channel), D>
 where
     S: Scope,
     S::Timestamp: Lattice,
@@ -49,7 +52,7 @@ where
             subgraphs.enter_region(region),
         );
 
-        let channels = channels.map(|channel| {
+        let channels = channels.map(|(worker, channel)| {
             let mut source = channel.scope_addr.clone();
             source.push(channel.source.0);
 
@@ -57,7 +60,7 @@ where
             target.push(channel.target.0);
 
             (
-                (Address::new(source), channel.source.1),
+                (worker, Address::new(source), channel.source.1),
                 (
                     (Address::new(target), channel.target.1),
                     Address::new(vec![channel.id]),
@@ -67,32 +70,41 @@ where
 
         let channels_arranged = channels.arrange_by_key();
         let channels_reverse = channels
-            .map(|(source, (target, path))| (target, (source, path)))
+            .map(
+                |((worker, source_addr, src_channel), ((target_addr, target_channel), path))| {
+                    (
+                        (worker, target_addr, target_channel),
+                        ((source_addr, src_channel), path),
+                    )
+                },
+            )
             .arrange_by_key();
 
         let propagated_channels = channels.iterate(|links| {
-            let ingress_candidates = links.map(|(source, (target, path))| {
+            let ingress_candidates = links.map(|((worker, source, channel), (target, path))| {
                 let mut new_target = target.0.clone();
                 new_target.addr.push(0);
 
-                ((new_target, target.1), (source, path))
+                ((worker, new_target, target.1), ((source, channel), path))
             });
 
-            let egress_candidates = links.map(|(source, (target, path))| {
-                let mut new_source = source.0.clone();
-                new_source.addr.push(0);
+            let egress_candidates = links.map(|((worker, mut source, channel), (target, path))| {
+                source.addr.push(0);
 
-                ((new_source, source.1), (target, path))
+                ((worker, source, channel), (target, path))
             });
 
             let ingress = channels_arranged.enter(&links.scope()).join_core(
                 &ingress_candidates.arrange_by_key(),
-                |_middle, (inner, inner_vec), (outer, outer_vec)| {
+                |&(worker, _, _), (inner, inner_vec), (outer, outer_vec)| {
                     if inner_vec != outer_vec {
                         let mut outer_vec = outer_vec.to_owned();
                         outer_vec.addr.extend(inner_vec.addr.iter());
 
-                        Some((outer.to_owned(), (inner.to_owned(), outer_vec)))
+                        Some((
+                            (worker, outer.0.to_owned(), outer.1.to_owned()),
+                            (inner.to_owned(), outer_vec),
+                        ))
                     } else {
                         None
                     }
@@ -101,12 +113,15 @@ where
 
             let egress = channels_reverse.enter(&links.scope()).join_core(
                 &egress_candidates.arrange_by_key(),
-                |_middle, (inner, inner_vec), (outer, outer_vec)| {
+                |&(worker, _, _), (inner, inner_vec), (outer, outer_vec)| {
                     if inner_vec != outer_vec {
                         let mut inner_vec = inner_vec.to_owned();
                         inner_vec.addr.extend(outer_vec.addr.iter());
 
-                        Some((inner.to_owned(), (outer.to_owned(), inner_vec)))
+                        Some((
+                            (worker, inner.0.to_owned(), inner.1.to_owned()),
+                            (outer.to_owned(), inner_vec),
+                        ))
                     } else {
                         None
                     }
@@ -130,17 +145,22 @@ where
             // })
             .map(
                 |(
-                    (source_addr, _source_port),
+                    (worker, source_addr, _source_port),
                     ((target_addr, _target_port), channel_ids_along_path),
-                )| Channel::ScopeCrossing {
-                    channel_id: channel_ids_along_path[0],
-                    source_addr,
-                    target_addr,
+                )| {
+                    (
+                        worker,
+                        Channel::ScopeCrossing {
+                            channel_id: channel_ids_along_path[0],
+                            source_addr,
+                            target_addr,
+                        },
+                    )
                 },
             )
-            .map(|channel| (channel.target_addr(), channel))
+            .map(|(worker, channel)| ((worker, channel.target_addr()), channel))
             .antijoin(&subgraphs)
-            .map(|(_, channel)| channel)
+            .map(|((worker, _), channel)| (worker, channel))
             .consolidate()
             .leave_region()
     })
@@ -148,9 +168,9 @@ where
 
 fn subgraph_normal<S, D>(
     scope: &mut S,
-    channels: &Collection<S, ChannelsEvent, D>,
-    subgraphs: &Collection<S, Address, D>,
-) -> Collection<S, Channel, D>
+    channels: &Collection<S, (WorkerIdentifier, ChannelsEvent), D>,
+    subgraphs: &Collection<S, (WorkerIdentifier, Address), D>,
+) -> Collection<S, (WorkerIdentifier, Channel), D>
 where
     S: Scope,
     S::Timestamp: Lattice,
@@ -163,7 +183,7 @@ where
         );
 
         channels
-            .filter_map(|channel| {
+            .filter_map(|(worker, channel)| {
                 if channel.source.0 != 0 && channel.target.0 != 0 {
                     let mut source_addr = channel.scope_addr.clone();
                     source_addr.push(channel.source.0);
@@ -172,7 +192,7 @@ where
                     target_addr.push(channel.target.0);
 
                     Some((
-                        Address::new(source_addr),
+                        (worker, Address::new(source_addr)),
                         (channel.id, Address::new(target_addr)),
                     ))
                 } else {
@@ -180,14 +200,19 @@ where
                 }
             })
             .antijoin(&subgraphs)
-            .map(|(source_addr, (channel_id, target_addr))| {
-                (target_addr, (channel_id, source_addr))
+            .map(|((worker, source_addr), (channel_id, target_addr))| {
+                ((worker, target_addr), (channel_id, source_addr))
             })
             .antijoin(&subgraphs)
-            .map(|(target_addr, (channel_id, source_addr))| Channel::Normal {
-                channel_id,
-                source_addr,
-                target_addr,
+            .map(|((worker, target_addr), (channel_id, source_addr))| {
+                (
+                    worker,
+                    Channel::Normal {
+                        channel_id,
+                        source_addr,
+                        target_addr,
+                    },
+                )
             })
             .leave_region()
     })

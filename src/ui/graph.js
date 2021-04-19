@@ -295,9 +295,9 @@ function worker_timeline(timeline_events) {
         .bottomMargin(50)
         .zQualitative(true)
         .xTickFormat(format_duration)
-        .sortChrono(true)
+        .sortAlpha(true)
         .maxHeight(4096)
-        .maxLineHeight(200)
+        .maxLineHeight(100)
         .data(data);
 }
 

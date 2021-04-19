@@ -6,6 +6,7 @@ use std::{
     io::BufWriter,
 };
 use tera::{Context, Tera};
+use timely::logging::WorkerIdentifier;
 
 const GRAPH_HTML: &str = include_str!("graph.html");
 const GRAPH_CSS: &str = include_str!("graph.css");
@@ -79,6 +80,7 @@ pub struct GraphData {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub struct Node {
     pub id: usize,
+    pub worker: WorkerIdentifier,
     pub addr: Vec<usize>,
     pub name: String,
     pub max_activation_time: String,
@@ -102,6 +104,7 @@ pub struct ActivationDuration {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub struct Subgraph {
     pub id: usize,
+    pub worker: WorkerIdentifier,
     pub addr: Vec<usize>,
     pub name: String,
     pub max_activation_time: String,
@@ -117,6 +120,7 @@ pub struct Subgraph {
 pub struct Edge {
     pub src: Vec<usize>,
     pub dest: Vec<usize>,
+    pub worker: WorkerIdentifier,
     pub channel_id: usize,
     pub edge_kind: EdgeKind,
 }
