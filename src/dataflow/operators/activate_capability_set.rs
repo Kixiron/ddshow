@@ -40,6 +40,15 @@ impl<T: Timestamp> ActivateCapabilitySet<T> {
     }
 }
 
+impl<T> From<Vec<ActivateCapability<T>>> for ActivateCapabilitySet<T>
+where
+    T: Timestamp,
+{
+    fn from(elements: Vec<ActivateCapability<T>>) -> Self {
+        Self { elements }
+    }
+}
+
 impl<T: Timestamp> Deref for ActivateCapabilitySet<T> {
     type Target = [ActivateCapability<T>];
 

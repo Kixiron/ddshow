@@ -215,6 +215,7 @@ dependencies = [
  "differential-dataflow",
  "num",
  "proptest",
+ "rand",
  "sequence_trie",
  "serde",
  "serde_json",

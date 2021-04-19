@@ -112,11 +112,11 @@ type EventMap = HashMap<(WorkerIdentifier, EventKind), Vec<(Duration, Capability
 type EventOutput<'a> =
     OutputHandle<'a, Duration, TimelineStreamEvent, Tee<Duration, TimelineStreamEvent>>;
 
-pub(super) fn collect_timely_events<S>(
-    event_stream: &Stream<S, TimelyLogBundle>,
+pub(super) fn collect_timely_events<'a, 'b, S>(
+    event_stream: &'b Stream<S, TimelyLogBundle>,
 ) -> TimelineEventStream<S>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Duration> + 'a,
 {
     event_stream.unary(
         Pipeline,
@@ -211,6 +211,7 @@ fn process_timely_event(event_processor: &mut EventProcessor<'_, '_>, event: Tim
     }
 }
 
+// TODO: Wire operator shutdown events into this as well
 pub(super) fn collect_differential_events<S>(
     event_stream: &Stream<S, DifferentialLogBundle>,
 ) -> TimelineEventStream<S>
@@ -597,10 +598,10 @@ where
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
 pub(super) struct EventData {
-    worker: WorkerIdentifier,
-    partial_event: PartialTimelineEvent,
-    start_time: Duration,
-    duration: Duration,
+    pub(super) worker: WorkerIdentifier,
+    pub(super) partial_event: PartialTimelineEvent,
+    pub(super) start_time: Duration,
+    pub(super) duration: Duration,
 }
 
 impl EventData {
