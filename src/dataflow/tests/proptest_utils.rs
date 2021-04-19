@@ -1,4 +1,5 @@
 use crate::dataflow::{
+    operators::ActivateCapabilitySet,
     worker_timeline::{EventData, PartialTimelineEvent},
     Diff,
 };
@@ -11,7 +12,10 @@ use proptest::{
     test_runner::{RngAlgorithm, TestRng},
 };
 use std::{fmt::Debug, time::Duration};
-use timely::logging::{ScheduleEvent, ShutdownEvent, StartStop, TimelyEvent, WorkerIdentifier};
+use timely::{
+    dataflow::operators::{input::Handle as InputHandle, unordered_input::UnorderedHandle},
+    logging::{ScheduleEvent, ShutdownEvent, StartStop, TimelyEvent, WorkerIdentifier},
+};
 
 type ExpectedEvent = (Duration, (EventData, Duration, Diff));
 
@@ -37,6 +41,43 @@ impl<E> EventPair<E> {
                 1,
             ),
         )
+    }
+
+    pub(super) fn give_to(&self, input: &mut InputHandle<Duration, (Duration, WorkerIdentifier, E)>)
+    where
+        E: Clone + 'static,
+    {
+        input.advance_to(self.start.recv_timestamp);
+        input.send((self.start.timestamp, self.worker, self.start.event.clone()));
+
+        input.advance_to(self.end.recv_timestamp);
+        input.send((self.end.timestamp, self.worker, self.end.event.clone()));
+    }
+
+    pub(super) fn give_to_unordered(
+        &self,
+        input: &mut UnorderedHandle<Duration, (Duration, WorkerIdentifier, E)>,
+        capabilities: &mut ActivateCapabilitySet<Duration>,
+    ) where
+        E: Clone + 'static,
+    {
+        let (start_capability, end_capability) = (
+            capabilities.delayed(&self.start.recv_timestamp),
+            capabilities.delayed(&self.end.recv_timestamp),
+        );
+        capabilities.insert(start_capability.clone());
+        capabilities.insert(end_capability.clone());
+
+        input.session(start_capability).give((
+            self.start.timestamp,
+            self.worker,
+            self.start.event.clone(),
+        ));
+        input.session(end_capability).give((
+            self.end.timestamp,
+            self.worker,
+            self.end.event.clone(),
+        ));
     }
 }
 

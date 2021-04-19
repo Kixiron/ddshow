@@ -86,7 +86,7 @@ fn timeline_events_inner(
 ) -> Result<(), TestCaseError> {
     init_test_logging();
 
-    let mut expected: ExpectationVec<WorkerTimelineEvent> = Vec::new();
+    let mut expected = Vec::new();
     let mut final_timestamp = Duration::from_nanos(0);
     let mut operator_names = HashMap::new();
 
@@ -119,14 +119,7 @@ fn timeline_events_inner(
         };
         *event.event.operator_name_mut().unwrap() = name;
 
-        if let Some((_, events)) = expected
-            .iter_mut()
-            .find(|&&mut (time, _)| time == timestamp)
-        {
-            events.push((event, timestamp, diff));
-        } else {
-            expected.push((timestamp, vec![(event, timestamp, diff)]));
-        }
+        expected.push((event, timestamp, diff));
     }
 
     for pair in differential.iter() {
@@ -158,24 +151,12 @@ fn timeline_events_inner(
         };
         *event.event.operator_name_mut().unwrap() = name;
 
-        dbg!(&event, &expected, timestamp);
-        if let Some((_, events)) = expected
-            .iter_mut()
-            .find(|&&mut (time, _)| time == timestamp)
-        {
-            events.push((event, timestamp, diff));
-        } else {
-            expected.push((timestamp, vec![(event, timestamp, diff)]));
-        }
-        dbg!(&expected, timestamp);
+        expected.push((event, timestamp, diff));
     }
 
-    expected.sort_unstable_by_key(|&(time, _)| time);
-    for (_, data) in expected.iter_mut() {
-        data.sort_unstable_by_key(|&(ref event, time, _)| {
-            (time, event.worker, event.duration, event.event.clone())
-        });
-    }
+    expected.sort_unstable_by_key(|&(ref event, time, _)| {
+        (event.worker, time, event.start_time, event.duration)
+    });
 
     let (send, recv) = mpsc::channel();
     let send = Mutex::new(send);
@@ -217,79 +198,59 @@ fn timeline_events_inner(
                 1,
             ));
         }
-
-        let mut timely_capabilities = ActivateCapabilitySet::from_elem(timely_capability);
-        for EventPair {
-            ref start,
-            ref end,
-            worker: worker_id,
-        } in timely
-        {
-            let (start_capability, end_capability) = (
-                timely_capabilities.delayed(&start.recv_timestamp),
-                timely_capabilities.delayed(&end.recv_timestamp),
-            );
-            timely_capabilities.insert(start_capability.clone());
-            timely_capabilities.insert(end_capability.clone());
-
-            timely_input.session(start_capability).give((
-                start.timestamp,
-                worker_id,
-                start.event.clone(),
-            ));
-            timely_input.session(end_capability).give((
-                end.timestamp,
-                worker_id,
-                end.event.clone(),
-            ));
-        }
-
-        let mut differential_capabilities =
-            ActivateCapabilitySet::from_elem(differential_capability);
-        for EventPair {
-            ref start,
-            ref end,
-            worker: worker_id,
-        } in differential
-        {
-            let (start_capability, end_capability) = (
-                differential_capabilities.delayed(&start.recv_timestamp),
-                differential_capabilities.delayed(&end.recv_timestamp),
-            );
-            differential_capabilities.insert(start_capability.clone());
-            differential_capabilities.insert(end_capability.clone());
-
-            differential_input.session(start_capability).give((
-                start.timestamp,
-                worker_id,
-                start.event.clone(),
-            ));
-            differential_input.session(end_capability).give((
-                end.timestamp,
-                worker_id,
-                end.event.clone(),
-            ));
-        }
-
-        drop(timely_capabilities);
-        drop(differential_capabilities);
         drop(operator_capability);
 
-        worker.step_or_park_while(None, || probe.less_than(&final_timestamp));
+        let mut capabilities =
+            ActivateCapabilitySet::from(vec![timely_capability, differential_capability]);
+
+        for pair in timely {
+            pair.give_to_unordered(&mut timely_input, &mut capabilities);
+        }
+        for pair in differential {
+            pair.give_to_unordered(&mut differential_input, &mut capabilities);
+        }
+
+        capabilities.insert(capabilities.delayed(&final_timestamp));
+        drop(capabilities);
+
+        worker.step_or_park_while(None, || {
+            probe.less_than(&(final_timestamp + Duration::from_millis(1)))
+        });
     });
 
-    let mut data = recv.extract();
-    data.sort_unstable_by_key(|&(time, _)| time);
-    for (_, data) in data.iter_mut() {
-        data.sort_unstable_by_key(|&(ref event, time, _)| {
-            (time, event.worker, event.duration, event.event.clone())
-        });
-
-        for (event, _, diff) in data {
-            event.event_id = 0;
-            prop_assert_eq!(*diff, 1);
+    let mut data_map: HashMap<WorkerTimelineEvent, (Duration, Diff)> = HashMap::new();
+    for (_, data) in recv.extract() {
+        for (event, time, diff) in data {
+            // Note that we've preserved the event id of events here, this is
+            // so that we can accurately react to changes in generated ids
+            data_map
+                .entry(event)
+                .and_modify(|(t, d)| {
+                    *t = time;
+                    *d += diff;
+                })
+                .or_insert((time, diff));
         }
     }
+
+    let mut data: Vec<_> = data_map
+        .into_iter()
+        .filter_map(|(mut event, (time, diff))| {
+            if diff >= 1 {
+                // We can't predict the id of events, so just unset them
+                // TODO: Should probably assert that all output ids are unique?
+                event.event_id = 0;
+
+                Some((event, time, diff))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    data.sort_unstable_by_key(|&(ref event, time, _)| {
+        (event.worker, time, event.start_time, event.duration)
+    });
 
     prop_assert_eq!(data, expected);
 
@@ -319,19 +280,9 @@ where
             (input, partial_events.probe())
         });
 
-        let EventPair {
-            start,
-            end,
-            worker: worker_id,
-        } = pair;
+        pair.give_to(&mut input);
 
-        input.advance_to(start.recv_timestamp);
-        input.send((start.timestamp, worker_id, start.event));
-
-        input.advance_to(end.recv_timestamp);
-        input.send((end.timestamp, worker_id, end.event));
-
-        input.advance_to(end.recv_timestamp + Duration::from_nanos(1));
+        input.advance_to(pair.end.recv_timestamp + Duration::from_nanos(1));
         worker.step_or_park_while(None, || probe.less_than(input.time()));
     });
 
@@ -387,34 +338,14 @@ where
         });
 
         let mut capabilities = ActivateCapabilitySet::from_elem(capability);
-        for EventPair {
-            ref start,
-            ref end,
-            worker: worker_id,
-        } in pairs
-        {
-            let (start_capability, end_capability) = (
-                capabilities.delayed(&start.recv_timestamp),
-                capabilities.delayed(&end.recv_timestamp),
-            );
-            capabilities.insert(start_capability.clone());
-            capabilities.insert(end_capability.clone());
-
-            input
-                .session(start_capability)
-                .give((start.timestamp, worker_id, start.event.clone()));
-            input
-                .session(end_capability)
-                .give((end.timestamp, worker_id, end.event.clone()));
+        for pair in pairs {
+            pair.give_to_unordered(&mut input, &mut capabilities);
         }
 
         capabilities.insert(capabilities.delayed(&final_timestamp));
-        worker.step_or_park_while(None, || {
-            capabilities
-                .first()
-                .map(|cap| probe.less_than(cap.time()))
-                .unwrap_or_default()
-        });
+        drop(capabilities);
+
+        worker.step_or_park_while(None, || probe.less_than(&final_timestamp));
     });
 
     let data = recv.extract();
