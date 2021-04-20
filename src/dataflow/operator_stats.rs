@@ -1,7 +1,7 @@
 use crate::dataflow::{
     differential::ArrangementStats,
     summation::{summation, Summation},
-    Diff, TimelyLogBundle,
+    Diff, TimelyLogBundle, WorkerId,
 };
 use abomonation_derive::Abomonation;
 use differential_dataflow::{
@@ -17,13 +17,13 @@ use timely::{
         operators::{Enter, Map, Operator},
         Scope, Stream,
     },
-    logging::{StartStop, TimelyEvent, WorkerIdentifier},
+    logging::{StartStop, TimelyEvent},
 };
 
 pub fn operator_stats<S>(
     scope: &mut S,
     log_stream: &Stream<S, TimelyLogBundle>,
-) -> Collection<S, ((WorkerIdentifier, usize), OperatorStats), Diff>
+) -> Collection<S, ((WorkerId, usize), OperatorStats), Diff>
 where
     S: Scope<Timestamp = Duration>,
 {
@@ -111,6 +111,7 @@ where
                  }| {
                     let stats = OperatorStats {
                         id,
+                        worker,
                         max,
                         min,
                         average,
@@ -130,6 +131,7 @@ where
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
 pub struct OperatorStats {
     pub id: usize,
+    pub worker: WorkerId,
     pub max: Duration,
     pub min: Duration,
     pub average: Duration,

@@ -3,8 +3,11 @@
 mod proptest_utils;
 mod proptests;
 
-use crate::dataflow::worker_timeline::{
-    collect_differential_events, collect_timely_events, EventData, PartialTimelineEvent,
+use crate::dataflow::{
+    worker_timeline::{
+        collect_differential_events, collect_timely_events, EventData, PartialTimelineEvent,
+    },
+    WorkerId,
 };
 use differential_dataflow::logging::{DifferentialEvent, MergeEvent, MergeShortfall};
 use std::{
@@ -57,7 +60,7 @@ fn timely_event_association() {
         input.advance_to(Duration::from_nanos(1));
         input.send((
             Duration::from_nanos(1000),
-            0,
+            WorkerId::new(0),
             TimelyEvent::Schedule(ScheduleEvent {
                 id: 0,
                 start_stop: StartStop::Start,
@@ -67,7 +70,7 @@ fn timely_event_association() {
         input.advance_to(Duration::from_nanos(2));
         input.send((
             Duration::from_nanos(10_000),
-            0,
+            WorkerId::new(0),
             TimelyEvent::Schedule(ScheduleEvent {
                 id: 0,
                 start_stop: StartStop::Stop,
@@ -83,7 +86,7 @@ fn timely_event_association() {
         Duration::from_nanos(2),
         vec![(
             EventData::new(
-                0,
+                WorkerId::new(0),
                 PartialTimelineEvent::activation(0),
                 Duration::from_nanos(1000),
                 Duration::from_nanos(9000),
@@ -114,7 +117,7 @@ fn differential_event_association() {
         input.advance_to(Duration::from_nanos(1));
         input.send((
             Duration::from_nanos(1000),
-            0,
+            WorkerId::new(0),
             DifferentialEvent::Merge(MergeEvent {
                 operator: 0,
                 scale: 1000,
@@ -127,7 +130,7 @@ fn differential_event_association() {
         input.advance_to(Duration::from_nanos(2));
         input.send((
             Duration::from_nanos(10_000),
-            0,
+            WorkerId::new(0),
             DifferentialEvent::Merge(MergeEvent {
                 operator: 0,
                 scale: 1000,
@@ -140,7 +143,7 @@ fn differential_event_association() {
         input.advance_to(Duration::from_nanos(3));
         input.send((
             Duration::from_nanos(20_000),
-            1,
+            WorkerId::new(0),
             DifferentialEvent::Merge(MergeEvent {
                 operator: 1,
                 scale: 1000,
@@ -153,7 +156,7 @@ fn differential_event_association() {
         input.advance_to(Duration::from_nanos(4));
         input.send((
             Duration::from_nanos(21_000),
-            1,
+            WorkerId::new(0),
             DifferentialEvent::MergeShortfall(MergeShortfall {
                 operator: 1,
                 scale: 1000,
@@ -171,7 +174,7 @@ fn differential_event_association() {
             Duration::from_nanos(2),
             vec![(
                 EventData::new(
-                    0,
+                    WorkerId::new(0),
                     PartialTimelineEvent::merge(0),
                     Duration::from_nanos(1000),
                     Duration::from_nanos(9000),
@@ -184,7 +187,7 @@ fn differential_event_association() {
             Duration::from_nanos(4),
             vec![(
                 EventData::new(
-                    1,
+                    WorkerId::new(0),
                     PartialTimelineEvent::merge(1),
                     Duration::from_nanos(20_000),
                     Duration::from_nanos(1000),

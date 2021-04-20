@@ -1,20 +1,17 @@
-use super::{Address, Channel, FilterMap, Multiply};
+use crate::dataflow::{Channel, FilterMap, Multiply, OperatorAddr, WorkerId};
 use differential_dataflow::{
     difference::Abelian,
     lattice::Lattice,
     operators::{arrange::ArrangeByKey, Consolidate, Iterate, Join, JoinCore, Threshold},
     Collection, ExchangeData,
 };
-use timely::{
-    dataflow::Scope,
-    logging::{ChannelsEvent, WorkerIdentifier},
-};
+use timely::{dataflow::Scope, logging::ChannelsEvent};
 
 pub fn rewire_channels<S, D>(
     scope: &mut S,
-    channels: &Collection<S, (WorkerIdentifier, ChannelsEvent), D>,
-    subgraphs: &Collection<S, (WorkerIdentifier, Address), D>,
-) -> Collection<S, (WorkerIdentifier, Channel), D>
+    channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
+    subgraphs: &Collection<S, (WorkerId, OperatorAddr), D>,
+) -> Collection<S, (WorkerId, Channel), D>
 where
     S: Scope,
     S::Timestamp: Lattice,
@@ -38,9 +35,9 @@ where
 
 fn subgraph_crosses<S, D>(
     scope: &mut S,
-    channels: &Collection<S, (WorkerIdentifier, ChannelsEvent), D>,
-    subgraphs: &Collection<S, (WorkerIdentifier, Address), D>,
-) -> Collection<S, (WorkerIdentifier, Channel), D>
+    channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
+    subgraphs: &Collection<S, (WorkerId, OperatorAddr), D>,
+) -> Collection<S, (WorkerId, Channel), D>
 where
     S: Scope,
     S::Timestamp: Lattice,
@@ -53,17 +50,17 @@ where
         );
 
         let channels = channels.map(|(worker, channel)| {
-            let mut source = channel.scope_addr.clone();
+            let mut source = OperatorAddr::from(&channel.scope_addr);
             source.push(channel.source.0);
 
-            let mut target = channel.scope_addr;
+            let mut target = OperatorAddr::from(channel.scope_addr);
             target.push(channel.target.0);
 
             (
-                (worker, Address::new(source), channel.source.1),
+                (worker, source, channel.source.1),
                 (
-                    (Address::new(target), channel.target.1),
-                    Address::new(vec![channel.id]),
+                    (target, channel.target.1),
+                    OperatorAddr::from_elem(channel.id),
                 ),
             )
         });
@@ -83,13 +80,13 @@ where
         let propagated_channels = channels.iterate(|links| {
             let ingress_candidates = links.map(|((worker, source, channel), (target, path))| {
                 let mut new_target = target.0.clone();
-                new_target.addr.push(0);
+                new_target.push(0);
 
                 ((worker, new_target, target.1), ((source, channel), path))
             });
 
             let egress_candidates = links.map(|((worker, mut source, channel), (target, path))| {
-                source.addr.push(0);
+                source.push(0);
 
                 ((worker, source, channel), (target, path))
             });
@@ -98,8 +95,8 @@ where
                 &ingress_candidates.arrange_by_key(),
                 |&(worker, _, _), (inner, inner_vec), (outer, outer_vec)| {
                     if inner_vec != outer_vec {
-                        let mut outer_vec = outer_vec.to_owned();
-                        outer_vec.addr.extend(inner_vec.addr.iter());
+                        let mut outer_vec = outer_vec.clone();
+                        outer_vec.extend(inner_vec.iter());
 
                         Some((
                             (worker, outer.0.to_owned(), outer.1.to_owned()),
@@ -116,7 +113,7 @@ where
                 |&(worker, _, _), (inner, inner_vec), (outer, outer_vec)| {
                     if inner_vec != outer_vec {
                         let mut inner_vec = inner_vec.to_owned();
-                        inner_vec.addr.extend(outer_vec.addr.iter());
+                        inner_vec.extend(outer_vec.iter());
 
                         Some((
                             (worker, inner.0.to_owned(), inner.1.to_owned()),
@@ -168,9 +165,9 @@ where
 
 fn subgraph_normal<S, D>(
     scope: &mut S,
-    channels: &Collection<S, (WorkerIdentifier, ChannelsEvent), D>,
-    subgraphs: &Collection<S, (WorkerIdentifier, Address), D>,
-) -> Collection<S, (WorkerIdentifier, Channel), D>
+    channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
+    subgraphs: &Collection<S, (WorkerId, OperatorAddr), D>,
+) -> Collection<S, (WorkerId, Channel), D>
 where
     S: Scope,
     S::Timestamp: Lattice,
@@ -185,16 +182,13 @@ where
         channels
             .filter_map(|(worker, channel)| {
                 if channel.source.0 != 0 && channel.target.0 != 0 {
-                    let mut source_addr = channel.scope_addr.clone();
+                    let mut source_addr = OperatorAddr::from(&channel.scope_addr);
                     source_addr.push(channel.source.0);
 
-                    let mut target_addr = channel.scope_addr.clone();
+                    let mut target_addr = OperatorAddr::from(channel.scope_addr);
                     target_addr.push(channel.target.0);
 
-                    Some((
-                        (worker, Address::new(source_addr)),
-                        (channel.id, Address::new(target_addr)),
-                    ))
+                    Some(((worker, source_addr), (channel.id, target_addr)))
                 } else {
                     None
                 }

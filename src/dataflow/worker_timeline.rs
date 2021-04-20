@@ -1,6 +1,6 @@
 use crate::dataflow::{
     operators::{FilterSplit, Multiply, Split},
-    Diff, DifferentialLogBundle, TimelyLogBundle,
+    Diff, DifferentialLogBundle, TimelyLogBundle, WorkerId,
 };
 use abomonation_derive::Abomonation;
 use differential_dataflow::{
@@ -26,7 +26,7 @@ use timely::{
         },
         Scope, Stream,
     },
-    logging::{ParkEvent, StartStop, TimelyEvent, WorkerIdentifier},
+    logging::{ParkEvent, StartStop, TimelyEvent},
 };
 
 pub fn worker_timeline<S, Trace>(
@@ -37,7 +37,7 @@ pub fn worker_timeline<S, Trace>(
 ) -> Collection<S, WorkerTimelineEvent, Diff>
 where
     S: Scope<Timestamp = Duration>,
-    Trace: TraceReader<Key = (WorkerIdentifier, usize), Val = String, Time = Duration, R = Diff>
+    Trace: TraceReader<Key = (WorkerId, usize), Val = String, Time = Duration, R = Diff>
         + Clone
         + 'static,
 {
@@ -108,7 +108,7 @@ where
 
 type TimelineStreamEvent = (EventData, Duration, Diff);
 type TimelineEventStream<S> = Stream<S, TimelineStreamEvent>;
-type EventMap = HashMap<(WorkerIdentifier, EventKind), Vec<(Duration, Capability<Duration>)>>;
+type EventMap = HashMap<(WorkerId, EventKind), Vec<(Duration, Capability<Duration>)>>;
 type EventOutput<'a> =
     OutputHandle<'a, Duration, TimelineStreamEvent, Tee<Duration, TimelineStreamEvent>>;
 
@@ -283,7 +283,7 @@ struct EventProcessor<'a, 'b> {
     stack_buffer: &'a mut Vec<Vec<(Duration, Capability<Duration>)>>,
     output: &'a mut EventOutput<'b>,
     capability: &'a Capability<Duration>,
-    worker: WorkerIdentifier,
+    worker: WorkerId,
     time: Duration,
 }
 
@@ -294,7 +294,7 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
         stack_buffer: &'a mut Vec<Vec<(Duration, Capability<Duration>)>>,
         output: &'a mut EventOutput<'b>,
         capability: &'a Capability<Duration>,
-        worker: WorkerIdentifier,
+        worker: WorkerId,
         time: Duration,
     ) -> Self {
         Self {
@@ -362,7 +362,7 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
         current_capability: &Capability<Duration>,
         mut stored_capability: Capability<Duration>,
         partial_event: PartialTimelineEvent,
-        worker: WorkerIdentifier,
+        worker: WorkerId,
     ) {
         let duration = current_time - start_time;
         stored_capability.downgrade(&stored_capability.time().join(current_capability.time()));
@@ -484,7 +484,7 @@ where
     const MARGIN_NS: u64 = 500_000;
 
     fn fold_timeline_events(
-        _key: &usize,
+        _key: &WorkerId,
         input: State,
         state: &mut Option<WorkerTimelineEvent>,
     ) -> (
@@ -551,7 +551,7 @@ where
     }
 
     impl State {
-        const fn worker(&self) -> usize {
+        const fn worker(&self) -> WorkerId {
             match self {
                 Self::Event(event) | Self::Flush(event) => event.worker,
             }
@@ -580,7 +580,9 @@ where
     let collapsed = normal
         .concat(&delayed.delay(|&(_, end_time), _| end_time))
         .map(|(event, _)| (event.worker(), event))
-        .state_machine(fold_timeline_events, move |&worker_id| worker_id as u64)
+        .state_machine(fold_timeline_events, move |&worker_id| {
+            worker_id.into_inner() as u64
+        })
         .map(|event| {
             let timestamp = Duration::from_nanos(event.start_time + event.duration);
             (event, timestamp, R::from(1))
@@ -598,7 +600,7 @@ where
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
 pub(super) struct EventData {
-    pub(super) worker: WorkerIdentifier,
+    pub(super) worker: WorkerId,
     pub(super) partial_event: PartialTimelineEvent,
     pub(super) start_time: Duration,
     pub(super) duration: Duration,
@@ -606,7 +608,7 @@ pub(super) struct EventData {
 
 impl EventData {
     pub const fn new(
-        worker: WorkerIdentifier,
+        worker: WorkerId,
         partial_event: PartialTimelineEvent,
         start_time: Duration,
         duration: Duration,
@@ -734,7 +736,7 @@ impl TimelineEvent {
 )]
 pub struct WorkerTimelineEvent {
     pub event_id: u64,
-    pub worker: WorkerIdentifier,
+    pub worker: WorkerId,
     pub event: TimelineEvent,
     pub start_time: u64,
     pub duration: u64,

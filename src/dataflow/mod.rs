@@ -7,9 +7,11 @@ mod reachability;
 mod subgraphs;
 mod summation;
 mod tests;
+mod types;
 mod worker_timeline;
 
 pub use operator_stats::OperatorStats;
+pub use types::{OperatesEvent, OperatorAddr, WorkerId};
 pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 
 use crate::args::Args;
@@ -30,9 +32,8 @@ use operators::{CrossbeamPusher, FilterMap, InspectExt, Multiply, ReplayWithShut
 #[cfg(feature = "timely-next")]
 use reachability::TrackerEvent;
 use std::{
-    fmt::{self, Debug},
+    fmt::Debug,
     net::TcpStream,
-    ops::Deref,
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
@@ -46,48 +47,24 @@ use timely::{
         },
         Scope, Stream,
     },
-    logging::{ChannelsEvent, OperatesEvent, TimelyEvent, WorkerIdentifier},
+    logging::{ChannelsEvent, TimelyEvent, WorkerIdentifier},
     order::TotalOrder,
 };
 use worker_timeline::worker_timeline;
 
 // TODO: Newtype channel ids, operators ids, channel addrs and operator addrs and worker ids
 
-type TimelyLogBundle = (Duration, WorkerIdentifier, TimelyEvent);
-type DifferentialLogBundle = (Duration, WorkerIdentifier, DifferentialEvent);
+type TimelyLogBundle<Id = WorkerId> = (Duration, Id, TimelyEvent);
+type DifferentialLogBundle<Id = WorkerId> = (Duration, Id, DifferentialEvent);
+
 #[cfg(feature = "timely-next")]
-type ReachabilityLogBundle = (Duration, WorkerIdentifier, TrackerEvent);
+type ReachabilityLogBundle = (Duration, WorkerId, TrackerEvent);
 type Diff = isize;
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
-pub struct Address {
-    pub addr: Vec<usize>,
-}
-
-impl Address {
-    pub const fn new(addr: Vec<usize>) -> Self {
-        Self { addr }
-    }
-}
-
-impl Deref for Address {
-    type Target = Vec<usize>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.addr
-    }
-}
-
-impl Debug for Address {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_list().entries(self.addr.iter()).finish()
-    }
-}
-
-pub type NodeBundle = (((WorkerIdentifier, Address), OperatesEvent), Duration, Diff);
+pub type NodeBundle = (((WorkerId, OperatorAddr), OperatesEvent), Duration, Diff);
 pub type EdgeBundle = (
     (
-        WorkerIdentifier,
+        WorkerId,
         OperatesEvent,
         Channel,
         OperatesEvent,
@@ -96,8 +73,8 @@ pub type EdgeBundle = (
     Duration,
     Diff,
 );
-pub type SubgraphBundle = (((WorkerIdentifier, Address), OperatesEvent), Duration, Diff);
-pub type StatsBundle = (((WorkerIdentifier, usize), OperatorStats), Duration, Diff);
+pub type SubgraphBundle = (((WorkerId, OperatorAddr), OperatesEvent), Duration, Diff);
+pub type StatsBundle = (((WorkerId, usize), OperatorStats), Duration, Diff);
 pub type TimelineBundle = (WorkerTimelineEvent, Duration, Diff);
 
 #[derive(Clone)]
@@ -130,8 +107,10 @@ impl DataflowSenders {
 pub fn dataflow<S>(
     scope: &mut S,
     _args: &Args,
-    timely_traces: Vec<EventReader<Duration, TimelyLogBundle, TcpStream>>,
-    differential_traces: Option<Vec<EventReader<Duration, DifferentialLogBundle, TcpStream>>>,
+    timely_traces: Vec<EventReader<Duration, TimelyLogBundle<WorkerIdentifier>, TcpStream>>,
+    differential_traces: Option<
+        Vec<EventReader<Duration, DifferentialLogBundle<WorkerIdentifier>, TcpStream>>,
+    >,
     replay_shutdown: Arc<AtomicBool>,
     senders: DataflowSenders,
 ) -> Result<ProbeHandle<Duration>>
@@ -143,11 +122,13 @@ where
     // The timely log stream filtered down to worker 0's events
     let timely_stream = timely_traces
         .replay_with_shutdown_into_named("Timely Replay", scope, replay_shutdown.clone())
+        .map(|(time, worker, event)| (time, WorkerId::new(worker), event))
         .debug_inspect(|x| tracing::trace!("timely event: {:?}", x));
 
     let raw_differential_stream = differential_traces.map(|traces| {
         traces
             .replay_with_shutdown_into_named("Differential Replay", scope, replay_shutdown)
+            .map(|(time, worker, event)| (time, WorkerId::new(worker), event))
             .debug_inspect(|x| tracing::trace!("differential dataflow event: {:?}", x))
     });
 
@@ -193,8 +174,8 @@ where
         &operator_names,
     );
 
-    let addressed_operators = operators
-        .map(|(worker, operator)| ((worker, Address::new(operator.addr.clone())), operator));
+    let addressed_operators =
+        operators.map(|(worker, operator)| ((worker, operator.addr.clone()), operator));
 
     addressed_operators
         .semijoin(&leaves)
@@ -242,14 +223,14 @@ where
 
 fn operator_creations<S>(
     log_stream: &Stream<S, TimelyLogBundle>,
-) -> Collection<S, (WorkerIdentifier, OperatesEvent), Diff>
+) -> Collection<S, (WorkerId, OperatesEvent), Diff>
 where
     S: Scope<Timestamp = Duration>,
 {
     log_stream
         .flat_map(|(time, worker, event)| {
             if let TimelyEvent::Operates(event) = event {
-                Some(((worker, event), time, 1))
+                Some(((worker, OperatesEvent::from(event)), time, 1))
             } else {
                 None
             }
@@ -259,7 +240,7 @@ where
 
 fn channel_creations<S>(
     log_stream: &Stream<S, TimelyLogBundle>,
-) -> Collection<S, (WorkerIdentifier, ChannelsEvent), Diff>
+) -> Collection<S, (WorkerId, ChannelsEvent), Diff>
 where
     S: Scope<Timestamp = Duration>,
 {
@@ -275,13 +256,13 @@ where
 }
 
 type LeavesAndScopes<S, D> = (
-    Collection<S, (WorkerIdentifier, Address), D>,
-    Collection<S, (WorkerIdentifier, Address), D>,
+    Collection<S, (WorkerId, OperatorAddr), D>,
+    Collection<S, (WorkerId, OperatorAddr), D>,
 );
 
 fn sift_leaves_and_scopes<S, D>(
     scope: &mut S,
-    operators: &Collection<S, (WorkerIdentifier, OperatesEvent), D>,
+    operators: &Collection<S, (WorkerId, OperatesEvent), D>,
 ) -> LeavesAndScopes<S, D>
 where
     S: Scope,
@@ -291,12 +272,13 @@ where
     scope.region_named("Sift Leaves and Scopes", |region| {
         let operators = operators
             .enter_region(region)
-            .map(|(worker, operator)| ((worker, Address::new(operator.addr)), ()));
+            .map(|(worker, operator)| ((worker, operator.addr), ()));
 
         // The addresses of potential scopes, excluding leaf operators
         let potential_scopes = operators
             .map(|((worker, mut addr), ())| {
-                addr.addr.pop();
+                addr.pop();
+
                 (worker, addr)
             })
             .distinct_total();
@@ -319,10 +301,10 @@ where
 
 fn attach_operators<S, D>(
     scope: &mut S,
-    operators: &Collection<S, (WorkerIdentifier, OperatesEvent), D>,
-    channels: &Collection<S, (WorkerIdentifier, Channel), D>,
-    leaves: &Collection<S, (WorkerIdentifier, Address), D>,
-) -> Collection<S, (WorkerIdentifier, OperatesEvent, Channel, OperatesEvent), D>
+    operators: &Collection<S, (WorkerId, OperatesEvent), D>,
+    channels: &Collection<S, (WorkerId, Channel), D>,
+    leaves: &Collection<S, (WorkerId, OperatorAddr), D>,
+) -> Collection<S, (WorkerId, OperatesEvent, Channel, OperatesEvent), D>
 where
     S: Scope,
     S::Timestamp: Lattice,
@@ -336,8 +318,8 @@ where
             leaves.enter_region(region),
         );
 
-        let operators_by_address = operators
-            .map(|(worker, operator)| ((worker, Address::new(operator.addr.clone())), operator));
+        let operators_by_address =
+            operators.map(|(worker, operator)| ((worker, operator.addr.clone()), operator));
 
         operators_by_address
             .semijoin(&leaves)
@@ -369,14 +351,14 @@ where
 pub enum Channel {
     ScopeCrossing {
         channel_id: usize,
-        source_addr: Address,
-        target_addr: Address,
+        source_addr: OperatorAddr,
+        target_addr: OperatorAddr,
     },
 
     Normal {
         channel_id: usize,
-        source_addr: Address,
-        target_addr: Address,
+        source_addr: OperatorAddr,
+        target_addr: OperatorAddr,
     },
 }
 
@@ -387,7 +369,7 @@ impl Channel {
         }
     }
 
-    pub fn source_addr(&self) -> Address {
+    pub fn source_addr(&self) -> OperatorAddr {
         match self {
             Self::ScopeCrossing { source_addr, .. } | Self::Normal { source_addr, .. } => {
                 source_addr.to_owned()
@@ -395,7 +377,7 @@ impl Channel {
         }
     }
 
-    pub fn target_addr(&self) -> Address {
+    pub fn target_addr(&self) -> OperatorAddr {
         match self {
             Self::ScopeCrossing { target_addr, .. } | Self::Normal { target_addr, .. } => {
                 target_addr.to_owned()

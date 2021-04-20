@@ -9,7 +9,7 @@ use args::Args;
 use colormap::{select_color, Color};
 use dataflow::{
     operators::{make_streams, CrossbeamExtractor},
-    Channel, DataflowSenders, OperatorStats, WorkerTimelineEvent,
+    Channel, DataflowSenders, OperatesEvent, OperatorStats, WorkerTimelineEvent,
 };
 use network::{wait_for_connections, wait_for_input};
 use std::{
@@ -23,8 +23,7 @@ use std::{
 };
 use structopt::StructOpt;
 use timely::{
-    communication::Config as ParallelConfig, dataflow::operators::capture::Extract,
-    execute::Config, logging::OperatesEvent,
+    communication::Config as ParallelConfig, dataflow::operators::capture::Extract, execute::Config,
 };
 use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
@@ -319,7 +318,7 @@ fn main() -> Result<()> {
             Some(ui::Node {
                 id,
                 worker,
-                addr: addr.addr,
+                addr,
                 name,
                 max_activation_time: format!("{:#?}", max),
                 min_activation_time: format!("{:#?}", min),
@@ -359,7 +358,7 @@ fn main() -> Result<()> {
             Some(ui::Subgraph {
                 id,
                 worker,
-                addr: addr.addr,
+                addr,
                 name,
                 max_activation_time: format!("{:#?}", max),
                 min_activation_time: format!("{:#?}", min),

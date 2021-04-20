@@ -1,6 +1,6 @@
 use crate::dataflow::{
     operators::{Max, Min},
-    Diff, FilterMap,
+    Diff, DifferentialLogBundle, FilterMap, WorkerId,
 };
 use abomonation_derive::Abomonation;
 #[cfg(not(feature = "timely-next"))]
@@ -9,15 +9,12 @@ use differential_dataflow::{
     logging::DifferentialEvent, operators::CountTotal, AsCollection, Collection,
 };
 use std::time::Duration;
-use timely::{
-    dataflow::{operators::Enter, Scope, Stream},
-    logging::WorkerIdentifier,
-};
+use timely::dataflow::{operators::Enter, Scope, Stream};
 
 pub fn arrangement_stats<S>(
     scope: &mut S,
-    differential_trace: &Stream<S, (Duration, usize, DifferentialEvent)>,
-) -> Collection<S, ((WorkerIdentifier, usize), ArrangementStats), Diff>
+    differential_trace: &Stream<S, DifferentialLogBundle>,
+) -> Collection<S, ((WorkerId, usize), ArrangementStats), Diff>
 where
     S: Scope<Timestamp = Duration>,
 {

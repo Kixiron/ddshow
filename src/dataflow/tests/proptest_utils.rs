@@ -1,7 +1,7 @@
 use crate::dataflow::{
     operators::ActivateCapabilitySet,
     worker_timeline::{EventData, PartialTimelineEvent},
-    Diff,
+    Diff, WorkerId,
 };
 use differential_dataflow::logging::{DifferentialEvent, DropEvent, MergeEvent, MergeShortfall};
 use proptest::{
@@ -23,7 +23,7 @@ type ExpectedEvent = (Duration, (EventData, Duration, Diff));
 pub struct EventPair<E> {
     pub start: Event<E>,
     pub end: Event<E>,
-    pub worker: WorkerIdentifier,
+    pub worker: WorkerId,
 }
 
 impl<E> EventPair<E> {
@@ -43,7 +43,7 @@ impl<E> EventPair<E> {
         )
     }
 
-    pub(super) fn give_to(&self, input: &mut InputHandle<Duration, (Duration, WorkerIdentifier, E)>)
+    pub(super) fn give_to(&self, input: &mut InputHandle<Duration, (Duration, WorkerId, E)>)
     where
         E: Clone + 'static,
     {
@@ -56,7 +56,7 @@ impl<E> EventPair<E> {
 
     pub(super) fn give_to_unordered(
         &self,
-        input: &mut UnorderedHandle<Duration, (Duration, WorkerIdentifier, E)>,
+        input: &mut UnorderedHandle<Duration, (Duration, WorkerId, E)>,
         capabilities: &mut ActivateCapabilitySet<Duration>,
     ) where
         E: Clone + 'static,
@@ -158,7 +158,7 @@ where
                         false,
                         allow_stops,
                     ),
-                    Just((worker, operator_id, rng)),
+                    Just((WorkerId::new(worker), operator_id, rng)),
                 )
             },
         )

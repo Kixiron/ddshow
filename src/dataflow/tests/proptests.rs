@@ -8,7 +8,7 @@ use crate::dataflow::{
         collect_differential_events, collect_timely_events, worker_timeline, EventData,
         WorkerTimelineEvent,
     },
-    Diff,
+    Diff, WorkerId,
 };
 use differential_dataflow::{
     logging::DifferentialEvent,
@@ -37,7 +37,7 @@ use timely::{
         scopes::Child,
         Stream,
     },
-    logging::{TimelyEvent, WorkerIdentifier},
+    logging::TimelyEvent,
     worker::Worker,
 };
 
@@ -75,8 +75,7 @@ proptest! {
     }
 }
 
-type EventStreamIn<'a, E> =
-    Stream<Child<'a, Worker<Thread>, Duration>, (Duration, WorkerIdentifier, E)>;
+type EventStreamIn<'a, E> = Stream<Child<'a, Worker<Thread>, Duration>, (Duration, WorkerId, E)>;
 type EventStreamOut<'a> = Stream<Child<'a, Worker<Thread>, Duration>, (EventData, Duration, Diff)>;
 
 fn timeline_events_inner(
