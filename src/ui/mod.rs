@@ -70,6 +70,57 @@ pub fn render(
     Ok(())
 }
 
+// TODO: A better representation for this to minimize size and maximize speed
+//
+// Required data:
+//
+// - Nodes
+//   - id
+//   - worker
+//   - address
+//   - name
+//   - inputs
+//   - outputs
+//   - whether it's a subgraph
+//   - whether it's a root dataflow
+//
+// - Edges
+//   - id
+//   - worker
+//   - address
+//   - name
+//   - edge kind
+//   - edge id (is this even a real thing?)
+//   - source node
+//   - dest node
+//
+// - Node stats
+//   - operator address
+//   - number of invocations
+//   - max activation time
+//   - min activation time
+//   - average activation time
+//   - all activation durations
+//
+// - Arrangement stats
+//   - operator address
+//   - max arrangement size
+//   - min arrangement size
+//   - average arrangement size
+//   - all arrangement sizes
+//   - number of merges
+//   - merge timings
+//   - number of batches received
+//   - batch sizes
+//
+// - Timeline events
+//  - event id (is this actually needed?)
+//  - worker
+//  - event
+//  - when the event started
+//  - when the event ended (unneeded?)
+//  - event duration
+
 #[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub struct GraphData {
     nodes: Vec<Node>,
