@@ -25,7 +25,7 @@ use differential_dataflow::{
     lattice::Lattice,
     logging::DifferentialEvent,
     operators::{arrange::ArrangeByKey, Consolidate, Join, ThresholdTotal},
-    Collection, ExchangeData,
+    Collection, ExchangeData, Hashable,
 };
 use operator_stats::operator_stats;
 use operators::{CrossbeamPusher, FilterMap, InspectExt, Multiply, ReplayWithShutdown};
@@ -40,10 +40,11 @@ use std::{
 use subgraphs::rewire_channels;
 use timely::{
     dataflow::{
+        channels::pact::Pipeline,
         operators::{
             capture::{Capture, Event, EventReader},
             probe::Handle as ProbeHandle,
-            Map, Probe,
+            Exchange, Map, Operator, Probe,
         },
         Scope, Stream,
     },
@@ -177,37 +178,19 @@ where
     let addressed_operators =
         operators.map(|(worker, operator)| ((worker, operator.addr.clone()), operator));
 
-    addressed_operators
-        .semijoin(&leaves)
-        .consolidate()
-        .inner
-        .probe_with(&mut probe)
-        .capture_into(CrossbeamPusher::new(senders.node_sender));
-
-    addressed_operators
-        .semijoin(&subgraphs)
-        .consolidate()
-        .inner
-        .probe_with(&mut probe)
-        .capture_into(CrossbeamPusher::new(senders.subgraph_sender));
-
-    edges
-        .consolidate()
-        .inner
-        .probe_with(&mut probe)
-        .capture_into(CrossbeamPusher::new(senders.edge_sender));
-
-    operator_stats
-        .consolidate()
-        .inner
-        .probe_with(&mut probe)
-        .capture_into(CrossbeamPusher::new(senders.stats_sender));
-
-    worker_timeline
-        .consolidate()
-        .inner
-        .probe_with(&mut probe)
-        .capture_into(CrossbeamPusher::new(senders.timeline_sender));
+    channel_sink(
+        &addressed_operators.semijoin(&leaves),
+        &mut probe,
+        senders.node_sender,
+    );
+    channel_sink(
+        &addressed_operators.semijoin(&subgraphs),
+        &mut probe,
+        senders.subgraph_sender,
+    );
+    channel_sink(&edges, &mut probe, senders.edge_sender);
+    channel_sink(&operator_stats, &mut probe, senders.stats_sender);
+    channel_sink(&worker_timeline, &mut probe, senders.timeline_sender);
 
     // TODO: Fix this
     // // If saving logs is enabled, write all log messages to the `save_logs` file
@@ -345,6 +328,50 @@ where
             )
             .leave_region()
     })
+}
+
+#[allow(clippy::type_complexity)]
+fn channel_sink<S, D, R>(
+    collection: &Collection<S, D, R>,
+    probe: &mut ProbeHandle<S::Timestamp>,
+    channel: Sender<Event<S::Timestamp, (D, S::Timestamp, R)>>,
+) where
+    S: Scope,
+    S::Timestamp: Lattice,
+    D: ExchangeData + Hashable,
+    R: Semigroup + ExchangeData,
+{
+    let consolidated = collection
+        .inner
+        .exchange(|_| 0)
+        .as_collection()
+        .consolidate();
+
+    let worker_id = collection.scope().index();
+    if worker_id == 0 {
+        tracing::debug!("installed channel sink on worker {}", worker_id);
+
+        consolidated
+            .inner
+            .probe_with(probe)
+            .capture_into(CrossbeamPusher::new(channel));
+    } else {
+        tracing::debug!("installed channel sink assertion on worker {}", worker_id);
+
+        consolidated
+            .inner
+            .probe_with(probe)
+            .sink(Pipeline, "AssertEmpty", move |input| {
+                input.for_each(move |_time, data| {
+                    if !data.is_empty() {
+                        tracing::error!(
+                            "worker {} received unexpected post-exchange data",
+                            worker_id,
+                        );
+                    }
+                });
+            });
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]

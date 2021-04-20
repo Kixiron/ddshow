@@ -185,7 +185,7 @@ fn main() -> Result<()> {
         'work_loop: while !probe.done() {
             // TODO: Reactivate select operators to try and get data flushed through?
             if let Some(flush_start) = flush_delay {
-                if flush_start.elapsed() > Duration::from_secs(1) {
+                if flush_start.elapsed() > Duration::from_secs(5) {
                     worker.drop_dataflow(dataflow_id);
                     break 'work_loop;
                 }

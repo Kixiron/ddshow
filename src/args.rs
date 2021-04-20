@@ -54,6 +54,12 @@ pub struct Args {
     /// The directory to generate artifacts in
     #[structopt(long = "output-dir", default_value = "dataflow-graph")]
     pub output_dir: PathBuf,
+
+    /// The path to dump the json data to
+    ///
+    /// The format is currently unstable, so don't depend on it too hard
+    #[structopt(long = "dump-json")]
+    pub dump_json: Option<PathBuf>,
     // TODO
     // /// The file to save the target process's logs to
     // #[structopt(long = "save-logs")]

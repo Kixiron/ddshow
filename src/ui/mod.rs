@@ -26,6 +26,7 @@ pub fn render(
     timeline_events: Vec<WorkerTimelineEvent>,
 ) -> Result<()> {
     let output_dir = &args.output_dir;
+    tracing::info!(output_dir = ?output_dir, "writing graph files to disk");
 
     fs::create_dir_all(output_dir).context("failed to create output directory")?;
 
@@ -52,11 +53,16 @@ pub fn render(
         timeline_events,
     };
 
-    serde_json::to_writer(
-        BufWriter::new(File::create(output_dir.join("data.json")).unwrap()),
-        &graph_data,
-    )
-    .unwrap();
+    // TODO: This shouldn't be here
+    if let Some(json_path) = args.dump_json.as_ref() {
+        tracing::info!(json_path = ?json_path, "dumping json to file");
+
+        let json_file = File::create(json_path)
+            .with_context(|| format!("failed to create json file at {}", json_path.display()))?;
+
+        serde_json::to_writer(BufWriter::new(json_file), &graph_data)
+            .context("failed to write json data to file")?;
+    }
 
     let context =
         Context::from_serialize(graph_data).context("failed to render graph context as json")?;

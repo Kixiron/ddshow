@@ -27,6 +27,7 @@ const node_id_exists = target_addr => {
 };
 
 const create_error_node = target_addr => {
+    console.error(`created error node ${target_addr}`);
     error_nodes[target_addr] = 0;
 
     graph.setNode(
@@ -297,7 +298,6 @@ function worker_timeline(timeline_events) {
         .xTickFormat(format_duration)
         .sortAlpha(true)
         .maxHeight(4096)
-        .maxLineHeight(100)
         .data(data);
 }
 
