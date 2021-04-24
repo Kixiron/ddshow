@@ -11,7 +11,7 @@ mod types;
 mod worker_timeline;
 
 pub use operator_stats::OperatorStats;
-pub use types::{OperatesEvent, OperatorAddr, WorkerId};
+pub use types::{ChannelId, OperatesEvent, OperatorAddr, OperatorId, PortId, WorkerId};
 pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 
 use crate::{

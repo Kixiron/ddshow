@@ -1,12 +1,15 @@
 use crate::{
     args::Args,
-    dataflow::{OperatorAddr, WorkerId, WorkerTimelineEvent},
+    dataflow::{ChannelId, OperatorAddr, OperatorId, PortId, WorkerId, WorkerTimelineEvent},
 };
+use abomonation_derive::Abomonation;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
     io::BufWriter,
+    time::Duration,
 };
 use tera::{Context, Tera};
 
@@ -76,10 +79,19 @@ pub fn render(
     Ok(())
 }
 
-// TODO: A better representation for this to minimize size and maximize speed
-//
-// Required data:
-//
+//  - whether differential logging was enabled
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize)]
+pub struct DDShowStats {
+    pub program: ProgramStats,
+    pub workers: BTreeMap<WorkerId, WorkerStats>,
+    pub dataflows: BTreeMap<OperatorId, DataflowStats>,
+    // TODO: Should/would this be better as a `BTree<(WorkerId, OperatorId), NodeStats>`?
+    //       What about address-based lookups?
+    pub nodes: Vec<NodeStats>,
+    pub channels: Vec<ChannelStats>,
+    pub differential_enabled: bool,
+}
+
 // - Program stats
 //  - # workers
 //  - # dataflows
@@ -90,10 +102,22 @@ pub fn render(
 //  - # events
 //  - # missing nodes
 //  - # missing edges
-//  - whether differential logging was enabled
-//  - list of dataflow addresses
 //  - total program runtime
-//
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+)]
+pub struct ProgramStats {
+    pub workers: usize,
+    pub dataflows: usize,
+    pub nodes: usize,
+    pub operators: usize,
+    pub subgraphs: usize,
+    pub channels: usize,
+    pub events: usize,
+    pub runtime: Duration,
+    // TODO: Missing nodes & edges
+}
+
 // - Worker stats
 //   - total worker runtime
 //  - # dataflows
@@ -104,16 +128,43 @@ pub fn render(
 //  - # events
 //  - # missing nodes
 //  - # missing edges
-//  - whether differential logging was enabled
 //  - list of dataflow addresses
-//
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+)]
+pub struct WorkerStats {
+    pub id: WorkerId,
+    pub dataflows: usize,
+    pub nodes: usize,
+    pub operators: usize,
+    pub subgraphs: usize,
+    pub channels: usize,
+    pub events: usize,
+    pub runtime: Duration,
+    pub dataflow_addrs: Vec<OperatorAddr>,
+    // TODO: Missing nodes & edges
+}
+
 // - Dataflow stats
 //   - creation time
 //   - drop time
 //   - # of contained operators
 //   - # of contained subgraphs
 //   - # of contained channels
-//
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+)]
+pub struct DataflowStats {
+    pub id: OperatorId,
+    pub addr: OperatorAddr,
+    pub worker: WorkerId,
+    pub nodes: usize,
+    pub operators: usize,
+    pub subgraphs: usize,
+    pub channels: usize,
+    pub lifespan: Lifespan,
+}
+
 // - Nodes
 //   - id
 //   - worker
@@ -123,7 +174,74 @@ pub fn render(
 //   - outputs
 //   - whether it's a subgraph
 //   - whether it's a root dataflow
-//
+//   - number of invocations
+//   - max activation time
+//   - min activation time
+//   - average activation time
+//   - all activation durations
+//   - creation time
+//   - drop time
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+)]
+pub struct NodeStats {
+    pub id: OperatorId,
+    pub addr: OperatorAddr,
+    pub worker: WorkerId,
+    pub name: String,
+    pub inputs: Vec<PortId>,
+    pub outputs: Vec<PortId>,
+    pub lifespan: Lifespan,
+    pub kind: NodeKind,
+    pub activations: ActivationStats,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize, Abomonation,
+)]
+pub enum NodeKind {
+    Operator,
+    Subgraph,
+    Dataflow,
+}
+
+impl Default for NodeKind {
+    fn default() -> Self {
+        Self::Operator
+    }
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+)]
+pub struct ActivationStats {
+    pub activations: usize,
+    pub max: Duration,
+    pub min: Duration,
+    pub average: Duration,
+    pub data_points: Vec<Duration>,
+    // TODO: Standard deviation, standard error
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Deserialize,
+    Serialize,
+    Abomonation,
+)]
+pub struct Lifespan {
+    pub birth: Duration,
+    pub death: Duration,
+}
+
 // - Edges
 //   - id
 //   - worker
@@ -135,17 +253,36 @@ pub fn render(
 //   - dest node
 //   - creation time
 //   - drop time
-//
-// - Node stats
-//   - operator address
-//   - number of invocations
-//   - max activation time
-//   - min activation time
-//   - average activation time
-//   - all activation durations
-//   - creation time
-//   - drop time
-//
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+)]
+pub struct ChannelStats {
+    // TODO: Do these two actually even exist?
+    pub id: ChannelId,
+    // TODO: Make `ChannelAddr`
+    pub addr: OperatorAddr,
+    pub worker: WorkerId,
+    pub source_node: OperatorId,
+    pub dest_node: OperatorId,
+    pub kind: ChannelKind,
+    pub lifespan: Lifespan,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize, Abomonation,
+)]
+pub enum ChannelKind {
+    Ingress,
+    Egress,
+    Normal,
+}
+
+impl Default for ChannelKind {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
 // - Arrangement stats
 //   - operator address
 //   - max arrangement size

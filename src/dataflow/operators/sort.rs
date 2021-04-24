@@ -43,6 +43,7 @@ where
         F: Fn(&D) -> DK + Clone + 'static,
         DK: Ord,
     {
+        // Utilizes hierarchical aggregation to minimize the number of recomputation that must happen
         self.scope().region_named(name, |region| {
             let mut hashed = self
                 .enter_region(region)

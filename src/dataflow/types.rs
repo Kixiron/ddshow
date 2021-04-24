@@ -12,6 +12,8 @@ use std::io;
 use timely::logging::{OperatesEvent as TimelyOperatesEvent, WorkerIdentifier};
 use tinyvec::{ArrayVec, TinyVec};
 
+// TODO: ChannelId
+
 #[derive(
     Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize, Abomonation,
 )]
@@ -33,10 +35,86 @@ impl WorkerId {
 
 impl Debug for WorkerId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Worker({})", self.worker)
+        write!(f, "WorkerId({})", self.worker)
     }
 }
 
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize, Abomonation,
+)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub struct OperatorId {
+    operator: usize,
+}
+
+impl OperatorId {
+    pub const fn new(operator: usize) -> Self {
+        Self { operator }
+    }
+
+    pub const fn into_inner(self) -> usize {
+        self.operator
+    }
+}
+
+impl Debug for OperatorId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "OperatorId({})", self.operator)
+    }
+}
+
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize, Abomonation,
+)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub struct PortId {
+    port: usize,
+}
+
+impl PortId {
+    pub const fn new(port: usize) -> Self {
+        Self { port }
+    }
+
+    pub const fn into_inner(self) -> usize {
+        self.port
+    }
+}
+
+impl Debug for PortId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PortId({})", self.port)
+    }
+}
+
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize, Abomonation,
+)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub struct ChannelId {
+    edge: usize,
+}
+
+impl ChannelId {
+    pub const fn new(edge: usize) -> Self {
+        Self { edge }
+    }
+
+    pub const fn into_inner(self) -> usize {
+        self.edge
+    }
+}
+
+impl Debug for ChannelId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "EdgeId({})", self.edge)
+    }
+}
+
+// TODO: Change this to use `OperatorId` instead of `usize
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 #[repr(transparent)]
