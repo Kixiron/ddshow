@@ -1,9 +1,7 @@
 use crate::dataflow::operators::Multiply;
 use differential_dataflow::{
-    difference::Abelian,
-    lattice::Lattice,
-    operators::{Consolidate, Reduce},
-    AsCollection, Collection, Data, ExchangeData, Hashable,
+    difference::Abelian, lattice::Lattice, operators::Reduce, AsCollection, Collection, Data,
+    ExchangeData, Hashable,
 };
 use timely::dataflow::{operators::Map, Scope};
 
@@ -67,7 +65,6 @@ where
                     ((key, data), time, diff)
                 })
                 .as_collection()
-                .consolidate()
                 .leave()
         })
     }
