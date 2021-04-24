@@ -14,17 +14,20 @@ pub use operator_stats::OperatorStats;
 pub use types::{OperatesEvent, OperatorAddr, WorkerId};
 pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 
-use crate::args::Args;
+use crate::{
+    args::Args,
+    dataflow::operators::{DiffDuration, Max, SortBy},
+};
 use abomonation_derive::Abomonation;
 use anyhow::Result;
 use crossbeam_channel::Sender;
 use differential::arrangement_stats;
 use differential_dataflow::{
     collection::AsCollection,
-    difference::{Abelian, Monoid, Semigroup},
+    difference::{Abelian, DiffPair, Monoid, Semigroup},
     lattice::Lattice,
     logging::DifferentialEvent,
-    operators::{arrange::ArrangeByKey, Consolidate, Join, ThresholdTotal},
+    operators::{arrange::ArrangeByKey, Consolidate, CountTotal, Join, ThresholdTotal},
     Collection, ExchangeData, Hashable,
 };
 use operator_stats::operator_stats;
@@ -32,6 +35,7 @@ use operators::{CrossbeamPusher, FilterMap, InspectExt, Multiply, ReplayWithShut
 #[cfg(feature = "timely-next")]
 use reachability::TrackerEvent;
 use std::{
+    cmp::Reverse,
     fmt::Debug,
     net::TcpStream,
     sync::{atomic::AtomicBool, Arc},
@@ -44,7 +48,7 @@ use timely::{
         operators::{
             capture::{Capture, Event, EventReader},
             probe::Handle as ProbeHandle,
-            Exchange, Map, Operator, Probe,
+            Concat, Exchange, Map, Operator, Probe,
         },
         Scope, Stream,
     },
@@ -133,12 +137,26 @@ where
             .debug_inspect(|x| tracing::trace!("differential dataflow event: {:?}", x))
     });
 
+    let (program_event_overview, worker_event_overview) =
+        aggregate_overview_stats(&timely_stream, raw_differential_stream.as_ref());
+
     let operators = operator_creations(&timely_stream);
 
     let operator_stats = operator_stats(scope, &timely_stream);
     let operator_names = operators
         .map(|(worker, operates)| ((worker, operates.id), operates.name))
         .arrange_by_key();
+
+    let cross_worker_sorted_operators = operator_stats
+        .map(|(_, stats)| ((), stats))
+        .sort_by(|stats| Reverse(stats.total))
+        .map(|((), stats)| stats)
+        .inspect(|x| println!("{:?}", x));
+
+    let per_worker_sorted_operators = operator_stats
+        .map(|((worker, _), stats)| (worker, stats))
+        .sort_by(|stats| Reverse(stats.total))
+        .inspect(|x| println!("{:?}", x));
 
     let operator_stats = raw_differential_stream
         .as_ref()
@@ -202,6 +220,64 @@ where
     // }
 
     Ok(probe)
+}
+
+/// Returns the total events & highest timestamp (program duration) for the entire program
+/// in the first collection and the per-worker total events & highest timestamp for all
+/// workers of the program
+fn aggregate_overview_stats<S>(
+    timely: &Stream<S, TimelyLogBundle>,
+    differential: Option<&Stream<S, DifferentialLogBundle>>,
+) -> (
+    Collection<S, (Diff, Duration), Diff>,
+    Collection<S, (WorkerId, (Diff, Duration)), Diff>,
+)
+where
+    S: Scope<Timestamp = Duration>,
+{
+    let mut events = timely.map(|(time, worker, _event)| {
+        (
+            worker,
+            time,
+            DiffPair::new(1, Max::new(DiffDuration::new(time))),
+        )
+    });
+
+    if let Some(differential) = differential {
+        events = events.concat(&differential.map(|(time, worker, _event)| {
+            (
+                worker,
+                time,
+                DiffPair::new(1, Max::new(DiffDuration::new(time))),
+            )
+        }));
+    }
+
+    let total_events = events
+        .map(|(_worker, time, diff)| ((), time, diff))
+        .as_collection()
+        .count_total()
+        .map(
+            |(
+                (),
+                DiffPair {
+                    element1: total_events,
+                    element2: max_timestamp,
+                },
+            )| { (total_events, max_timestamp.into_inner().0) },
+        );
+
+    let worker_events = events.as_collection().count_total().map(
+        |(
+            worker,
+            DiffPair {
+                element1: total_events,
+                element2: max_timestamp,
+            },
+        )| { (worker, (total_events, max_timestamp.into_inner().0)) },
+    );
+
+    (total_events, worker_events)
 }
 
 fn operator_creations<S>(

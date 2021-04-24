@@ -80,6 +80,40 @@ pub fn render(
 //
 // Required data:
 //
+// - Program stats
+//  - # workers
+//  - # dataflows
+//  - # nodes
+//  - # operators
+//  - # subgraphs
+//  - # channels
+//  - # events
+//  - # missing nodes
+//  - # missing edges
+//  - whether differential logging was enabled
+//  - list of dataflow addresses
+//  - total program runtime
+//
+// - Worker stats
+//   - total worker runtime
+//  - # dataflows
+//  - # nodes
+//  - # operators
+//  - # subgraphs
+//  - # channels
+//  - # events
+//  - # missing nodes
+//  - # missing edges
+//  - whether differential logging was enabled
+//  - list of dataflow addresses
+//
+// - Dataflow stats
+//   - creation time
+//   - drop time
+//   - # of contained operators
+//   - # of contained subgraphs
+//   - # of contained channels
+//
 // - Nodes
 //   - id
 //   - worker
@@ -99,6 +133,8 @@ pub fn render(
 //   - edge id (is this even a real thing?)
 //   - source node
 //   - dest node
+//   - creation time
+//   - drop time
 //
 // - Node stats
 //   - operator address
@@ -107,6 +143,8 @@ pub fn render(
 //   - min activation time
 //   - average activation time
 //   - all activation durations
+//   - creation time
+//   - drop time
 //
 // - Arrangement stats
 //   - operator address
@@ -117,15 +155,19 @@ pub fn render(
 //   - number of merges
 //   - merge timings
 //   - number of batches received
-//   - batch sizes
+//   - max/min/average batch sizes
+//   - list of all batch sizes
+//   - # of traces
+//   - creation time
+//   - drop time
 //
 // - Timeline events
-//  - event id (is this actually needed?)
-//  - worker
-//  - event
-//  - when the event started
-//  - when the event ended (unneeded?)
-//  - event duration
+//   - event id (is this actually needed?)
+//   - worker
+//   - event
+//   - when the event started
+//   - when the event ended (unneeded?)
+//   - event duration
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub struct GraphData {

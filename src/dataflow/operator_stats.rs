@@ -128,7 +128,7 @@ where
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Abomonation)]
 pub struct OperatorStats {
     pub id: usize,
     pub worker: WorkerId,

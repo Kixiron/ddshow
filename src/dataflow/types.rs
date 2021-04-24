@@ -13,7 +13,7 @@ use timely::logging::{OperatesEvent as TimelyOperatesEvent, WorkerIdentifier};
 use tinyvec::{ArrayVec, TinyVec};
 
 #[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Abomonation,
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize, Abomonation,
 )]
 #[serde(transparent)]
 #[repr(transparent)]
@@ -37,7 +37,7 @@ impl Debug for WorkerId {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 #[repr(transparent)]
 pub struct OperatorAddr {
@@ -154,7 +154,7 @@ impl Abomonation for OperatorAddr {
 }
 
 #[derive(
-    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd,
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize, Abomonation,
 )]
 pub struct OperatesEvent {
     pub id: usize,

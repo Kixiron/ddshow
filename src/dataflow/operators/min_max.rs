@@ -146,6 +146,10 @@ impl<T> Max<T> {
     pub const fn new(value: T) -> Self {
         Self { value }
     }
+
+    pub fn into_inner(self) -> T {
+        self.value
+    }
 }
 
 impl<T> Add<Self> for Max<T>
