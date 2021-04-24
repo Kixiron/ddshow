@@ -91,19 +91,14 @@ where
     let input = hashed.map(move |((hash, key), data)| ((hash % bucket, key), data));
 
     // TODO: The buckets could take advantage of their inputs already being sorted
+    //       by using k-way merges https://en.wikipedia.org/wiki/K-way_merge_algorithm
     input.reduce_named::<_, Vec<(D, R)>, R>("SortByBucket", move |_key, input, output| {
         let mut data: Vec<(D, R)> = input
             .iter()
             .flat_map(|(data, diff)| {
-                data.iter().cloned().filter_map(move |(data, inner_diff)| {
-                    let diff = diff.clone() * inner_diff;
-
-                    if diff.is_zero() {
-                        None
-                    } else {
-                        Some((data, diff))
-                    }
-                })
+                data.iter()
+                    .cloned()
+                    .map(move |(data, inner_diff)| (data, diff.clone() * inner_diff))
             })
             .collect();
 
@@ -111,7 +106,9 @@ where
 
         let mut idx = 0;
         while idx + 1 < data.len() {
-            if data[idx].0 == data[idx + 1].0 {
+            if data[idx].1.is_zero() {
+                data.remove(idx);
+            } else if data[idx].0 == data[idx + 1].0 {
                 let diff = data[idx + 1].1.clone();
                 data[idx].1 += &diff;
 

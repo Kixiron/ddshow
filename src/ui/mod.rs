@@ -6,7 +6,6 @@ use abomonation_derive::Abomonation;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
     fs::{self, File},
     io::BufWriter,
     time::Duration,
@@ -80,15 +79,17 @@ pub fn render(
 }
 
 //  - whether differential logging was enabled
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+)]
 pub struct DDShowStats {
     pub program: ProgramStats,
-    pub workers: BTreeMap<WorkerId, WorkerStats>,
-    pub dataflows: BTreeMap<OperatorId, DataflowStats>,
-    // TODO: Should/would this be better as a `BTree<(WorkerId, OperatorId), NodeStats>`?
-    //       What about address-based lookups?
+    // TODO: Should/would these be better as trees?
+    pub workers: Vec<WorkerStats>,
+    pub dataflows: Vec<DataflowStats>,
     pub nodes: Vec<NodeStats>,
     pub channels: Vec<ChannelStats>,
+    pub arrangements: Vec<ArrangementStats>,
     pub differential_enabled: bool,
 }
 
@@ -193,7 +194,7 @@ pub struct NodeStats {
     pub outputs: Vec<PortId>,
     pub lifespan: Lifespan,
     pub kind: NodeKind,
-    pub activations: ActivationStats,
+    pub activations: AggregatedStats<Duration>,
 }
 
 #[derive(
@@ -209,18 +210,6 @@ impl Default for NodeKind {
     fn default() -> Self {
         Self::Operator
     }
-}
-
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
-)]
-pub struct ActivationStats {
-    pub activations: usize,
-    pub max: Duration,
-    pub min: Duration,
-    pub average: Duration,
-    pub data_points: Vec<Duration>,
-    // TODO: Standard deviation, standard error
 }
 
 #[derive(
@@ -240,6 +229,12 @@ pub struct ActivationStats {
 pub struct Lifespan {
     pub birth: Duration,
     pub death: Duration,
+}
+
+impl Lifespan {
+    pub fn duration(&self) -> Duration {
+        self.death - self.birth
+    }
 }
 
 // - Edges
@@ -297,7 +292,30 @@ impl Default for ChannelKind {
 //   - # of traces
 //   - creation time
 //   - drop time
-//
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+)]
+pub struct ArrangementStats {
+    pub operator_addr: OperatorAddr,
+    pub size_stats: AggregatedStats<usize>,
+    pub merge_stats: AggregatedStats<Duration>,
+    pub batch_stats: AggregatedStats<usize>,
+    pub trace_shares: usize,
+    pub lifespan: Lifespan,
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+)]
+pub struct AggregatedStats<T> {
+    pub total: usize,
+    pub max: T,
+    pub min: T,
+    pub average: T,
+    pub data_points: Vec<T>,
+    // TODO: Standard deviation, standard error
+}
+
 // - Timeline events
 //   - event id (is this actually needed?)
 //   - worker
@@ -305,6 +323,15 @@ impl Default for ChannelKind {
 //   - when the event started
 //   - when the event ended (unneeded?)
 //   - event duration
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+)]
+pub struct TimelineEvent {
+    pub worker: WorkerId,
+    // TODO: Events
+    pub event: (),
+    pub lifespan: Lifespan,
+}
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub struct GraphData {
