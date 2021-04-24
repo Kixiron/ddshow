@@ -6,7 +6,7 @@ use differential_dataflow::{
     operators::Threshold,
     Collection, Data,
 };
-use std::{collections::HashMap, hash::Hash, mem};
+use std::{collections::HashMap, fmt::Debug, hash::Hash, mem};
 use timely::dataflow::{
     operators::capture::{Event, EventPusher, Extract},
     Scope,
@@ -55,7 +55,7 @@ impl<T> CrossbeamExtractor<T> {
 impl<T, D> CrossbeamExtractor<Event<T, (D, T, Diff)>>
 where
     T: Ord + Hash,
-    D: Ord + Hash,
+    D: Ord + Hash + Clone,
 {
     pub fn extract_all(self) -> Vec<D> {
         let mut data = HashMap::new();
@@ -64,9 +64,8 @@ where
         }
 
         data.into_iter()
-            // TODO: Should this be `diff >= 1`?
             .filter(|&(_, diff)| diff >= 1)
-            .map(|(data, _)| data)
+            .flat_map(|(data, diff)| (0..diff).map(move |_| data.clone()))
             .collect()
     }
 }
@@ -84,8 +83,8 @@ impl<T: Ord, D: Ord> Extract<T, D> for CrossbeamExtractor<Event<T, D>> {
         let mut current = 0;
         for i in 1..result.len() {
             if result[current].0 == result[i].0 {
-                let dataz = mem::replace(&mut result[i].1, Vec::new());
-                result[current].1.extend(dataz);
+                let data = mem::replace(&mut result[i].1, Vec::new());
+                result[current].1.extend(data);
             } else {
                 current = i;
             }
@@ -99,3 +98,84 @@ impl<T: Ord, D: Ord> Extract<T, D> for CrossbeamExtractor<Event<T, D>> {
         result
     }
 }
+
+/*
+#[derive(Debug)]
+pub struct IterWindowsMut<'iter, Item: 'iter, const N: usize> {
+    slice: &'iter mut [Item],
+    start: usize,
+}
+
+impl<'iter, Item: 'iter, const N: usize> IterWindowsMut<'iter, Item, N> {
+    pub fn next(&mut self) -> Option<&'_ mut [Item; N]> {
+        // Advance for the next iteration
+        let start = self.start;
+        self.start = start.checked_add(1)?;
+
+        let window = self
+            .slice
+            .get_mut(start..)?
+            .get_mut(..N)?
+            .try_into()
+            .unwrap_or_else(|_| {
+                debug_assert!(false);
+
+                // Safety: The slice will always have a length of `N` and
+                //         therefore is valid as an array of length `N`
+                unsafe { hint::unreachable_unchecked() }
+            });
+
+        Some(window)
+    }
+
+    pub fn try_fold<Acc, E, F>(mut self, mut acc: Acc, mut f: F) -> Result<Acc, E>
+    where
+        F: FnMut(Acc, &'_ mut [Item; N]) -> Result<Acc, E>,
+    {
+        while let Some(window) = self.next() {
+            acc = f(acc, window)?;
+        }
+
+        Ok(acc)
+    }
+
+    pub fn try_for_each<E, F>(self, mut for_each: F) -> Result<(), E>
+    where
+        F: FnMut(&mut [Item; N]) -> Result<(), E>,
+    {
+        self.try_fold((), |(), window| for_each(window))
+    }
+
+    pub fn fold<Acc, F>(self, acc: Acc, mut fold: F) -> Acc
+    where
+        F: FnMut(Acc, &mut [Item; N]) -> Acc,
+    {
+        self.try_fold(acc, |acc, window| Ok::<_, Infallible>(fold(acc, window)))
+            .unwrap_or_else(|unreachable| match unreachable {})
+    }
+
+    pub fn for_each<F>(self, mut for_each: F)
+    where
+        F: FnMut(&mut [Item; N]),
+    {
+        self.fold((), |(), window| for_each(window))
+    }
+}
+
+pub trait WindowsMut {
+    type Item;
+
+    fn windows_mut<const N: usize>(&mut self) -> IterWindowsMut<'_, Self::Item, N>;
+}
+
+impl<Item> WindowsMut for [Item] {
+    type Item = Item;
+
+    fn windows_mut<const N: usize>(&mut self) -> IterWindowsMut<'_, Self::Item, N> {
+        IterWindowsMut {
+            slice: self,
+            start: 0,
+        }
+    }
+}
+*/
