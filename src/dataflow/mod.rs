@@ -2,6 +2,7 @@
 mod differential;
 mod operator_stats;
 pub mod operators;
+mod program_stats;
 #[cfg(feature = "timely-next")]
 mod reachability;
 mod subgraphs;
@@ -56,6 +57,14 @@ use timely::{
     order::TotalOrder,
 };
 use worker_timeline::worker_timeline;
+
+/// Only cause the program stats to update every N milliseconds to
+/// prevent this from absolutely thrashing the scheduler
+// TODO: Make this configurable by the user
+// FIXME: I don't think the very last window of elements
+//        are being flushed, this makes our final results
+//        incorrect.
+pub const PROGRAM_NS_GRANULARITY: u128 = 1; // 50_000_000;
 
 // TODO: Newtype channel ids, operators ids, channel addrs and operator addrs and worker ids
 
@@ -130,7 +139,7 @@ where
         .map(|(time, worker, event)| (time, WorkerId::new(worker), event))
         .debug_inspect(|x| tracing::trace!("timely event: {:?}", x));
 
-    let raw_differential_stream = differential_traces.map(|traces| {
+    let differential_stream = differential_traces.map(|traces| {
         traces
             .replay_with_shutdown_into_named("Differential Replay", scope, replay_shutdown)
             .map(|(time, worker, event)| (time, WorkerId::new(worker), event))
@@ -138,7 +147,7 @@ where
     });
 
     let (program_event_overview, worker_event_overview) =
-        aggregate_overview_stats(&timely_stream, raw_differential_stream.as_ref());
+        aggregate_overview_stats(&timely_stream, differential_stream.as_ref());
 
     let operators = operator_creations(&timely_stream);
 
@@ -150,15 +159,13 @@ where
     let cross_worker_sorted_operators = operator_stats
         .map(|(_, stats)| ((), stats))
         .sort_by(|stats| Reverse(stats.total))
-        .map(|((), stats)| stats)
-        .inspect(|x| println!("{:?}", x));
+        .map(|((), stats)| stats);
 
     let per_worker_sorted_operators = operator_stats
         .map(|((worker, _), stats)| (worker, stats))
-        .sort_by(|stats| Reverse(stats.total))
-        .inspect(|x| println!("{:?}", x));
+        .sort_by(|stats| Reverse(stats.total));
 
-    let operator_stats = raw_differential_stream
+    let operator_stats = differential_stream
         .as_ref()
         .map(|stream| {
             let arrangement_stats = arrangement_stats(scope, stream).consolidate();
@@ -179,6 +186,7 @@ where
         })
         .unwrap_or(operator_stats);
 
+    // TODO: Turn these into collections of `(WorkerId, OperatorId)` and arrange them
     let (leaves, subgraphs) = sift_leaves_and_scopes(scope, &operators);
 
     let channel_events = channel_creations(&timely_stream);
@@ -189,12 +197,21 @@ where
     let worker_timeline = worker_timeline(
         scope,
         &timely_stream,
-        raw_differential_stream.as_ref(),
+        differential_stream.as_ref(),
         &operator_names,
     );
 
+    // TODO: Arrange this
     let addressed_operators =
         operators.map(|(worker, operator)| ((worker, operator.addr.clone()), operator));
+
+    program_stats::aggregate_program_stats(
+        &timely_stream,
+        differential_stream.as_ref(),
+        &operators,
+        &channels,
+        &subgraphs,
+    );
 
     channel_sink(
         &addressed_operators.semijoin(&leaves),

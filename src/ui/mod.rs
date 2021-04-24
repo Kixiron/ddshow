@@ -95,6 +95,9 @@ pub struct DDShowStats {
     pub arrangements: Vec<ArrangementStats>,
     pub events: Vec<TimelineEvent>,
     pub differential_enabled: bool,
+    // TODO: Lists of nodes, channels & arrangement ids (or addresses?) sorted
+    //       by various metrics, e.g. runtime, size, # merges
+    // TODO: Progress logging
 }
 
 // - Program stats
@@ -114,7 +117,6 @@ pub struct DDShowStats {
 pub struct ProgramStats {
     pub workers: usize,
     pub dataflows: usize,
-    pub nodes: usize,
     pub operators: usize,
     pub subgraphs: usize,
     pub channels: usize,
@@ -140,7 +142,6 @@ pub struct ProgramStats {
 pub struct WorkerStats {
     pub id: WorkerId,
     pub dataflows: usize,
-    pub nodes: usize,
     pub operators: usize,
     pub subgraphs: usize,
     pub channels: usize,
@@ -163,7 +164,6 @@ pub struct DataflowStats {
     pub id: OperatorId,
     pub addr: OperatorAddr,
     pub worker: WorkerId,
-    pub nodes: usize,
     pub operators: usize,
     pub subgraphs: usize,
     pub channels: usize,

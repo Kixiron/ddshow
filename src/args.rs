@@ -60,6 +60,9 @@ pub struct Args {
     /// The format is currently unstable, so don't depend on it too hard
     #[structopt(long = "dump-json")]
     pub dump_json: Option<PathBuf>,
+
+    #[structopt(long = "dump-json-v2")]
+    pub dump_json_v2: Option<PathBuf>,
     // TODO
     // /// The file to save the target process's logs to
     // #[structopt(long = "save-logs")]

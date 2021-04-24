@@ -92,6 +92,7 @@ where
 
     // TODO: The buckets could take advantage of their inputs already being sorted
     //       by using k-way merges https://en.wikipedia.org/wiki/K-way_merge_algorithm
+    //       See also https://docs.rs/itertools/0.10.0/src/itertools/kmerge_impl.rs.html
     input.reduce_named::<_, Vec<(D, R)>, R>("SortByBucket", move |_key, input, output| {
         let mut data: Vec<(D, R)> = input
             .iter()
@@ -102,7 +103,7 @@ where
             })
             .collect();
 
-        data.sort_unstable_by_key(|(data, _diff)| key(data));
+        data.sort_by_key(|(data, _diff)| key(data));
 
         let mut idx = 0;
         while idx + 1 < data.len() {
