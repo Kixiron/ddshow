@@ -78,6 +78,9 @@ pub fn render(
     Ok(())
 }
 
+// TODO: Move this to another crate, make serde & abomonation feature-gated,
+//       add wasm-bindgen under a feature gate
+
 //  - whether differential logging was enabled
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
@@ -90,6 +93,7 @@ pub struct DDShowStats {
     pub nodes: Vec<NodeStats>,
     pub channels: Vec<ChannelStats>,
     pub arrangements: Vec<ArrangementStats>,
+    pub events: Vec<TimelineEvent>,
     pub differential_enabled: bool,
 }
 
