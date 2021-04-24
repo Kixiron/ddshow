@@ -22,7 +22,7 @@ use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
 };
 
-fn init_test_logging() {
+pub fn init_test_logging() {
     let fmt_layer = tracing_subscriber::fmt::layer()
         .pretty()
         .with_test_writer()

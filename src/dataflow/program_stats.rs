@@ -7,21 +7,16 @@ use crate::{
     },
     ui::ProgramStats,
 };
-use abomonation_derive::Abomonation;
 use differential_dataflow::{
     difference::DiffPair,
     lattice::Lattice,
-    logging::DifferentialEvent,
     operators::{Consolidate, Count, Join, Reduce},
     AsCollection, Collection, ExchangeData,
 };
 use std::{collections::HashSet, hash::Hash, time::Duration};
-use timely::{
-    dataflow::{
-        operators::{Concat, Delay, Map},
-        Scope, Stream,
-    },
-    logging::TimelyEvent,
+use timely::dataflow::{
+    operators::{Concat, Delay, Map},
+    Scope, Stream,
 };
 
 fn granulate(time: Duration) -> Duration {
@@ -148,12 +143,6 @@ where
             },
         )
         .consolidate()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Abomonation)]
-enum RawEvent {
-    Timely(TimelyEvent),
-    Differential(DifferentialEvent),
 }
 
 // TODO: Make this an operator

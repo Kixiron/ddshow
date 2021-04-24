@@ -1,14 +1,14 @@
 use abomonation::Abomonation;
 use abomonation_derive::Abomonation;
-use core::{
+use serde::{Deserialize, Serialize};
+use std::{
     convert::TryFrom,
     fmt::{self, Debug},
+    io,
     iter::IntoIterator,
     ops::Deref,
     slice,
 };
-use serde::{Deserialize, Serialize};
-use std::io;
 use timely::logging::{OperatesEvent as TimelyOperatesEvent, WorkerIdentifier};
 use tinyvec::{ArrayVec, TinyVec};
 
@@ -227,7 +227,10 @@ impl Abomonation for OperatorAddr {
     }
 
     fn extent(&self) -> usize {
-        0
+        match &self.addr {
+            TinyVec::Inline(array) => array.into_inner().extent(),
+            TinyVec::Heap(vec) => vec.extent(),
+        }
     }
 }
 
@@ -238,6 +241,12 @@ pub struct OperatesEvent {
     pub id: usize,
     pub addr: OperatorAddr,
     pub name: String,
+}
+
+impl OperatesEvent {
+    pub const fn new(id: usize, addr: OperatorAddr, name: String) -> Self {
+        Self { id, addr, name }
+    }
 }
 
 impl From<TimelyOperatesEvent> for OperatesEvent {

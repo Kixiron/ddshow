@@ -239,16 +239,18 @@ where
     Ok(probe)
 }
 
+type AggregateOverview<S> = (
+    Collection<S, (Diff, Duration), Diff>,
+    Collection<S, (WorkerId, (Diff, Duration)), Diff>,
+);
+
 /// Returns the total events & highest timestamp (program duration) for the entire program
 /// in the first collection and the per-worker total events & highest timestamp for all
 /// workers of the program
 fn aggregate_overview_stats<S>(
     timely: &Stream<S, TimelyLogBundle>,
     differential: Option<&Stream<S, DifferentialLogBundle>>,
-) -> (
-    Collection<S, (Diff, Duration), Diff>,
-    Collection<S, (WorkerId, (Diff, Duration)), Diff>,
-)
+) -> AggregateOverview<S>
 where
     S: Scope<Timestamp = Duration>,
 {
