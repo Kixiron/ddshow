@@ -27,6 +27,10 @@ tracing-subscriber = "0.2.16"
 serde = { version = "1.0.123", features = ["derive"] }
 tinyvec = { version = "1.2.0", features = ["alloc", "serde"] }
 
+byteorder = "1.4.3"
+bytecheck = "0.4.1"
+rkyv = { version = "0.5.2", features = ["validation"] }
+
 timely = "0.12.0"
 differential-dataflow = "0.12.0"
 # timely = { git = "https://github.com/TimelyDataflow/timely-dataflow" }
