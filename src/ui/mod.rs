@@ -1,9 +1,13 @@
+#![allow(clippy::unused_unit)]
+
 use crate::{
     args::Args,
     dataflow::{ChannelId, OperatorAddr, OperatorId, PortId, WorkerId, WorkerTimelineEvent},
 };
 use abomonation_derive::Abomonation;
 use anyhow::{Context as _, Result};
+use bytecheck::CheckBytes;
+use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File},
@@ -83,8 +87,22 @@ pub fn render(
 
 //  - whether differential logging was enabled
 #[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Deserialize,
+    Serialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
+#[archive(strict, derive(CheckBytes))]
 pub struct DDShowStats {
     pub program: ProgramStats,
     // TODO: Should/would these be better as trees?
@@ -112,8 +130,22 @@ pub struct DDShowStats {
 //  - # missing edges
 //  - total program runtime
 #[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Deserialize,
+    Serialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
+#[archive(strict, derive(CheckBytes))]
 pub struct ProgramStats {
     pub workers: usize,
     pub dataflows: usize,
@@ -137,8 +169,22 @@ pub struct ProgramStats {
 //  - # missing edges
 //  - list of dataflow addresses
 #[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Deserialize,
+    Serialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
+#[archive(strict, derive(CheckBytes))]
 pub struct WorkerStats {
     pub id: WorkerId,
     pub dataflows: usize,
@@ -158,8 +204,22 @@ pub struct WorkerStats {
 //   - # of contained subgraphs
 //   - # of contained channels
 #[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Deserialize,
+    Serialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
+#[archive(strict, derive(CheckBytes))]
 pub struct DataflowStats {
     pub id: OperatorId,
     pub addr: OperatorAddr,
@@ -187,8 +247,22 @@ pub struct DataflowStats {
 //   - creation time
 //   - drop time
 #[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Deserialize,
+    Serialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
+#[archive(strict, derive(CheckBytes))]
 pub struct NodeStats {
     pub id: OperatorId,
     pub addr: OperatorAddr,
@@ -202,8 +276,22 @@ pub struct NodeStats {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize, Abomonation,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Deserialize,
+    Serialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
+#[archive(strict, derive(CheckBytes))]
 pub enum NodeKind {
     Operator,
     Subgraph,
@@ -229,7 +317,11 @@ impl Default for NodeKind {
     Deserialize,
     Serialize,
     Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
+#[archive(strict, derive(CheckBytes))]
 pub struct Lifespan {
     pub birth: Duration,
     pub death: Duration,
@@ -253,8 +345,22 @@ impl Lifespan {
 //   - creation time
 //   - drop time
 #[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Deserialize,
+    Serialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
+#[archive(strict, derive(CheckBytes))]
 pub struct ChannelStats {
     // TODO: Do these two actually even exist?
     pub id: ChannelId,
@@ -268,8 +374,22 @@ pub struct ChannelStats {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize, Abomonation,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Deserialize,
+    Serialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
+#[archive(strict, derive(CheckBytes))]
 pub enum ChannelKind {
     Ingress,
     Egress,
@@ -297,8 +417,22 @@ impl Default for ChannelKind {
 //   - creation time
 //   - drop time
 #[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Deserialize,
+    Serialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
+#[archive(strict, derive(CheckBytes))]
 pub struct ArrangementStats {
     pub operator_addr: OperatorAddr,
     pub size_stats: AggregatedStats<usize>,
@@ -309,8 +443,22 @@ pub struct ArrangementStats {
 }
 
 #[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Deserialize,
+    Serialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
+#[archive(strict, derive(CheckBytes))]
 pub struct AggregatedStats<T> {
     pub total: usize,
     pub max: T,
@@ -328,8 +476,22 @@ pub struct AggregatedStats<T> {
 //   - when the event ended (unneeded?)
 //   - event duration
 #[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Deserialize, Serialize, Abomonation,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Deserialize,
+    Serialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
+#[archive(strict, derive(CheckBytes))]
 pub struct TimelineEvent {
     pub worker: WorkerId,
     // TODO: Events

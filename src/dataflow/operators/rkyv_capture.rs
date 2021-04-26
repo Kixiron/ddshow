@@ -69,7 +69,7 @@ where
     fn push(&mut self, event: Event<T, D>) {
         let event: RkyvEvent<T, D> = event.into();
 
-        let (archive_end, event_position) = {
+        let (archive_len, event_position) = {
             self.buffer.clear();
             let mut serializer = AlignedSerializer::new(&mut self.buffer);
 
@@ -80,17 +80,32 @@ where
             (serializer.pos(), event_position)
         };
 
-        debug_assert!(u32::try_from(archive_end).is_ok());
-        self.stream
-            .write_u32::<LittleEndian>(archive_end as u32)
-            .unwrap();
+        debug_assert!(u32::try_from(archive_len).is_ok());
+        if let Err(err) = self.stream.write_u32::<LittleEndian>(archive_len as u32) {
+            tracing::error!(
+                archive_len = archive_len,
+                "failed to write archive length to stream: {:?}",
+                err,
+            );
+
+            return;
+        }
 
         debug_assert!(u32::try_from(event_position).is_ok());
-        self.stream
-            .write_u32::<LittleEndian>(event_position as u32)
-            .unwrap();
+        if let Err(err) = self.stream.write_u32::<LittleEndian>(event_position as u32) {
+            tracing::error!(
+                event_position = event_position,
+                "failed to write event position to stream: {:?}",
+                err,
+            );
 
-        self.stream.write_all(&self.buffer[..archive_end]).unwrap();
+            return;
+        }
+
+        if let Err(err) = self.stream.write_all(&self.buffer[..archive_len]) {
+            tracing::error!("failed to write buffer data to stream: {:?}", err);
+            return;
+        }
     }
 }
 
@@ -207,7 +222,6 @@ mod tests {
             writer.push(events[0].clone());
             writer.push(events[1].clone());
         }
-        println!("{:?}", buffer);
 
         let mut reader = EventReader::new(&buffer[..]);
 

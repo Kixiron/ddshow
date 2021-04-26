@@ -12,10 +12,24 @@ use timely::logging::{OperatesEvent as TimelyOperatesEvent, WorkerIdentifier};
 // TODO: ChannelId
 
 #[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize, Abomonation,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
 #[serde(transparent)]
 #[repr(transparent)]
+#[archive(strict, derive(CheckBytes))]
 pub struct WorkerId {
     worker: WorkerIdentifier,
 }
@@ -37,10 +51,24 @@ impl Debug for WorkerId {
 }
 
 #[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize, Abomonation,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
 #[serde(transparent)]
 #[repr(transparent)]
+#[archive(strict, derive(CheckBytes))]
 pub struct OperatorId {
     operator: usize,
 }
@@ -62,10 +90,24 @@ impl Debug for OperatorId {
 }
 
 #[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize, Abomonation,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
 #[serde(transparent)]
 #[repr(transparent)]
+#[archive(strict, derive(CheckBytes))]
 pub struct PortId {
     port: usize,
 }
@@ -87,10 +129,24 @@ impl Debug for PortId {
 }
 
 #[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize, Abomonation,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    Abomonation,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
 #[serde(transparent)]
 #[repr(transparent)]
+#[archive(strict, derive(CheckBytes))]
 pub struct ChannelId {
     edge: usize,
 }
