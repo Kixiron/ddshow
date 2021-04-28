@@ -1,4 +1,5 @@
 mod activate_capability_set;
+mod antijoin;
 #[cfg(not(feature = "timely-next"))]
 mod diff_list;
 mod filter_map;
@@ -14,6 +15,7 @@ mod util;
 
 #[cfg(test)]
 pub use activate_capability_set::ActivateCapabilitySet;
+pub use antijoin::JoinArranged;
 pub use filter_map::FilterMap;
 pub use filter_split::FilterSplit;
 pub use inspect::InspectExt;

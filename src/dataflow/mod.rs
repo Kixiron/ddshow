@@ -19,7 +19,7 @@ use crate::{
     args::Args,
     dataflow::operators::{
         rkyv_capture::RkyvTimelyEvent, CrossbeamPusher, DiffDuration, EventReader, FilterMap,
-        InspectExt, Max, Multiply, ReplayWithShutdown, RkyvEventWriter, SortBy,
+        InspectExt, JoinArranged, Max, Multiply, ReplayWithShutdown, RkyvEventWriter, SortBy,
     },
     ui::{ProgramStats, WorkerStats},
 };
@@ -32,14 +32,17 @@ use differential_dataflow::{
     difference::{Abelian, DiffPair, Monoid, Semigroup},
     lattice::Lattice,
     logging::DifferentialEvent,
-    operators::{arrange::ArrangeByKey, Consolidate, CountTotal, Join, ThresholdTotal},
+    operators::{
+        arrange::{ArrangeByKey, ArrangeBySelf, Arranged, TraceAgent},
+        Consolidate, CountTotal, Join, ThresholdTotal,
+    },
+    trace::implementations::ord::OrdKeySpine,
     Collection, ExchangeData, Hashable,
 };
 use operator_stats::operator_stats;
 #[cfg(feature = "timely-next")]
 use reachability::TrackerEvent;
 use std::{
-    cmp::Reverse,
     fmt::Debug,
     fs::{self, File},
     io::BufWriter,
@@ -53,13 +56,12 @@ use std::{
 use subgraphs::rewire_channels;
 use timely::{
     dataflow::{
-        channels::pact::Pipeline,
         operators::{
             capture::{Capture, Event},
             probe::Handle as ProbeHandle,
-            Concat, Exchange, Map, Operator, Probe,
+            Concat, Exchange, Map, Probe,
         },
-        Scope, Stream,
+        Scope, ScopeParent, Stream,
     },
     logging::{ChannelsEvent, TimelyEvent, WorkerIdentifier},
     order::TotalOrder,
@@ -99,7 +101,12 @@ pub type SubgraphBundle = (((WorkerId, OperatorAddr), OperatesEvent), Duration, 
 pub type StatsBundle = (((WorkerId, usize), OperatorStats), Duration, Diff);
 pub type TimelineBundle = (WorkerTimelineEvent, Duration, Diff);
 pub type ProgramStatsBundle = (ProgramStats, Duration, Diff);
-pub type WorkerStatsBundle = ((WorkerId, WorkerStats), Duration, Diff);
+pub type WorkerStatsBundle = (Vec<(WorkerId, WorkerStats)>, Duration, Diff);
+
+type ChannelAddrs<S, D> = Arranged<
+    S,
+    TraceAgent<OrdKeySpine<(WorkerId, OperatorAddr), <S as ScopeParent>::Timestamp, D>>,
+>;
 
 #[derive(Clone)]
 pub struct DataflowSenders {
@@ -173,8 +180,8 @@ where
             .debug_inspect(|x| tracing::trace!("differential dataflow event: {:?}", x))
     });
 
-    let (program_event_overview, worker_event_overview) =
-        aggregate_overview_stats(&timely_stream, differential_stream.as_ref());
+    // let (program_event_overview, worker_event_overview) =
+    //     aggregate_overview_stats(&timely_stream, differential_stream.as_ref());
 
     let operators = operator_creations(&timely_stream);
 
@@ -183,14 +190,14 @@ where
         .map(|(worker, operates)| ((worker, operates.id), operates.name))
         .arrange_by_key();
 
-    let cross_worker_sorted_operators = operator_stats
-        .map(|(_, stats)| ((), stats))
-        .sort_by(|stats| Reverse(stats.total))
-        .map(|((), stats)| stats);
+    // let cross_worker_sorted_operators = operator_stats
+    //     .map(|(_, stats)| ((), stats))
+    //     .hierarchical_sort_by(|stats| Reverse(stats.total))
+    //     .map(|((), stats)| stats);
 
-    let per_worker_sorted_operators = operator_stats
-        .map(|((worker, _), stats)| (worker, stats))
-        .sort_by(|stats| Reverse(stats.total));
+    // let per_worker_sorted_operators = operator_stats
+    //     .map(|((worker, _), stats)| (worker, stats))
+    //     .hierarchical_sort_by(|stats| Reverse(stats.total));
 
     let operator_stats = differential_stream
         .as_ref()
@@ -215,11 +222,13 @@ where
 
     // TODO: Turn these into collections of `(WorkerId, OperatorId)` and arrange them
     let (leaves, subgraphs) = sift_leaves_and_scopes(scope, &operators);
+    let (leaves_arranged, subgraphs_arranged) =
+        (leaves.arrange_by_self(), subgraphs.arrange_by_self());
 
     let channel_events = channel_creations(&timely_stream);
-    let channels = rewire_channels(scope, &channel_events, &subgraphs);
+    let channels = rewire_channels(scope, &channel_events, &subgraphs_arranged);
 
-    let edges = attach_operators(scope, &operators, &channels, &leaves);
+    let edges = attach_operators(scope, &operators, &channels, &leaves_arranged);
 
     let worker_timeline = worker_timeline(
         scope,
@@ -237,7 +246,7 @@ where
         differential_stream.as_ref(),
         &operators,
         &channels,
-        &subgraphs,
+        &subgraphs_arranged,
     )
     .probe_with(&mut probe)
     .inner
@@ -248,8 +257,12 @@ where
         differential_stream.as_ref(),
         &operators,
         &channels,
-        &subgraphs,
+        &subgraphs_arranged,
     )
+    // FIXME: This sort somehow makes things explode
+    .map(|(worker, stats)| ((), (worker, stats)))
+    .sort_by(|&(worker, _)| worker)
+    .map(|((), sorted_stats)| sorted_stats)
     .probe_with(&mut probe)
     .inner
     .capture_into(CrossbeamPusher::new(senders.worker_stats));
@@ -442,7 +455,7 @@ fn attach_operators<S, D>(
     scope: &mut S,
     operators: &Collection<S, (WorkerId, OperatesEvent), D>,
     channels: &Collection<S, (WorkerId, Channel), D>,
-    leaves: &Collection<S, (WorkerId, OperatorAddr), D>,
+    leaves: &ChannelAddrs<S, D>,
 ) -> Collection<S, (WorkerId, OperatesEvent, Channel, OperatesEvent), D>
 where
     S: Scope,
@@ -461,7 +474,7 @@ where
             operators.map(|(worker, operator)| ((worker, operator.addr.clone()), operator));
 
         operators_by_address
-            .semijoin(&leaves)
+            .semijoin_arranged(&leaves)
             .join_map(
                 &channels.map(|(worker, channel)| ((worker, channel.source_addr()), channel)),
                 |&(worker, ref _src_addr), src_operator, channel| {
@@ -497,21 +510,16 @@ fn channel_sink<S, D, R>(
     D: ExchangeData + Hashable,
     R: Semigroup + ExchangeData,
 {
-    let consolidated = collection
+    collection
+        .consolidate()
         .inner
-        .exchange(|_| 0)
-        .as_collection()
-        .consolidate();
+        .probe_with(probe)
+        .capture_into(CrossbeamPusher::new(channel));
 
-    let worker_id = collection.scope().index();
-    if worker_id == 0 {
-        tracing::debug!("installed channel sink on worker {}", worker_id);
-
-        consolidated
-            .inner
-            .probe_with(probe)
-            .capture_into(CrossbeamPusher::new(channel));
-    }
+    tracing::debug!(
+        "installed channel sink on worker {}",
+        collection.scope().index(),
+    );
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]

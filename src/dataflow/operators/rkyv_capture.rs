@@ -92,8 +92,7 @@ where
             serializer.pos()
         };
 
-        debug_assert!(u32::try_from(archive_len).is_ok());
-        if let Err(err) = self.stream.write_u32::<LittleEndian>(archive_len as u32) {
+        if let Err(err) = self.stream.write_u64::<LittleEndian>(archive_len as u64) {
             tracing::error!(
                 archive_len = archive_len,
                 "failed to write archive length to stream: {:?}",
@@ -114,8 +113,8 @@ where
 pub struct RkyvEventReader<T, D, R> {
     reader: R,
     bytes: Vec<u8>,
-    buffer1: Vec<u8>,
-    buffer2: Vec<u8>,
+    buffer1: AlignedVec,
+    buffer2: AlignedVec,
     consumed: usize,
     __type: PhantomData<(T, D)>,
 }
@@ -126,8 +125,8 @@ impl<T, D, R> RkyvEventReader<T, D, R> {
         RkyvEventReader {
             reader,
             bytes: vec![0u8; 1 << 20],
-            buffer1: Vec::new(),
-            buffer2: Vec::new(),
+            buffer1: AlignedVec::new(),
+            buffer2: AlignedVec::new(),
             consumed: 0,
             __type: PhantomData,
         }
@@ -146,39 +145,43 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let message_header = (&self.buffer1[self.consumed..])
-            .read_u32::<LittleEndian>()
+            .read_u64::<LittleEndian>()
             .map(|archive_len| archive_len as usize);
 
         if let Ok(archive_length) = message_header {
-            let archive_start = self.consumed + mem::size_of::<u32>();
+            let archive_start = self.consumed + mem::size_of::<u64>();
 
-            match check_archived_root::<RkyvEvent<T, D>>(
-                &self.buffer1[archive_start..archive_start + archive_length],
-            ) {
-                Ok(archive) => {
-                    let event = archive
-                        .deserialize(&mut AllocDeserializer)
-                        .unwrap_or_else(|unreachable| match unreachable {});
+            if let Some(slice) = self
+                .buffer1
+                .get(archive_start..archive_start + archive_length)
+            {
+                match check_archived_root::<RkyvEvent<T, D>>(slice) {
+                    Ok(archive) => {
+                        let event = archive
+                            .deserialize(&mut AllocDeserializer)
+                            .unwrap_or_else(|unreachable| match unreachable {});
 
-                    self.consumed += archive_length + mem::size_of::<u32>();
-                    return Some(event.into());
+                        self.consumed += archive_length + mem::size_of::<u64>();
+                        return Some(event.into());
+                    }
+
+                    Err(err) => tracing::warn!("failed to check archived event: {:?}", err),
                 }
-
-                Err(err) => tracing::warn!("failed to check archived event: {:?}", err),
             }
         }
 
         // if we exhaust data we should shift back (if any shifting to do)
         if self.consumed > 0 {
             self.buffer2.clear();
-            self.buffer2.extend(&self.buffer1[self.consumed..]);
+            self.buffer2
+                .extend_from_slice(&self.buffer1[self.consumed..]);
 
             mem::swap(&mut self.buffer1, &mut self.buffer2);
             self.consumed = 0;
         }
 
         if let Ok(len) = self.reader.read(&mut self.bytes[..]) {
-            self.buffer1.extend(&self.bytes[..len]);
+            self.buffer1.extend_from_slice(&self.bytes[..len]);
         }
 
         None

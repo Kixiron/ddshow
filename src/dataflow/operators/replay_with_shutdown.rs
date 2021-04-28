@@ -287,7 +287,7 @@ where
                 }
             }
 
-            if is_running.load(Ordering::Acquire) || is_finished.iter().any(|&finished| !finished) {
+            if is_running.load(Ordering::Acquire) {
                 // Reactivate according to the re-activation delay
                 activator.activate_after(reactivation_delay);
 
@@ -322,7 +322,7 @@ where
 
             // Return whether or not we're incomplete, which we base
             // off of whether or not we're still supposed to be running
-            is_running.load(Ordering::Acquire) && is_finished.iter().copied().all(identity)
+            is_running.load(Ordering::Acquire)
         });
 
         stream

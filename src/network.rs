@@ -91,9 +91,7 @@ pub fn wait_for_input(
     loop {
         hint::spin_loop();
 
-        if finished_count.load(Ordering::Acquire) == num_threads
-            || !running.load(Ordering::Acquire)
-            || recv.recv_timeout(Duration::from_millis(500)).is_ok()
+        if !running.load(Ordering::Acquire) || recv.recv_timeout(Duration::from_millis(500)).is_ok()
         {
             tracing::info!(
                 finished_count = finished_count.load(Ordering::Acquire),

@@ -157,7 +157,11 @@ fn main() -> Result<()> {
     let worker_guards = timely::execute(config, move |worker| {
         let dataflow_name = concat!(env!("CARGO_CRATE_NAME"), " log processor");
         let args = moved_args.clone();
-        tracing::info!("spun up timely worker {}/{}", worker.index(), args.workers);
+        tracing::info!(
+            "spun up timely worker {}/{}",
+            worker.index() + 1,
+            args.workers,
+        );
 
         // Distribute the tcp streams across workers, converting each of them into an event reader
         let timely_traces = event_receivers[worker.index()]
@@ -250,8 +254,6 @@ fn main() -> Result<()> {
     }
 
     let mut worker_stats = CrossbeamExtractor::new(worker_stats_receiver).extract_all();
-    worker_stats.sort_by_key(|&(worker, _)| worker);
-
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
@@ -267,7 +269,8 @@ fn main() -> Result<()> {
             "Runtime",
         ]);
 
-    for (worker, stats) in worker_stats {
+    debug_assert_eq!(worker_stats.len(), 1);
+    for (worker, stats) in worker_stats.remove(0) {
         table.add_row(vec![
             Cell::new(format!("Worker {}", worker.into_inner())),
             Cell::new(stats.dataflows),

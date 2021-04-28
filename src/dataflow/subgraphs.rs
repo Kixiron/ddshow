@@ -1,8 +1,10 @@
-use crate::dataflow::{Channel, FilterMap, Multiply, OperatorAddr, WorkerId};
+use crate::dataflow::{
+    operators::JoinArranged, Channel, ChannelAddrs, FilterMap, Multiply, OperatorAddr, WorkerId,
+};
 use differential_dataflow::{
     difference::Abelian,
     lattice::Lattice,
-    operators::{arrange::ArrangeByKey, Consolidate, Iterate, Join, JoinCore, Threshold},
+    operators::{arrange::ArrangeByKey, Consolidate, Iterate, JoinCore, Threshold},
     Collection, ExchangeData,
 };
 use timely::{dataflow::Scope, logging::ChannelsEvent};
@@ -10,7 +12,7 @@ use timely::{dataflow::Scope, logging::ChannelsEvent};
 pub fn rewire_channels<S, D>(
     scope: &mut S,
     channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
-    subgraphs: &Collection<S, (WorkerId, OperatorAddr), D>,
+    subgraphs: &ChannelAddrs<S, D>,
 ) -> Collection<S, (WorkerId, Channel), D>
 where
     S: Scope,
@@ -36,7 +38,7 @@ where
 fn subgraph_crosses<S, D>(
     scope: &mut S,
     channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
-    subgraphs: &Collection<S, (WorkerId, OperatorAddr), D>,
+    subgraphs: &ChannelAddrs<S, D>,
 ) -> Collection<S, (WorkerId, Channel), D>
 where
     S: Scope,
@@ -156,7 +158,7 @@ where
                 },
             )
             .map(|(worker, channel)| ((worker, channel.target_addr()), channel))
-            .antijoin(&subgraphs)
+            .antijoin_arranged(&subgraphs)
             .map(|((worker, _), channel)| (worker, channel))
             .consolidate()
             .leave_region()
@@ -166,7 +168,7 @@ where
 fn subgraph_normal<S, D>(
     scope: &mut S,
     channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
-    subgraphs: &Collection<S, (WorkerId, OperatorAddr), D>,
+    subgraphs: &ChannelAddrs<S, D>,
 ) -> Collection<S, (WorkerId, Channel), D>
 where
     S: Scope,
@@ -193,11 +195,11 @@ where
                     None
                 }
             })
-            .antijoin(&subgraphs)
+            .antijoin_arranged(&subgraphs)
             .map(|((worker, source_addr), (channel_id, target_addr))| {
                 ((worker, target_addr), (channel_id, source_addr))
             })
-            .antijoin(&subgraphs)
+            .antijoin_arranged(&subgraphs)
             .map(|((worker, target_addr), (channel_id, source_addr))| {
                 (
                     worker,

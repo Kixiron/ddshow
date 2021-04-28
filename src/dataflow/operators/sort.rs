@@ -5,6 +5,9 @@ use differential_dataflow::{
 };
 use timely::dataflow::{operators::Map, Scope};
 
+const DEFAULT_HIERARCHICAL_BUCKETS: [u64; 16] =
+    [60, 56, 52, 48, 44, 40, 36, 32, 28, 24, 20, 16, 12, 8, 4, 0];
+
 pub trait SortBy<T> {
     type Output;
 
@@ -18,6 +21,31 @@ pub trait SortBy<T> {
 
     fn sort_by_named<F, K>(&self, name: &str, key: F) -> Self::Output
     where
+        F: Fn(&T) -> K + Clone + 'static,
+        K: Ord,
+    {
+        self.hierarchical_sort_core(name, [0].iter().copied(), key)
+    }
+
+    fn hierarchical_sort_by<F, K>(&self, key: F) -> Self::Output
+    where
+        F: Fn(&T) -> K + Clone + 'static,
+        K: Ord,
+    {
+        self.hierarchical_sort_by_named("HierarchicalSortBy", key)
+    }
+
+    fn hierarchical_sort_by_named<F, K>(&self, name: &str, key: F) -> Self::Output
+    where
+        F: Fn(&T) -> K + Clone + 'static,
+        K: Ord,
+    {
+        self.hierarchical_sort_core(name, DEFAULT_HIERARCHICAL_BUCKETS.iter().copied(), key)
+    }
+
+    fn hierarchical_sort_core<B, F, K>(&self, name: &str, buckets: B, key: F) -> Self::Output
+    where
+        B: IntoIterator<Item = u64>,
         F: Fn(&T) -> K + Clone + 'static,
         K: Ord;
 }
@@ -37,39 +65,36 @@ where
 {
     type Output = Collection<S, (K, Vec<D>), R>;
 
-    fn sort_by_named<F, DK>(&self, name: &str, key: F) -> Self::Output
+    fn hierarchical_sort_core<B, F, DK>(&self, _name: &str, buckets: B, key: F) -> Self::Output
     where
+        B: IntoIterator<Item = u64>,
         F: Fn(&D) -> DK + Clone + 'static,
         DK: Ord,
     {
         // Utilizes hierarchical aggregation to minimize the number of recomputation that must happen
-        self.scope().region_named(name, |region| {
-            let mut hashed = self
-                .enter_region(region)
-                .map(|(key, data)| ((data.hashed(), key), vec![(data, R::from(1))]));
+        let mut hashed = self.map(|(key, data)| ((data.hashed(), key), vec![(data, R::from(1))]));
 
-            for &bucket in [60, 56, 52, 48, 44, 40, 36, 32, 28, 24, 20, 16, 12, 8, 4, 0].iter() {
-                hashed = build_sort_bucket(hashed, key.clone(), 1u64 << bucket);
-            }
+        for bucket in buckets {
+            hashed = build_sort_bucket(hashed, key.clone(), 1u64 << bucket);
+        }
 
-            hashed
-                .inner
-                .map(|(((_hash, key), data), time, diff)| {
-                    let data = data
-                        .into_iter()
-                        .flat_map(|(data, inner_diff)| {
-                            (0..inner_diff.into()).map(move |_| data.clone())
-                        })
-                        .collect::<Vec<_>>();
+        hashed
+            .inner
+            .map(|(((_hash, key), data), time, diff)| {
+                let data = data
+                    .into_iter()
+                    .flat_map(|(data, inner_diff)| {
+                        (0..inner_diff.into()).map(move |_| data.clone())
+                    })
+                    .collect::<Vec<_>>();
 
-                    ((key, data), time, diff)
-                })
-                .as_collection()
-                .leave()
-        })
+                ((key, data), time, diff)
+            })
+            .as_collection()
     }
 }
 
+// TODO: Switch to `TinyVec<[(D, R); 16]>`
 type Bucketed<S, K, D, R> = Collection<S, ((u64, K), Vec<(D, R)>), R>;
 
 fn build_sort_bucket<S, K, D, R, F, DK>(
@@ -137,7 +162,9 @@ mod tests {
             let (mut input, probe) = worker.dataflow(|scope| {
                 let (input, collection) = scope.new_collection();
 
-                let sorted = collection.sort_by(|&int| int).map(|((), sorted)| sorted);
+                let sorted = collection
+                    .hierarchical_sort_by(|&int| int)
+                    .map(|((), sorted)| sorted);
                 sorted.inner.capture_into(CrossbeamPusher::new(send));
 
                 (input, sorted.probe())
@@ -181,7 +208,9 @@ mod tests {
             let (mut input, probe) = worker.dataflow(|scope| {
                 let (input, collection) = scope.new_collection();
 
-                let sorted = collection.sort_by(|&int| int).map(|((), sorted)| sorted);
+                let sorted = collection
+                    .hierarchical_sort_by(|&int| int)
+                    .map(|((), sorted)| sorted);
                 sorted.inner.capture_into(CrossbeamPusher::new(send));
 
                 (input, sorted.probe())
@@ -211,7 +240,9 @@ mod tests {
             let (mut input, probe) = worker.dataflow(|scope| {
                 let (input, collection) = scope.new_collection();
 
-                let sorted = collection.sort_by(|&int| int).map(|((), sorted)| sorted);
+                let sorted = collection
+                    .hierarchical_sort_by(|&int| int)
+                    .map(|((), sorted)| sorted);
                 sorted.inner.capture_into(CrossbeamPusher::new(send));
 
                 (input, sorted.probe())
@@ -246,7 +277,9 @@ mod tests {
             let (mut input, probe) = worker.dataflow(|scope| {
                 let (input, collection) = scope.new_collection();
 
-                let sorted = collection.sort_by(|&int| int).map(|((), sorted)| sorted);
+                let sorted = collection
+                    .hierarchical_sort_by(|&int| int)
+                    .map(|((), sorted)| sorted);
                 sorted.inner.capture_into(CrossbeamPusher::new(send));
 
                 (input, sorted.probe())
