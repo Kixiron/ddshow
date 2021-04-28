@@ -1,11 +1,14 @@
+use abomonation::Abomonation;
 use anyhow::Result;
 use crossbeam_channel::Receiver;
 use std::{
-    io::Read,
+    convert::identity,
+    io::{self, Read, Write},
     iter,
-    panic::{self, AssertUnwindSafe},
+    marker::PhantomData,
+    mem,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
@@ -13,12 +16,9 @@ use std::{
 use timely::{
     dataflow::{
         channels::pushers::{buffer::Buffer as PushBuffer, Counter as PushCounter},
-        operators::{
-            capture::event::{Event, EventIterator},
-            generic::builder_raw::OperatorBuilder,
-        },
+        operators::{capture::event::Event, generic::builder_raw::OperatorBuilder},
     },
-    dataflow::{operators::capture::EventReader, Scope, Stream},
+    dataflow::{Scope, Stream},
     progress::{frontier::MutableAntichain, Timestamp},
     Data,
 };
@@ -52,6 +52,92 @@ where
     Ok(Arc::from(receivers))
 }
 
+/// Iterates over contained `Event<T, D>`.
+///
+/// The `EventIterator` trait describes types that can iterate over references to events,
+/// and which can be used to replay a stream into a new timely dataflow computation.
+///
+/// This method is not simply an iterator because of the lifetime in the result.
+pub trait EventIterator<T, D> {
+    /// Iterates over references to `Event<T, D>` elements.
+    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>>;
+}
+
+/// A Wrapper for `R: Read` implementing `EventIterator<T, D>`.
+pub struct EventReader<T, D, R> {
+    reader: R,
+    bytes: Vec<u8>,
+    buff1: Vec<u8>,
+    buff2: Vec<u8>,
+    consumed: usize,
+    valid: usize,
+    peer_finished: bool,
+    __type: PhantomData<(T, D)>,
+}
+
+impl<T, D, R> EventReader<T, D, R> {
+    /// Allocates a new `EventReader` wrapping a supplied reader.
+    pub fn new(reader: R) -> EventReader<T, D, R> {
+        EventReader {
+            reader,
+            bytes: vec![0u8; 1 << 20],
+            buff1: Vec::new(),
+            buff2: Vec::new(),
+            consumed: 0,
+            valid: 0,
+            peer_finished: false,
+            __type: PhantomData,
+        }
+    }
+}
+
+impl<T, D, R> EventIterator<T, D> for EventReader<T, D, R>
+where
+    Event<T, D>: Clone,
+    T: Abomonation,
+    D: Abomonation,
+    R: Read,
+{
+    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>> {
+        // if we can decode something, we should just return it! :D
+        if let Some((event, rest)) =
+            unsafe { abomonation::decode::<Event<T, D>>(&mut self.buff1[self.consumed..]) }
+        {
+            self.consumed = self.valid - rest.len();
+            return Ok(Some(event.clone()));
+        }
+
+        // if we exhaust data we should shift back (if any shifting to do)
+        if self.consumed > 0 {
+            self.buff2.clear();
+            self.buff2.write_all(&self.buff1[self.consumed..])?;
+
+            mem::swap(&mut self.buff1, &mut self.buff2);
+            self.valid = self.buff1.len();
+            self.consumed = 0;
+        }
+
+        if let Ok(len) = self.reader.read(&mut self.bytes[..]) {
+            if len == 0 {
+                self.peer_finished = true;
+            }
+
+            self.buff1.write_all(&self.bytes[..len])?;
+            self.valid = self.buff1.len();
+        }
+
+        if self.peer_finished
+            && self.buff1.is_empty()
+            && self.bytes.is_empty()
+            && self.buff2.is_empty()
+        {
+            *is_finished = true;
+        }
+
+        Ok(None)
+    }
+}
+
 /// Replay a capture stream into a scope with the same timestamp.
 pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
     /// Replays `self` into the provided scope, as a `Stream<S, D>`.
@@ -59,6 +145,7 @@ pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
         self,
         scope: &mut S,
         is_running: Arc<AtomicBool>,
+        finished_workers: Arc<AtomicUsize>,
     ) -> Stream<S, D>
     where
         Self: Sized,
@@ -68,6 +155,7 @@ pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
             "ReplayWithShutdown",
             scope,
             is_running,
+            finished_workers,
             DEFAULT_REACTIVATION_DELAY,
         )
     }
@@ -77,13 +165,20 @@ pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
         name: N,
         scope: &mut S,
         is_running: Arc<AtomicBool>,
+        finished_workers: Arc<AtomicUsize>,
     ) -> Stream<S, D>
     where
         Self: Sized,
         N: Into<String>,
         S: Scope<Timestamp = T>,
     {
-        self.replay_with_shutdown_into_core(name, scope, is_running, DEFAULT_REACTIVATION_DELAY)
+        self.replay_with_shutdown_into_core(
+            name,
+            scope,
+            is_running,
+            finished_workers,
+            DEFAULT_REACTIVATION_DELAY,
+        )
     }
 
     fn replay_with_shutdown_into_core<N, S>(
@@ -91,6 +186,7 @@ pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
         name: N,
         scope: &mut S,
         is_running: Arc<AtomicBool>,
+        finished_workers: Arc<AtomicUsize>,
         reactivation_delay: Duration,
     ) -> Stream<S, D>
     where
@@ -110,6 +206,7 @@ where
         name: N,
         scope: &mut S,
         is_running: Arc<AtomicBool>,
+        finished_workers: Arc<AtomicUsize>,
         reactivation_delay: Duration,
     ) -> Stream<S, D>
     where
@@ -128,7 +225,7 @@ where
         let mut event_streams = self.into_iter().collect::<Vec<_>>();
 
         let mut antichain = MutableAntichain::new();
-        let mut started = false;
+        let (mut started, mut is_finished) = (false, vec![false; event_streams.len()]);
 
         builder.build(move |progress| {
             if !started {
@@ -145,10 +242,9 @@ where
             }
 
             let mut fuel: usize = 1_000_000;
-            'event_loop: for event_stream in event_streams.iter_mut() {
+            'event_loop: for (stream_idx, event_stream) in event_streams.iter_mut().enumerate() {
                 'stream_loop: loop {
-                    let mut event_stream = AssertUnwindSafe(&mut *event_stream);
-                    let next = panic::catch_unwind(move || event_stream.next().cloned());
+                    let next = event_stream.next(&mut is_finished[stream_idx]);
 
                     match next {
                         Ok(Some(event)) => {
@@ -156,7 +252,9 @@ where
                                 Event::Progress(vec) => {
                                     progress.internals[0].extend(vec.iter().cloned());
                                     antichain.update_iter(vec.into_iter());
+                                    fuel -= 1;
                                 }
+
                                 Event::Messages(time, mut data) => {
                                     fuel = fuel.saturating_sub(data.len());
                                     output.session(&time).give_vec(&mut data);
@@ -189,7 +287,7 @@ where
                 }
             }
 
-            if is_running.load(Ordering::Acquire) {
+            if is_running.load(Ordering::Acquire) || is_finished.iter().any(|&finished| !finished) {
                 // Reactivate according to the re-activation delay
                 activator.activate_after(reactivation_delay);
 
@@ -218,11 +316,13 @@ where
 
                     antichain.update_iter(elements);
                 }
+
+                finished_workers.fetch_add(1, Ordering::Release);
             }
 
             // Return whether or not we're incomplete, which we base
             // off of whether or not we're still supposed to be running
-            is_running.load(Ordering::Acquire)
+            is_running.load(Ordering::Acquire) && is_finished.iter().copied().all(identity)
         });
 
         stream

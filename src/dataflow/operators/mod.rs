@@ -6,7 +6,7 @@ mod filter_split;
 mod inspect;
 mod min_max;
 mod replay_with_shutdown;
-mod rkyv_capture;
+pub mod rkyv_capture;
 mod sort;
 mod split;
 mod timely_version_hack;
@@ -18,8 +18,10 @@ pub use filter_map::FilterMap;
 pub use filter_split::FilterSplit;
 pub use inspect::InspectExt;
 pub use min_max::{DiffDuration, Max, Min};
-pub use replay_with_shutdown::{make_streams, ReplayWithShutdown};
-pub use rkyv_capture::{ArchivedRkyvEvent, EventReader, EventWriter, RkyvEvent, RkyvEventResolver};
+pub use replay_with_shutdown::{make_streams, EventIterator, EventReader, ReplayWithShutdown};
+pub use rkyv_capture::{
+    ArchivedRkyvEvent, RkyvEvent, RkyvEventReader, RkyvEventResolver, RkyvEventWriter,
+};
 pub use sort::SortBy;
 pub use split::Split;
 pub use timely_version_hack::Multiply;

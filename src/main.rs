@@ -7,6 +7,7 @@ mod ui;
 use anyhow::{Context, Result};
 use args::Args;
 use colormap::{select_color, Color};
+use comfy_table::{presets::UTF8_FULL, Cell, ContentArrangement, Table};
 use dataflow::{
     operators::{make_streams, CrossbeamExtractor},
     Channel, DataflowSenders, OperatesEvent, OperatorStats, WorkerTimelineEvent,
@@ -16,7 +17,7 @@ use std::{
     collections::HashMap,
     fs,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -135,14 +136,20 @@ fn main() -> Result<()> {
         None
     };
 
-    let running = Arc::new(AtomicBool::new(true));
-    let (replay_shutdown, moved_args) = (running.clone(), args.clone());
+    let (running, finished_count) = (
+        Arc::new(AtomicBool::new(true)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let (replay_shutdown, moved_args, finished_workers) =
+        (running.clone(), args.clone(), finished_count.clone());
 
     let (node_sender, node_receiver) = crossbeam_channel::unbounded();
     let (edge_sender, edge_receiver) = crossbeam_channel::unbounded();
     let (subgraph_sender, subgraph_receiver) = crossbeam_channel::unbounded();
     let (stats_sender, stats_receiver) = crossbeam_channel::unbounded();
     let (timeline_sender, timeline_receiver) = crossbeam_channel::unbounded();
+    let (program_stats_sender, program_stats_receiver) = crossbeam_channel::unbounded();
+    let (worker_stats_sender, worker_stats_receiver) = crossbeam_channel::unbounded();
 
     tracing::info!("starting compute dataflow");
 
@@ -150,6 +157,7 @@ fn main() -> Result<()> {
     let worker_guards = timely::execute(config, move |worker| {
         let dataflow_name = concat!(env!("CARGO_CRATE_NAME"), " log processor");
         let args = moved_args.clone();
+        tracing::info!("spun up timely worker {}/{}", worker.index(), args.workers);
 
         // Distribute the tcp streams across workers, converting each of them into an event reader
         let timely_traces = event_receivers[worker.index()]
@@ -167,6 +175,8 @@ fn main() -> Result<()> {
             subgraph_sender.clone(),
             stats_sender.clone(),
             timeline_sender.clone(),
+            program_stats_sender.clone(),
+            worker_stats_sender.clone(),
         );
 
         let dataflow_id = worker.next_dataflow_index();
@@ -177,6 +187,7 @@ fn main() -> Result<()> {
                 timely_traces,
                 differential_traces,
                 replay_shutdown.clone(),
+                finished_workers.clone(),
                 senders,
             )
         })?;
@@ -185,14 +196,14 @@ fn main() -> Result<()> {
         'work_loop: while !probe.done() {
             // TODO: Reactivate select operators to try and get data flushed through?
             if let Some(flush_start) = flush_delay {
-                if flush_start.elapsed() > Duration::from_secs(5) {
-                    worker.drop_dataflow(dataflow_id);
-                    break 'work_loop;
-                }
+                //if flush_start.elapsed() > Duration::from_secs(5) {
+                //    worker.drop_dataflow(dataflow_id);
+                //    break 'work_loop;
+                //}
 
-            // TODO: Propagate info into some of the more important operators so that
-            //       we can get a semi-clean shutdown and retain some information
-            //       instead of brutally cutting everything off.
+                // TODO: Propagate info into some of the more important operators so that
+                //       we can get a semi-clean shutdown and retain some information
+                //       instead of brutally cutting everything off.
             } else if !replay_shutdown.load(Ordering::Acquire) {
                 tracing::info!(
                     worker_id = worker.index(),
@@ -213,7 +224,62 @@ fn main() -> Result<()> {
     .map_err(|err| anyhow::anyhow!("failed to start up timely computation: {}", err))?;
 
     // Wait for the user's prompt
-    wait_for_input(&*running, worker_guards)?;
+    wait_for_input(&*running, &*finished_count, worker_guards)?;
+
+    let mut program_stats = CrossbeamExtractor::new(program_stats_receiver).extract_all();
+    if let Some(stats) = program_stats.pop() {
+        let mut table = Table::new();
+
+        table
+            .load_preset(UTF8_FULL)
+            .set_content_arrangement(ContentArrangement::Dynamic)
+            //.set_table_width(80)
+            .set_header(vec!["Program Overview"])
+            .add_row(vec![Cell::new("Workers"), Cell::new(stats.workers)])
+            .add_row(vec![Cell::new("Dataflows"), Cell::new(stats.dataflows)])
+            .add_row(vec![Cell::new("Operators"), Cell::new(stats.operators)])
+            .add_row(vec![Cell::new("Subgraphs"), Cell::new(stats.subgraphs)])
+            .add_row(vec![Cell::new("Channels"), Cell::new(stats.channels)])
+            .add_row(vec![Cell::new("Events"), Cell::new(stats.events)])
+            .add_row(vec![
+                Cell::new("Total Runtime"),
+                Cell::new(format!("{:#?}", stats.runtime)),
+            ]);
+
+        println!("{}", table);
+    }
+
+    let mut worker_stats = CrossbeamExtractor::new(worker_stats_receiver).extract_all();
+    worker_stats.sort_by_key(|&(worker, _)| worker);
+
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        //.set_table_width(80)
+        .set_header(vec![
+            "Worker",
+            "Dataflows",
+            "Operators",
+            "Subgraphs",
+            "Channels",
+            "Events",
+            "Runtime",
+        ]);
+
+    for (worker, stats) in worker_stats {
+        table.add_row(vec![
+            Cell::new(format!("Worker {}", worker.into_inner())),
+            Cell::new(stats.dataflows),
+            Cell::new(stats.operators),
+            Cell::new(stats.subgraphs),
+            Cell::new(stats.channels),
+            Cell::new(stats.events),
+            Cell::new(format!("{:#?}", stats.runtime)),
+        ]);
+    }
+
+    println!("{}", table);
 
     // Extract the data from timely
     // let mut graph_nodes = SequenceTrie::new();

@@ -17,10 +17,14 @@ pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 
 use crate::{
     args::Args,
-    dataflow::operators::{DiffDuration, Max, SortBy},
+    dataflow::operators::{
+        rkyv_capture::RkyvTimelyEvent, CrossbeamPusher, DiffDuration, EventReader, FilterMap,
+        InspectExt, Max, Multiply, ReplayWithShutdown, RkyvEventWriter, SortBy,
+    },
+    ui::{ProgramStats, WorkerStats},
 };
 use abomonation_derive::Abomonation;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
 use differential::arrangement_stats;
 use differential_dataflow::{
@@ -32,22 +36,26 @@ use differential_dataflow::{
     Collection, ExchangeData, Hashable,
 };
 use operator_stats::operator_stats;
-use operators::{CrossbeamPusher, FilterMap, InspectExt, Multiply, ReplayWithShutdown};
 #[cfg(feature = "timely-next")]
 use reachability::TrackerEvent;
 use std::{
     cmp::Reverse,
     fmt::Debug,
+    fs::{self, File},
+    io::BufWriter,
     net::TcpStream,
-    sync::{atomic::AtomicBool, Arc},
-    time::Duration,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize},
+        Arc,
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use subgraphs::rewire_channels;
 use timely::{
     dataflow::{
         channels::pact::Pipeline,
         operators::{
-            capture::{Capture, Event, EventReader},
+            capture::{Capture, Event},
             probe::Handle as ProbeHandle,
             Concat, Exchange, Map, Operator, Probe,
         },
@@ -90,6 +98,8 @@ pub type EdgeBundle = (
 pub type SubgraphBundle = (((WorkerId, OperatorAddr), OperatesEvent), Duration, Diff);
 pub type StatsBundle = (((WorkerId, usize), OperatorStats), Duration, Diff);
 pub type TimelineBundle = (WorkerTimelineEvent, Duration, Diff);
+pub type ProgramStatsBundle = (ProgramStats, Duration, Diff);
+pub type WorkerStatsBundle = ((WorkerId, WorkerStats), Duration, Diff);
 
 #[derive(Clone)]
 pub struct DataflowSenders {
@@ -98,6 +108,8 @@ pub struct DataflowSenders {
     pub subgraph_sender: Sender<Event<Duration, SubgraphBundle>>,
     pub stats_sender: Sender<Event<Duration, StatsBundle>>,
     pub timeline_sender: Sender<Event<Duration, TimelineBundle>>,
+    pub program_stats: Sender<Event<Duration, ProgramStatsBundle>>,
+    pub worker_stats: Sender<Event<Duration, WorkerStatsBundle>>,
 }
 
 impl DataflowSenders {
@@ -107,6 +119,8 @@ impl DataflowSenders {
         subgraph_sender: Sender<Event<Duration, SubgraphBundle>>,
         stats_sender: Sender<Event<Duration, StatsBundle>>,
         timeline_sender: Sender<Event<Duration, TimelineBundle>>,
+        program_stats: Sender<Event<Duration, ProgramStatsBundle>>,
+        worker_stats: Sender<Event<Duration, WorkerStatsBundle>>,
     ) -> Self {
         Self {
             node_sender,
@@ -114,18 +128,21 @@ impl DataflowSenders {
             subgraph_sender,
             stats_sender,
             timeline_sender,
+            program_stats,
+            worker_stats,
         }
     }
 }
 
 pub fn dataflow<S>(
     scope: &mut S,
-    _args: &Args,
+    args: &Args,
     timely_traces: Vec<EventReader<Duration, TimelyLogBundle<WorkerIdentifier>, TcpStream>>,
     differential_traces: Option<
         Vec<EventReader<Duration, DifferentialLogBundle<WorkerIdentifier>, TcpStream>>,
     >,
     replay_shutdown: Arc<AtomicBool>,
+    finished_workers: Arc<AtomicUsize>,
     senders: DataflowSenders,
 ) -> Result<ProbeHandle<Duration>>
 where
@@ -135,13 +152,23 @@ where
 
     // The timely log stream filtered down to worker 0's events
     let timely_stream = timely_traces
-        .replay_with_shutdown_into_named("Timely Replay", scope, replay_shutdown.clone())
+        .replay_with_shutdown_into_named(
+            "Timely Replay",
+            scope,
+            replay_shutdown.clone(),
+            finished_workers.clone(),
+        )
         .map(|(time, worker, event)| (time, WorkerId::new(worker), event))
         .debug_inspect(|x| tracing::trace!("timely event: {:?}", x));
 
     let differential_stream = differential_traces.map(|traces| {
         traces
-            .replay_with_shutdown_into_named("Differential Replay", scope, replay_shutdown)
+            .replay_with_shutdown_into_named(
+                "Differential Replay",
+                scope,
+                replay_shutdown,
+                finished_workers,
+            )
             .map(|(time, worker, event)| (time, WorkerId::new(worker), event))
             .debug_inspect(|x| tracing::trace!("differential dataflow event: {:?}", x))
     });
@@ -211,7 +238,21 @@ where
         &operators,
         &channels,
         &subgraphs,
-    );
+    )
+    .probe_with(&mut probe)
+    .inner
+    .capture_into(CrossbeamPusher::new(senders.program_stats));
+
+    program_stats::aggregate_worker_stats(
+        &timely_stream,
+        differential_stream.as_ref(),
+        &operators,
+        &channels,
+        &subgraphs,
+    )
+    .probe_with(&mut probe)
+    .inner
+    .capture_into(CrossbeamPusher::new(senders.worker_stats));
 
     channel_sink(
         &addressed_operators.semijoin(&leaves),
@@ -227,14 +268,34 @@ where
     channel_sink(&operator_stats, &mut probe, senders.stats_sender);
     channel_sink(&worker_timeline, &mut probe, senders.timeline_sender);
 
-    // TODO: Fix this
-    // // If saving logs is enabled, write all log messages to the `save_logs` file
-    // if let Some(save_logs) = args.save_logs.as_ref() {
-    //     if scope.index() == 0 {
-    //         let file = File::create(save_logs).context("failed to open `--save-logs` file")?;
-    //         raw_timely_stream.capture_into(EventWriter::new(file));
-    //     }
-    // }
+    // TODO: Save ddflow logs
+    // If saving logs is enabled, write all log messages to the `save_logs` directory
+    if let Some(save_logs) = args.save_logs.as_ref() {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect(
+                "the unix epoch happened before now (Unless you're a time traveler. \
+                if this is the case, I'm sure this tool not working is the least of your \
+                worries. Also, thanks for validating me, I knew ddflow was the software of \
+                the future!)",
+            )
+            .as_nanos();
+
+        let timely = timely_stream
+            .map(|(duration, worker, event)| (duration, worker, RkyvTimelyEvent::from(event)))
+            .exchange(|_| 0);
+
+        fs::create_dir_all(&save_logs).context("failed to create `--save-logs` directory")?;
+
+        if scope.index() == 0 {
+            let timely_file = BufWriter::new(
+                File::create(save_logs.join(format!("{}-timely.ddshow", timestamp)))
+                    .context("failed to create `--save-logs` timely file")?,
+            );
+
+            timely.capture_into(RkyvEventWriter::new(timely_file));
+        }
+    }
 
     Ok(probe)
 }
@@ -450,22 +511,6 @@ fn channel_sink<S, D, R>(
             .inner
             .probe_with(probe)
             .capture_into(CrossbeamPusher::new(channel));
-    } else {
-        tracing::debug!("installed channel sink assertion on worker {}", worker_id);
-
-        consolidated
-            .inner
-            .probe_with(probe)
-            .sink(Pipeline, "AssertEmpty", move |input| {
-                input.for_each(move |_time, data| {
-                    if !data.is_empty() {
-                        tracing::error!(
-                            "worker {} received unexpected post-exchange data",
-                            worker_id,
-                        );
-                    }
-                });
-            });
     }
 }
 

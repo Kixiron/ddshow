@@ -1,7 +1,11 @@
+#![allow(clippy::clippy::unused_unit)]
+
+use crate::dataflow::{ChannelId, OperatorAddr, OperatorId, PortId};
+use abomonation_derive::Abomonation;
 use bytecheck::CheckBytes;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use rkyv::{
-    check_archived_value,
+    check_archived_root,
     de::deserializers::AllocDeserializer,
     ser::{serializers::AlignedSerializer, Serializer},
     validation::DefaultArchiveValidator,
@@ -12,8 +16,16 @@ use std::{
     io::{Read, Write},
     marker::PhantomData,
     mem,
+    time::Duration,
 };
-use timely::dataflow::operators::capture::event::{Event, EventPusher};
+use timely::{
+    dataflow::operators::capture::event::{Event, EventPusher},
+    logging::{
+        ApplicationEvent, ChannelsEvent, CommChannelKind, CommChannelsEvent, GuardedMessageEvent,
+        GuardedProgressEvent, InputEvent, MessagesEvent, OperatesEvent, ParkEvent,
+        PushProgressEvent, ScheduleEvent, ShutdownEvent, StartStop, TimelyEvent,
+    },
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize)]
 #[archive(strict, derive(CheckBytes))]
@@ -43,16 +55,16 @@ impl<T, D> From<RkyvEvent<T, D>> for Event<T, D> {
 }
 
 /// A wrapper for `W: Write` implementing `EventPusher<T, D>`.
-pub struct EventWriter<T, D, W> {
+pub struct RkyvEventWriter<T, D, W> {
     stream: W,
     buffer: AlignedVec,
     __type: PhantomData<(T, D)>,
 }
 
-impl<T, D, W> EventWriter<T, D, W> {
+impl<T, D, W> RkyvEventWriter<T, D, W> {
     /// Allocates a new `EventWriter` wrapping a supplied writer.
     pub fn new(stream: W) -> Self {
-        EventWriter {
+        RkyvEventWriter {
             stream,
             buffer: AlignedVec::with_capacity(512),
             __type: PhantomData,
@@ -60,7 +72,7 @@ impl<T, D, W> EventWriter<T, D, W> {
     }
 }
 
-impl<T, D, W> EventPusher<T, D> for EventWriter<T, D, W>
+impl<T, D, W> EventPusher<T, D> for RkyvEventWriter<T, D, W>
 where
     W: Write,
     T: for<'a> Serialize<AlignedSerializer<&'a mut AlignedVec>>,
@@ -69,15 +81,15 @@ where
     fn push(&mut self, event: Event<T, D>) {
         let event: RkyvEvent<T, D> = event.into();
 
-        let (archive_len, event_position) = {
+        let archive_len = {
             self.buffer.clear();
-            let mut serializer = AlignedSerializer::new(&mut self.buffer);
 
-            let event_position = serializer
+            let mut serializer = AlignedSerializer::new(&mut self.buffer);
+            serializer
                 .serialize_value(&event)
                 .unwrap_or_else(|unreachable| match unreachable {});
 
-            (serializer.pos(), event_position)
+            serializer.pos()
         };
 
         debug_assert!(u32::try_from(archive_len).is_ok());
@@ -85,17 +97,6 @@ where
             tracing::error!(
                 archive_len = archive_len,
                 "failed to write archive length to stream: {:?}",
-                err,
-            );
-
-            return;
-        }
-
-        debug_assert!(u32::try_from(event_position).is_ok());
-        if let Err(err) = self.stream.write_u32::<LittleEndian>(event_position as u32) {
-            tracing::error!(
-                event_position = event_position,
-                "failed to write event position to stream: {:?}",
                 err,
             );
 
@@ -110,7 +111,7 @@ where
 }
 
 /// A Wrapper for `R: Read` implementing `EventIterator<T, D>`.
-pub struct EventReader<T, D, R> {
+pub struct RkyvEventReader<T, D, R> {
     reader: R,
     bytes: Vec<u8>,
     buffer1: Vec<u8>,
@@ -119,10 +120,10 @@ pub struct EventReader<T, D, R> {
     __type: PhantomData<(T, D)>,
 }
 
-impl<T, D, R> EventReader<T, D, R> {
+impl<T, D, R> RkyvEventReader<T, D, R> {
     /// Allocates a new `EventReader` wrapping a supplied reader.
     pub fn new(reader: R) -> Self {
-        EventReader {
+        RkyvEventReader {
             reader,
             bytes: vec![0u8; 1 << 20],
             buffer1: Vec::new(),
@@ -133,7 +134,7 @@ impl<T, D, R> EventReader<T, D, R> {
     }
 }
 
-impl<T, D, R> Iterator for EventReader<T, D, R>
+impl<T, D, R> Iterator for RkyvEventReader<T, D, R>
 where
     R: Read,
     T: Archive,
@@ -146,25 +147,20 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let message_header = (&self.buffer1[self.consumed..])
             .read_u32::<LittleEndian>()
-            .and_then(|archive_len| {
-                (&self.buffer1[self.consumed + mem::size_of::<u32>()..])
-                    .read_u32::<LittleEndian>()
-                    .map(|event_position| (archive_len as usize, event_position as usize))
-            });
+            .map(|archive_len| archive_len as usize);
 
-        if let Ok((archive_length, event_position)) = message_header {
-            let archive_start = self.consumed + mem::size_of::<u32>() * 2;
+        if let Ok(archive_length) = message_header {
+            let archive_start = self.consumed + mem::size_of::<u32>();
 
-            match check_archived_value::<RkyvEvent<T, D>>(
+            match check_archived_root::<RkyvEvent<T, D>>(
                 &self.buffer1[archive_start..archive_start + archive_length],
-                event_position,
             ) {
                 Ok(archive) => {
                     let event = archive
                         .deserialize(&mut AllocDeserializer)
                         .unwrap_or_else(|unreachable| match unreachable {});
 
-                    self.consumed += archive_length + mem::size_of::<u32>() * 2;
+                    self.consumed += archive_length + mem::size_of::<u32>();
                     return Some(event.into());
                 }
 
@@ -192,7 +188,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::dataflow::{
-        operators::{EventReader, EventWriter},
+        operators::{RkyvEventReader, RkyvEventWriter},
         tests::init_test_logging,
         types::{OperatesEvent, OperatorAddr},
     };
@@ -218,17 +214,504 @@ mod tests {
         let mut buffer = Vec::new();
 
         {
-            let mut writer = EventWriter::new(&mut buffer);
+            let mut writer = RkyvEventWriter::new(&mut buffer);
             writer.push(events[0].clone());
             writer.push(events[1].clone());
         }
 
-        let mut reader = EventReader::new(&buffer[..]);
+        let mut reader = RkyvEventReader::new(&buffer[..]);
 
         assert!(reader.next().is_none());
         let first = reader.next().unwrap();
         let second = reader.next().unwrap();
 
         assert_eq!(events, vec![first, second]);
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub enum RkyvTimelyEvent {
+    Operates(RkyvOperatesEvent),
+    Channels(RkyvChannelsEvent),
+    PushProgress(RkyvPushProgressEvent),
+    Messages(RkyvMessagesEvent),
+    Schedule(RkyvScheduleEvent),
+    Shutdown(RkyvShutdownEvent),
+    Application(RkyvApplicationEvent),
+    GuardedMessage(RkyvGuardedMessageEvent),
+    GuardedProgress(RkyvGuardedProgressEvent),
+    CommChannels(RkyvCommChannelsEvent),
+    Input(RkyvInputEvent),
+    Park(RkyvParkEvent),
+    Text(String),
+}
+
+impl From<TimelyEvent> for RkyvTimelyEvent {
+    fn from(event: TimelyEvent) -> Self {
+        match event {
+            TimelyEvent::Operates(operates) => Self::Operates(operates.into()),
+            TimelyEvent::Channels(channels) => Self::Channels(channels.into()),
+            TimelyEvent::PushProgress(progress) => Self::PushProgress(progress.into()),
+            TimelyEvent::Messages(inner) => Self::Messages(inner.into()),
+            TimelyEvent::Schedule(inner) => Self::Schedule(inner.into()),
+            TimelyEvent::Shutdown(inner) => Self::Shutdown(inner.into()),
+            TimelyEvent::Application(inner) => Self::Application(inner.into()),
+            TimelyEvent::GuardedMessage(inner) => Self::GuardedMessage(inner.into()),
+            TimelyEvent::GuardedProgress(inner) => Self::GuardedProgress(inner.into()),
+            TimelyEvent::CommChannels(inner) => Self::CommChannels(inner.into()),
+            TimelyEvent::Input(inner) => Self::Input(inner.into()),
+            TimelyEvent::Park(inner) => Self::Park(inner.into()),
+            TimelyEvent::Text(text) => Self::Text(text),
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub struct RkyvOperatesEvent {
+    pub id: OperatorId,
+    pub addr: OperatorAddr,
+    pub name: String,
+}
+
+impl From<OperatesEvent> for RkyvOperatesEvent {
+    fn from(event: OperatesEvent) -> Self {
+        Self {
+            id: OperatorId::new(event.id),
+            addr: OperatorAddr::from(event.addr),
+            name: event.name,
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub struct RkyvChannelsEvent {
+    pub id: OperatorId,
+    pub scope_addr: OperatorAddr,
+    pub source: (PortId, PortId),
+    pub target: (PortId, PortId),
+}
+
+impl From<ChannelsEvent> for RkyvChannelsEvent {
+    fn from(event: ChannelsEvent) -> Self {
+        Self {
+            id: OperatorId::new(event.id),
+            scope_addr: OperatorAddr::from(event.scope_addr),
+            source: (PortId::new(event.source.0), PortId::new(event.source.1)),
+            target: (PortId::new(event.target.0), PortId::new(event.target.1)),
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub struct RkyvPushProgressEvent {
+    pub op_id: OperatorId,
+}
+
+impl From<PushProgressEvent> for RkyvPushProgressEvent {
+    fn from(event: PushProgressEvent) -> Self {
+        Self {
+            op_id: OperatorId::new(event.op_id),
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub struct RkyvMessagesEvent {
+    /// `true` if send event, `false` if receive event.
+    pub is_send: bool,
+    /// Channel identifier
+    pub channel: ChannelId,
+    /// Source worker index.
+    pub source: OperatorId,
+    /// Target worker index.
+    pub target: OperatorId,
+    /// Message sequence number.
+    pub seq_no: usize,
+    /// Number of typed records in the message.
+    pub length: usize,
+}
+
+impl From<MessagesEvent> for RkyvMessagesEvent {
+    fn from(event: MessagesEvent) -> Self {
+        Self {
+            is_send: event.is_send,
+            channel: ChannelId::new(event.channel),
+            source: OperatorId::new(event.source),
+            target: OperatorId::new(event.target),
+            seq_no: event.seq_no,
+            length: event.length,
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub enum RkyvStartStop {
+    /// Operator starts.
+    Start,
+    /// Operator stops.
+    Stop,
+}
+
+impl From<StartStop> for RkyvStartStop {
+    fn from(start_stop: StartStop) -> Self {
+        match start_stop {
+            StartStop::Start => Self::Start,
+            StartStop::Stop => Self::Stop,
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub struct RkyvScheduleEvent {
+    pub id: OperatorId,
+    pub start_stop: RkyvStartStop,
+}
+
+impl From<ScheduleEvent> for RkyvScheduleEvent {
+    fn from(event: ScheduleEvent) -> Self {
+        Self {
+            id: OperatorId::new(event.id),
+            start_stop: event.start_stop.into(),
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub struct RkyvShutdownEvent {
+    pub id: OperatorId,
+}
+
+impl From<ShutdownEvent> for RkyvShutdownEvent {
+    fn from(event: ShutdownEvent) -> Self {
+        Self {
+            id: OperatorId::new(event.id),
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub struct RkyvApplicationEvent {
+    pub id: usize,
+    // TODO: Make this a `RkyvStartStop`?
+    pub is_start: bool,
+}
+
+impl From<ApplicationEvent> for RkyvApplicationEvent {
+    fn from(event: ApplicationEvent) -> Self {
+        Self {
+            id: event.id,
+            is_start: event.is_start,
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub struct RkyvGuardedMessageEvent {
+    // TODO: Make this a `RkyvStartStop`?
+    pub is_start: bool,
+}
+
+impl From<GuardedMessageEvent> for RkyvGuardedMessageEvent {
+    fn from(event: GuardedMessageEvent) -> Self {
+        Self {
+            is_start: event.is_start,
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub struct RkyvGuardedProgressEvent {
+    // TODO: Make this a `RkyvStartStop`?
+    pub is_start: bool,
+}
+
+impl From<GuardedProgressEvent> for RkyvGuardedProgressEvent {
+    fn from(event: GuardedProgressEvent) -> Self {
+        Self {
+            is_start: event.is_start,
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub enum RkyvCommChannelKind {
+    Progress,
+    Data,
+}
+
+impl From<CommChannelKind> for RkyvCommChannelKind {
+    fn from(channel_kind: CommChannelKind) -> Self {
+        match channel_kind {
+            CommChannelKind::Progress => Self::Progress,
+            CommChannelKind::Data => Self::Data,
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub struct RkyvCommChannelsEvent {
+    pub identifier: usize,
+    pub kind: RkyvCommChannelKind,
+}
+
+impl From<CommChannelsEvent> for RkyvCommChannelsEvent {
+    fn from(event: CommChannelsEvent) -> Self {
+        Self {
+            identifier: event.identifier,
+            kind: event.kind.into(),
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub struct RkyvInputEvent {
+    pub start_stop: RkyvStartStop,
+}
+
+impl From<InputEvent> for RkyvInputEvent {
+    fn from(event: InputEvent) -> Self {
+        Self {
+            start_stop: event.start_stop.into(),
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Serialize,
+    Deserialize,
+    Archive,
+    Abomonation,
+)]
+#[archive(strict, derive(CheckBytes))]
+pub enum RkyvParkEvent {
+    Park(Option<Duration>),
+    Unpark,
+}
+
+impl From<ParkEvent> for RkyvParkEvent {
+    fn from(park: ParkEvent) -> Self {
+        match park {
+            ParkEvent::Park(duration) => Self::Park(duration),
+            ParkEvent::Unpark => Self::Unpark,
+        }
     }
 }

@@ -1,9 +1,14 @@
 use anyhow::{Context, Result};
 use std::{
+    hint,
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     num::NonZeroUsize,
-    sync::atomic::{self, AtomicBool, Ordering},
+    sync::{
+        atomic::{self, AtomicBool, AtomicUsize, Ordering},
+        Arc, Barrier,
+    },
+    thread,
     time::Duration,
 };
 use timely::communication::WorkerGuards;
@@ -51,8 +56,26 @@ pub fn wait_for_connections(
 /// workers to terminate
 // TODO: Add a "haven't received updates in `n` seconds" thingy to tell the user
 //       we're no longer getting data
-pub fn wait_for_input(running: &AtomicBool, worker_guards: WorkerGuards<Result<()>>) -> Result<()> {
+pub fn wait_for_input(
+    running: &AtomicBool,
+    finished_count: &AtomicUsize,
+    worker_guards: WorkerGuards<Result<()>>,
+) -> Result<()> {
     let (mut stdin, mut stdout) = (io::stdin(), io::stdout());
+
+    let (send, recv) = crossbeam_channel::bounded(1);
+    let barrier = Arc::new(Barrier::new(2));
+
+    let thread_barrier = barrier.clone();
+    thread::spawn(move || {
+        thread_barrier.wait();
+
+        // Wait for input
+        let _ = stdin.read(&mut [0]);
+
+        tracing::info!("stdin thread got input from stdin");
+        send.send(()).unwrap();
+    });
 
     // Write a prompt to the terminal for the user
     write!(
@@ -62,10 +85,26 @@ pub fn wait_for_input(running: &AtomicBool, worker_guards: WorkerGuards<Result<(
     .context("failed to write termination message to stdout")?;
     stdout.flush().context("failed to flush stdout")?;
 
-    // Wait for input
-    stdin
-        .read(&mut [0])
-        .context("failed to get input from stdin")?;
+    barrier.wait();
+    let num_threads = worker_guards.guards().len();
+
+    loop {
+        hint::spin_loop();
+
+        if finished_count.load(Ordering::Acquire) == num_threads
+            || !running.load(Ordering::Acquire)
+            || recv.recv_timeout(Duration::from_millis(500)).is_ok()
+        {
+            tracing::info!(
+                finished_count = finished_count.load(Ordering::Acquire),
+                num_threads = num_threads,
+                running = running.load(Ordering::Acquire),
+                "main thread got shutdown",
+            );
+
+            break;
+        }
+    }
 
     // Terminate the replay
     running.store(false, Ordering::Release);
