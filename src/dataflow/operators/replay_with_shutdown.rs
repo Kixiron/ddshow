@@ -2,13 +2,12 @@ use abomonation::Abomonation;
 use anyhow::Result;
 use crossbeam_channel::Receiver;
 use std::{
-    convert::identity,
     io::{self, Read, Write},
     iter,
     marker::PhantomData,
     mem,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc,
     },
     time::Duration,
@@ -60,7 +59,7 @@ where
 /// This method is not simply an iterator because of the lifetime in the result.
 pub trait EventIterator<T, D> {
     /// Iterates over references to `Event<T, D>` elements.
-    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>>;
+    fn next(&mut self) -> io::Result<Option<Event<T, D>>>;
 }
 
 /// A Wrapper for `R: Read` implementing `EventIterator<T, D>`.
@@ -71,7 +70,7 @@ pub struct EventReader<T, D, R> {
     buff2: Vec<u8>,
     consumed: usize,
     valid: usize,
-    peer_finished: bool,
+
     __type: PhantomData<(T, D)>,
 }
 
@@ -85,7 +84,7 @@ impl<T, D, R> EventReader<T, D, R> {
             buff2: Vec::new(),
             consumed: 0,
             valid: 0,
-            peer_finished: false,
+
             __type: PhantomData,
         }
     }
@@ -98,7 +97,7 @@ where
     D: Abomonation,
     R: Read,
 {
-    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>> {
+    fn next(&mut self) -> io::Result<Option<Event<T, D>>> {
         // if we can decode something, we should just return it! :D
         if let Some((event, rest)) =
             unsafe { abomonation::decode::<Event<T, D>>(&mut self.buff1[self.consumed..]) }
@@ -118,20 +117,8 @@ where
         }
 
         if let Ok(len) = self.reader.read(&mut self.bytes[..]) {
-            if len == 0 {
-                self.peer_finished = true;
-            }
-
             self.buff1.write_all(&self.bytes[..len])?;
             self.valid = self.buff1.len();
-        }
-
-        if self.peer_finished
-            && self.buff1.is_empty()
-            && self.bytes.is_empty()
-            && self.buff2.is_empty()
-        {
-            *is_finished = true;
         }
 
         Ok(None)
@@ -145,7 +132,6 @@ pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
         self,
         scope: &mut S,
         is_running: Arc<AtomicBool>,
-        finished_workers: Arc<AtomicUsize>,
     ) -> Stream<S, D>
     where
         Self: Sized,
@@ -155,7 +141,6 @@ pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
             "ReplayWithShutdown",
             scope,
             is_running,
-            finished_workers,
             DEFAULT_REACTIVATION_DELAY,
         )
     }
@@ -165,20 +150,13 @@ pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
         name: N,
         scope: &mut S,
         is_running: Arc<AtomicBool>,
-        finished_workers: Arc<AtomicUsize>,
     ) -> Stream<S, D>
     where
         Self: Sized,
         N: Into<String>,
         S: Scope<Timestamp = T>,
     {
-        self.replay_with_shutdown_into_core(
-            name,
-            scope,
-            is_running,
-            finished_workers,
-            DEFAULT_REACTIVATION_DELAY,
-        )
+        self.replay_with_shutdown_into_core(name, scope, is_running, DEFAULT_REACTIVATION_DELAY)
     }
 
     fn replay_with_shutdown_into_core<N, S>(
@@ -186,7 +164,6 @@ pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
         name: N,
         scope: &mut S,
         is_running: Arc<AtomicBool>,
-        finished_workers: Arc<AtomicUsize>,
         reactivation_delay: Duration,
     ) -> Stream<S, D>
     where
@@ -206,7 +183,7 @@ where
         name: N,
         scope: &mut S,
         is_running: Arc<AtomicBool>,
-        finished_workers: Arc<AtomicUsize>,
+
         reactivation_delay: Duration,
     ) -> Stream<S, D>
     where
@@ -225,7 +202,7 @@ where
         let mut event_streams = self.into_iter().collect::<Vec<_>>();
 
         let mut antichain = MutableAntichain::new();
-        let (mut started, mut is_finished) = (false, vec![false; event_streams.len()]);
+        let mut started = false;
 
         builder.build(move |progress| {
             if !started {
@@ -241,33 +218,24 @@ where
                 started = true;
             }
 
-            let mut fuel: usize = 1_000_000;
-            'event_loop: for (stream_idx, event_stream) in event_streams.iter_mut().enumerate() {
+            'event_loop: for event_stream in event_streams.iter_mut() {
                 'stream_loop: loop {
-                    let next = event_stream.next(&mut is_finished[stream_idx]);
+                    let next = event_stream.next();
 
                     match next {
-                        Ok(Some(event)) => {
-                            match event {
-                                Event::Progress(vec) => {
-                                    progress.internals[0].extend(vec.iter().cloned());
-                                    antichain.update_iter(vec.into_iter());
-                                    fuel -= 1;
-                                }
-
-                                Event::Messages(time, mut data) => {
-                                    fuel = fuel.saturating_sub(data.len());
-                                    output.session(&time).give_vec(&mut data);
-                                }
+                        Ok(Some(event)) => match event {
+                            Event::Progress(vec) => {
+                                progress.internals[0].extend(vec.iter().cloned());
+                                antichain.update_iter(vec.into_iter());
                             }
 
-                            if !is_running.load(Ordering::Acquire) || fuel == 0 {
-                                break 'event_loop;
+                            Event::Messages(time, mut data) => {
+                                output.session(&time).give_vec(&mut data);
                             }
-                        }
+                        },
 
                         Ok(None) => {
-                            if !is_running.load(Ordering::Acquire) || fuel == 0 {
+                            if !is_running.load(Ordering::Acquire) {
                                 break 'event_loop;
                             } else {
                                 break 'stream_loop;
@@ -316,8 +284,6 @@ where
 
                     antichain.update_iter(elements);
                 }
-
-                finished_workers.fetch_add(1, Ordering::Release);
             }
 
             // Return whether or not we're incomplete, which we base

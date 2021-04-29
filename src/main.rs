@@ -15,9 +15,10 @@ use dataflow::{
 use network::{wait_for_connections, wait_for_input};
 use std::{
     collections::HashMap,
-    fs,
+    env, fs,
+    net::TcpStream,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -136,12 +137,8 @@ fn main() -> Result<()> {
         None
     };
 
-    let (running, finished_count) = (
-        Arc::new(AtomicBool::new(true)),
-        Arc::new(AtomicUsize::new(0)),
-    );
-    let (replay_shutdown, moved_args, finished_workers) =
-        (running.clone(), args.clone(), finished_count.clone());
+    let running = Arc::new(AtomicBool::new(true));
+    let (replay_shutdown, moved_args) = (running.clone(), args.clone());
 
     let (node_sender, node_receiver) = crossbeam_channel::unbounded();
     let (edge_sender, edge_receiver) = crossbeam_channel::unbounded();
@@ -162,6 +159,17 @@ fn main() -> Result<()> {
             worker.index() + 1,
             args.workers,
         );
+
+        if cfg!(debug_assertions) {
+            if let Ok(addr) = env::var("DIFFERENTIAL_LOG_ADDR") {
+                if let Ok(stream) = TcpStream::connect(&addr) {
+                    differential_dataflow::logging::enable(worker, stream);
+                    tracing::info!("connected to differential log stream at {}", addr);
+                } else {
+                    panic!("Could not connect to differential log address: {:?}", addr);
+                }
+            }
+        }
 
         // Distribute the tcp streams across workers, converting each of them into an event reader
         let timely_traces = event_receivers[worker.index()]
@@ -191,7 +199,6 @@ fn main() -> Result<()> {
                 timely_traces,
                 differential_traces,
                 replay_shutdown.clone(),
-                finished_workers.clone(),
                 senders,
             )
         })?;
@@ -200,14 +207,16 @@ fn main() -> Result<()> {
         'work_loop: while !probe.done() {
             // TODO: Reactivate select operators to try and get data flushed through?
             if let Some(flush_start) = flush_delay {
-                //if flush_start.elapsed() > Duration::from_secs(5) {
-                //    worker.drop_dataflow(dataflow_id);
-                //    break 'work_loop;
-                //}
+                if flush_start.elapsed() > Duration::from_secs(10) {
+                    worker.step();
+                    worker.drop_dataflow(dataflow_id);
 
-                // TODO: Propagate info into some of the more important operators so that
-                //       we can get a semi-clean shutdown and retain some information
-                //       instead of brutally cutting everything off.
+                    break 'work_loop;
+                }
+
+            // TODO: Propagate info into some of the more important operators so that
+            //       we can get a semi-clean shutdown and retain some information
+            //       instead of brutally cutting everything off.
             } else if !replay_shutdown.load(Ordering::Acquire) {
                 tracing::info!(
                     worker_id = worker.index(),
@@ -223,12 +232,18 @@ fn main() -> Result<()> {
             worker.step_or_park(Some(Duration::from_millis(500)));
         }
 
+        tracing::info!(
+            "timely worker {}/{} finished",
+            worker.index() + 1,
+            args.workers,
+        );
+
         Ok(())
     })
     .map_err(|err| anyhow::anyhow!("failed to start up timely computation: {}", err))?;
 
     // Wait for the user's prompt
-    wait_for_input(&*running, &*finished_count, worker_guards)?;
+    wait_for_input(&*running, worker_guards)?;
 
     let mut program_stats = CrossbeamExtractor::new(program_stats_receiver).extract_all();
     if let Some(stats) = program_stats.pop() {

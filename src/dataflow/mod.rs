@@ -47,10 +47,7 @@ use std::{
     fs::{self, File},
     io::BufWriter,
     net::TcpStream,
-    sync::{
-        atomic::{AtomicBool, AtomicUsize},
-        Arc,
-    },
+    sync::{atomic::AtomicBool, Arc},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use subgraphs::rewire_channels;
@@ -149,7 +146,6 @@ pub fn dataflow<S>(
         Vec<EventReader<Duration, DifferentialLogBundle<WorkerIdentifier>, TcpStream>>,
     >,
     replay_shutdown: Arc<AtomicBool>,
-    finished_workers: Arc<AtomicUsize>,
     senders: DataflowSenders,
 ) -> Result<ProbeHandle<Duration>>
 where
@@ -159,23 +155,13 @@ where
 
     // The timely log stream filtered down to worker 0's events
     let timely_stream = timely_traces
-        .replay_with_shutdown_into_named(
-            "Timely Replay",
-            scope,
-            replay_shutdown.clone(),
-            finished_workers.clone(),
-        )
+        .replay_with_shutdown_into_named("Timely Replay", scope, replay_shutdown.clone())
         .map(|(time, worker, event)| (time, WorkerId::new(worker), event))
         .debug_inspect(|x| tracing::trace!("timely event: {:?}", x));
 
     let differential_stream = differential_traces.map(|traces| {
         traces
-            .replay_with_shutdown_into_named(
-                "Differential Replay",
-                scope,
-                replay_shutdown,
-                finished_workers,
-            )
+            .replay_with_shutdown_into_named("Differential Replay", scope, replay_shutdown)
             .map(|(time, worker, event)| (time, WorkerId::new(worker), event))
             .debug_inspect(|x| tracing::trace!("differential dataflow event: {:?}", x))
     });
@@ -241,31 +227,26 @@ where
     let addressed_operators =
         operators.map(|(worker, operator)| ((worker, operator.addr.clone()), operator));
 
-    program_stats::aggregate_program_stats(
+    let (program_stats, worker_stats) = program_stats::aggregate_worker_stats(
         &timely_stream,
         differential_stream.as_ref(),
         &operators,
         &channels,
         &subgraphs_arranged,
-    )
-    .probe_with(&mut probe)
-    .inner
-    .capture_into(CrossbeamPusher::new(senders.program_stats));
+    );
 
-    program_stats::aggregate_worker_stats(
-        &timely_stream,
-        differential_stream.as_ref(),
-        &operators,
-        &channels,
-        &subgraphs_arranged,
-    )
-    // FIXME: This sort somehow makes things explode
-    .map(|(worker, stats)| ((), (worker, stats)))
-    .sort_by(|&(worker, _)| worker)
-    .map(|((), sorted_stats)| sorted_stats)
-    .probe_with(&mut probe)
-    .inner
-    .capture_into(CrossbeamPusher::new(senders.worker_stats));
+    program_stats
+        .probe_with(&mut probe)
+        .inner
+        .capture_into(CrossbeamPusher::new(senders.program_stats));
+
+    worker_stats
+        .map(|(worker, stats)| ((), (worker, stats)))
+        .sort_by(|&(worker, _)| worker)
+        .map(|((), sorted_stats)| sorted_stats)
+        .probe_with(&mut probe)
+        .inner
+        .capture_into(CrossbeamPusher::new(senders.worker_stats));
 
     channel_sink(
         &addressed_operators.semijoin(&leaves),

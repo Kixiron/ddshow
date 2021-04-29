@@ -13,7 +13,7 @@ use differential_dataflow::{
     operators::{arrange::ArrangeByKey, Consolidate, Count, Join, Reduce},
     AsCollection, Collection, Data, ExchangeData,
 };
-use std::{collections::HashSet, hash::Hash, time::Duration};
+use std::{collections::HashSet, hash::Hash, iter, time::Duration};
 use timely::dataflow::{
     operators::{Concat, Map},
     Scope, Stream,
@@ -188,7 +188,10 @@ pub fn aggregate_worker_stats<S>(
     operators: &Collection<S, (WorkerId, OperatesEvent), Diff>,
     channels: &Collection<S, (WorkerId, Channel), Diff>,
     subgraph_addresses: &ChannelAddrs<S, Diff>,
-) -> Collection<S, (WorkerId, WorkerStats), Diff>
+) -> (
+    Collection<S, ProgramStats, Diff>,
+    Collection<S, (WorkerId, WorkerStats), Diff>,
+)
 where
     S: Scope<Timestamp = Duration>,
 {
@@ -266,7 +269,7 @@ where
     //       stream default values?) to make every field in `ProgramStats` optional
     //       so that as soon as we have any data we can chuck it at them, even if it's
     //       incomplete
-    dataflow_addrs
+    let worker_stats = dataflow_addrs
         .join(&total_dataflows)
         .join(&total_operators)
         .join(&total_subgraphs)
@@ -298,5 +301,73 @@ where
                 )
             },
         )
-        .consolidate()
+        .consolidate();
+
+    let program_stats = worker_stats
+        .explode(|(_, stats)| {
+            let diff = DiffPair::new(
+                1,
+                DiffPair::new(
+                    stats.dataflows as isize,
+                    DiffPair::new(
+                        stats.operators as isize,
+                        DiffPair::new(
+                            stats.subgraphs as isize,
+                            DiffPair::new(
+                                stats.channels as isize,
+                                DiffPair::new(
+                                    stats.events as isize,
+                                    Max::new(DiffDuration::new(stats.runtime)),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+
+            iter::once(((), diff))
+        })
+        .count()
+        .map(
+            |(
+                (),
+                DiffPair {
+                    element1: workers,
+                    element2:
+                        DiffPair {
+                            element1: dataflows,
+                            element2:
+                                DiffPair {
+                                    element1: operators,
+                                    element2:
+                                        DiffPair {
+                                            element1: subgraphs,
+                                            element2:
+                                                DiffPair {
+                                                    element1: channels,
+                                                    element2:
+                                                        DiffPair {
+                                                            element1: events,
+                                                            element2:
+                                                                Max {
+                                                                    value: DiffDuration(runtime),
+                                                                },
+                                                        },
+                                                },
+                                        },
+                                },
+                        },
+                },
+            )| ProgramStats {
+                workers: workers as usize,
+                dataflows: dataflows as usize,
+                operators: operators as usize,
+                subgraphs: subgraphs as usize,
+                channels: channels as usize,
+                events: events as usize,
+                runtime,
+            },
+        );
+
+    (program_stats, worker_stats)
 }

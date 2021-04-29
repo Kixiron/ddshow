@@ -5,7 +5,7 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     num::NonZeroUsize,
     sync::{
-        atomic::{self, AtomicBool, AtomicUsize, Ordering},
+        atomic::{self, AtomicBool, Ordering},
         Arc, Barrier,
     },
     thread,
@@ -56,11 +56,7 @@ pub fn wait_for_connections(
 /// workers to terminate
 // TODO: Add a "haven't received updates in `n` seconds" thingy to tell the user
 //       we're no longer getting data
-pub fn wait_for_input(
-    running: &AtomicBool,
-    finished_count: &AtomicUsize,
-    worker_guards: WorkerGuards<Result<()>>,
-) -> Result<()> {
+pub fn wait_for_input(running: &AtomicBool, worker_guards: WorkerGuards<Result<()>>) -> Result<()> {
     let (mut stdin, mut stdout) = (io::stdin(), io::stdout());
 
     let (send, recv) = crossbeam_channel::bounded(1);
@@ -94,7 +90,6 @@ pub fn wait_for_input(
         if !running.load(Ordering::Acquire) || recv.recv_timeout(Duration::from_millis(500)).is_ok()
         {
             tracing::info!(
-                finished_count = finished_count.load(Ordering::Acquire),
                 num_threads = num_threads,
                 running = running.load(Ordering::Acquire),
                 "main thread got shutdown",
