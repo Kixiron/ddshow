@@ -71,7 +71,14 @@ use worker_timeline::worker_timeline;
 // FIXME: I don't think the very last window of elements
 //        are being flushed, this makes our final results
 //        incorrect.
-pub const PROGRAM_NS_GRANULARITY: u128 = 1; // 50_000_000;
+pub const PROGRAM_NS_GRANULARITY: u128 = 50_000_000;
+
+const fn granulate(time: &Duration) -> Duration {
+    let timestamp = time.as_nanos();
+    let window_idx = (timestamp / PROGRAM_NS_GRANULARITY) + 1;
+
+    Duration::from_nanos((window_idx * PROGRAM_NS_GRANULARITY) as u64)
+}
 
 // TODO: Newtype channel ids, operators ids, channel addrs and operator addrs and worker ids
 
@@ -236,6 +243,8 @@ where
     );
 
     program_stats
+        .delay(granulate)
+        .consolidate()
         .probe_with(&mut probe)
         .inner
         .capture_into(CrossbeamPusher::new(senders.program_stats));
@@ -244,6 +253,8 @@ where
         .map(|(worker, stats)| ((), (worker, stats)))
         .sort_by(|&(worker, _)| worker)
         .map(|((), sorted_stats)| sorted_stats)
+        .delay(granulate)
+        .consolidate()
         .probe_with(&mut probe)
         .inner
         .capture_into(CrossbeamPusher::new(senders.worker_stats));

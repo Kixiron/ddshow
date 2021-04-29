@@ -3,7 +3,7 @@ use crate::{
         operators::{DiffDuration, JoinArranged, Max, Min},
         types::WorkerId,
         Channel, ChannelAddrs, Diff, DifferentialLogBundle, OperatesEvent, OperatorAddr,
-        TimelyLogBundle, PROGRAM_NS_GRANULARITY,
+        TimelyLogBundle,
     },
     ui::{ProgramStats, WorkerStats},
 };
@@ -18,13 +18,6 @@ use timely::dataflow::{
     operators::{Concat, Map},
     Scope, Stream,
 };
-
-fn granulate(time: Duration) -> Duration {
-    let timestamp = time.as_nanos();
-    let window_idx = (timestamp / PROGRAM_NS_GRANULARITY) + 1;
-
-    Duration::from_nanos((window_idx * PROGRAM_NS_GRANULARITY) as u64)
-}
 
 pub fn aggregate_program_stats<S>(
     timely: &Stream<S, TimelyLogBundle>,
@@ -169,7 +162,7 @@ fn combine_events<S, D, TF, TD>(
     map_differential: TD,
 ) -> Stream<S, D>
 where
-    S: Scope,
+    S: Scope<Timestamp = Duration>,
     D: Data,
     TF: Fn(TimelyLogBundle) -> D + 'static,
     TD: Fn(DifferentialLogBundle) -> D + 'static,
@@ -182,16 +175,18 @@ where
     events
 }
 
+type AggregatedStats<S> = (
+    Collection<S, ProgramStats, Diff>,
+    Collection<S, (WorkerId, WorkerStats), Diff>,
+);
+
 pub fn aggregate_worker_stats<S>(
     timely: &Stream<S, TimelyLogBundle>,
     differential: Option<&Stream<S, DifferentialLogBundle>>,
     operators: &Collection<S, (WorkerId, OperatesEvent), Diff>,
     channels: &Collection<S, (WorkerId, Channel), Diff>,
     subgraph_addresses: &ChannelAddrs<S, Diff>,
-) -> (
-    Collection<S, ProgramStats, Diff>,
-    Collection<S, (WorkerId, WorkerStats), Diff>,
-)
+) -> AggregatedStats<S>
 where
     S: Scope<Timestamp = Duration>,
 {
@@ -300,8 +295,7 @@ where
                     },
                 )
             },
-        )
-        .consolidate();
+        );
 
     let program_stats = worker_stats
         .explode(|(_, stats)| {

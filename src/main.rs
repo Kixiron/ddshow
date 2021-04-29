@@ -18,7 +18,7 @@ use std::{
     env, fs,
     net::TcpStream,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -137,8 +137,12 @@ fn main() -> Result<()> {
         None
     };
 
-    let running = Arc::new(AtomicBool::new(true));
-    let (replay_shutdown, moved_args) = (running.clone(), args.clone());
+    let (running, workers_finished) = (
+        Arc::new(AtomicBool::new(true)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let (replay_shutdown, moved_args, moved_workers_finished) =
+        (running.clone(), args.clone(), workers_finished.clone());
 
     let (node_sender, node_receiver) = crossbeam_channel::unbounded();
     let (edge_sender, edge_receiver) = crossbeam_channel::unbounded();
@@ -203,38 +207,29 @@ fn main() -> Result<()> {
             )
         })?;
 
-        let mut flush_delay: Option<Instant> = None;
         'work_loop: while !probe.done() {
-            // TODO: Reactivate select operators to try and get data flushed through?
-            if let Some(flush_start) = flush_delay {
-                if flush_start.elapsed() > Duration::from_secs(10) {
-                    worker.step();
-                    worker.drop_dataflow(dataflow_id);
-
-                    break 'work_loop;
-                }
-
-            // TODO: Propagate info into some of the more important operators so that
-            //       we can get a semi-clean shutdown and retain some information
-            //       instead of brutally cutting everything off.
-            } else if !replay_shutdown.load(Ordering::Acquire) {
+            if !replay_shutdown.load(Ordering::Acquire) {
                 tracing::info!(
                     worker_id = worker.index(),
                     dataflow_id = dataflow_id,
-                    "shutting down dataflow {} on worker {}",
+                    "forcibly shutting down dataflow {} on worker {}",
                     dataflow_id,
                     worker.index(),
                 );
 
-                flush_delay = Some(Instant::now());
+                worker.drop_dataflow(dataflow_id);
+                break 'work_loop;
             }
 
             worker.step_or_park(Some(Duration::from_millis(500)));
         }
 
+        let total_finished = moved_workers_finished.fetch_add(1, Ordering::Release);
         tracing::info!(
-            "timely worker {}/{} finished",
+            "timely worker {}/{} finished ({}/{} workers have finished)",
             worker.index() + 1,
+            args.workers,
+            total_finished,
             args.workers,
         );
 
@@ -243,7 +238,7 @@ fn main() -> Result<()> {
     .map_err(|err| anyhow::anyhow!("failed to start up timely computation: {}", err))?;
 
     // Wait for the user's prompt
-    wait_for_input(&*running, worker_guards)?;
+    wait_for_input(&*running, &*workers_finished, worker_guards)?;
 
     let mut program_stats = CrossbeamExtractor::new(program_stats_receiver).extract_all();
     if let Some(stats) = program_stats.pop() {

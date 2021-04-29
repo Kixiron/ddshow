@@ -12,7 +12,6 @@ use rkyv::{
     AlignedVec, Archive, Deserialize, Serialize,
 };
 use std::{
-    convert::TryFrom,
     io::{Read, Write},
     marker::PhantomData,
     mem,

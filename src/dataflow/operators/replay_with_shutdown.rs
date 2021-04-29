@@ -2,6 +2,7 @@ use abomonation::Abomonation;
 use anyhow::Result;
 use crossbeam_channel::Receiver;
 use std::{
+    convert::identity,
     io::{self, Read, Write},
     iter,
     marker::PhantomData,
@@ -59,7 +60,7 @@ where
 /// This method is not simply an iterator because of the lifetime in the result.
 pub trait EventIterator<T, D> {
     /// Iterates over references to `Event<T, D>` elements.
-    fn next(&mut self) -> io::Result<Option<Event<T, D>>>;
+    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>>;
 }
 
 /// A Wrapper for `R: Read` implementing `EventIterator<T, D>`.
@@ -70,7 +71,8 @@ pub struct EventReader<T, D, R> {
     buff2: Vec<u8>,
     consumed: usize,
     valid: usize,
-
+    peer_finished: bool,
+    retried: bool,
     __type: PhantomData<(T, D)>,
 }
 
@@ -84,7 +86,8 @@ impl<T, D, R> EventReader<T, D, R> {
             buff2: Vec::new(),
             consumed: 0,
             valid: 0,
-
+            peer_finished: false,
+            retried: false,
             __type: PhantomData,
         }
     }
@@ -97,7 +100,14 @@ where
     D: Abomonation,
     R: Read,
 {
-    fn next(&mut self) -> io::Result<Option<Event<T, D>>> {
+    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>> {
+        if self.peer_finished && self.retried {
+            *is_finished = true;
+        } else if self.peer_finished {
+            self.retried = true;
+            return Ok(None);
+        }
+
         // if we can decode something, we should just return it! :D
         if let Some((event, rest)) =
             unsafe { abomonation::decode::<Event<T, D>>(&mut self.buff1[self.consumed..]) }
@@ -117,6 +127,10 @@ where
         }
 
         if let Ok(len) = self.reader.read(&mut self.bytes[..]) {
+            if len == 0 {
+                self.peer_finished = true;
+            }
+
             self.buff1.write_all(&self.bytes[..len])?;
             self.valid = self.buff1.len();
         }
@@ -192,6 +206,7 @@ where
     {
         let worker_index = scope.index();
         let mut builder = OperatorBuilder::new(name.into(), scope.clone());
+        builder.set_notify(false);
 
         let address = builder.operator_info().address;
         let activator = scope.activator_for(&address);
@@ -202,7 +217,7 @@ where
         let mut event_streams = self.into_iter().collect::<Vec<_>>();
 
         let mut antichain = MutableAntichain::new();
-        let mut started = false;
+        let (mut started, mut streams_finished) = (false, vec![false; event_streams.len()]);
 
         builder.build(move |progress| {
             if !started {
@@ -218,9 +233,14 @@ where
                 started = true;
             }
 
-            'event_loop: for event_stream in event_streams.iter_mut() {
+            // If all streams are finished we are totally complete
+            if streams_finished.iter().copied().all(identity) {
+                return false;
+            }
+
+            'event_loop: for (stream_idx, event_stream) in event_streams.iter_mut().enumerate() {
                 'stream_loop: loop {
-                    let next = event_stream.next();
+                    let next = event_stream.next(&mut streams_finished[stream_idx]);
 
                     match next {
                         Ok(Some(event)) => match event {
@@ -255,22 +275,37 @@ where
                 }
             }
 
-            if is_running.load(Ordering::Acquire) {
-                // Reactivate according to the re-activation delay
-                activator.activate_after(reactivation_delay);
+            let all_streams_finished = streams_finished.iter().copied().all(identity);
 
+            // If we're supposed to be running and haven't completed our input streams,
+            // flush the output & re-activate ourselves after a delay
+            if is_running.load(Ordering::Acquire) && !all_streams_finished {
                 output.cease();
                 output
                     .inner()
                     .produced()
                     .borrow_mut()
                     .drain_into(&mut progress.produceds[0]);
+
+                // Reactivate according to the re-activation delay
+                activator.activate_after(reactivation_delay);
+
+                // Tell timely we have work left to do
+                true
+
+            // If we're not supposed to be running or all input streams are finished,
+            // flush our outputs and release all outstanding capabilities so that
+            // any downstream consumers know we're done
             } else {
                 tracing::info!(
                     worker = worker_index,
                     "received shutdown signal within event replay",
                 );
 
+                // Flush the output stream
+                output.cease();
+
+                // Release all outstanding capabilities
                 while !antichain.is_empty() {
                     let elements = antichain
                         .frontier()
@@ -284,11 +319,10 @@ where
 
                     antichain.update_iter(elements);
                 }
-            }
 
-            // Return whether or not we're incomplete, which we base
-            // off of whether or not we're still supposed to be running
-            is_running.load(Ordering::Acquire)
+                // Tell timely we're completely done
+                false
+            }
         });
 
         stream

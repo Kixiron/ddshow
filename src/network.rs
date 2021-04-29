@@ -5,7 +5,7 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     num::NonZeroUsize,
     sync::{
-        atomic::{self, AtomicBool, Ordering},
+        atomic::{self, AtomicBool, AtomicUsize, Ordering},
         Arc, Barrier,
     },
     thread,
@@ -56,7 +56,11 @@ pub fn wait_for_connections(
 /// workers to terminate
 // TODO: Add a "haven't received updates in `n` seconds" thingy to tell the user
 //       we're no longer getting data
-pub fn wait_for_input(running: &AtomicBool, worker_guards: WorkerGuards<Result<()>>) -> Result<()> {
+pub fn wait_for_input(
+    running: &AtomicBool,
+    workers_finished: &AtomicUsize,
+    worker_guards: WorkerGuards<Result<()>>,
+) -> Result<()> {
     let (mut stdin, mut stdout) = (io::stdin(), io::stdout());
 
     let (send, recv) = crossbeam_channel::bounded(1);
@@ -87,12 +91,15 @@ pub fn wait_for_input(running: &AtomicBool, worker_guards: WorkerGuards<Result<(
     loop {
         hint::spin_loop();
 
-        if !running.load(Ordering::Acquire) || recv.recv_timeout(Duration::from_millis(500)).is_ok()
+        if workers_finished.load(Ordering::Acquire) == worker_guards.guards().len()
+            || !running.load(Ordering::Acquire)
+            || recv.recv_timeout(Duration::from_millis(500)).is_ok()
         {
             tracing::info!(
                 num_threads = num_threads,
+                workers_finished = workers_finished.load(Ordering::Acquire),
                 running = running.load(Ordering::Acquire),
-                "main thread got shutdown",
+                "main thread got shutdown signal",
             );
 
             break;
