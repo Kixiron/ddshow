@@ -1,6 +1,6 @@
 #![allow(clippy::clippy::unused_unit)]
 
-use crate::dataflow::{ChannelId, OperatorAddr, OperatorId, PortId};
+use crate::dataflow::{operators::EventIterator, ChannelId, OperatorAddr, OperatorId, PortId};
 use abomonation_derive::Abomonation;
 use bytecheck::CheckBytes;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -12,13 +12,13 @@ use rkyv::{
     AlignedVec, Archive, Deserialize, Serialize,
 };
 use std::{
-    io::{Read, Write},
+    io::{self, Read, Write},
     marker::PhantomData,
     mem,
     time::Duration,
 };
 use timely::{
-    dataflow::operators::capture::event::{Event, EventPusher},
+    dataflow::operators::capture::event::{Event, EventPusher as TimelyEventPusher},
     logging::{
         ApplicationEvent, ChannelsEvent, CommChannelKind, CommChannelsEvent, GuardedMessageEvent,
         GuardedProgressEvent, InputEvent, MessagesEvent, OperatesEvent, ParkEvent,
@@ -71,7 +71,7 @@ impl<T, D, W> RkyvEventWriter<T, D, W> {
     }
 }
 
-impl<T, D, W> EventPusher<T, D> for RkyvEventWriter<T, D, W>
+impl<T, D, W> TimelyEventPusher<T, D> for RkyvEventWriter<T, D, W>
 where
     W: Write,
     T: for<'a> Serialize<AlignedSerializer<&'a mut AlignedVec>>,
@@ -115,6 +115,7 @@ pub struct RkyvEventReader<T, D, R> {
     buffer1: AlignedVec,
     buffer2: AlignedVec,
     consumed: usize,
+    peer_finished: bool,
     __type: PhantomData<(T, D)>,
 }
 
@@ -127,8 +128,75 @@ impl<T, D, R> RkyvEventReader<T, D, R> {
             buffer1: AlignedVec::new(),
             buffer2: AlignedVec::new(),
             consumed: 0,
+            peer_finished: false,
             __type: PhantomData,
         }
+    }
+}
+
+impl<T, D, R> EventIterator<T, D> for RkyvEventReader<T, D, R>
+where
+    R: Read,
+    T: Archive,
+    T::Archived: CheckBytes<DefaultArchiveValidator> + Deserialize<T, AllocDeserializer>,
+    D: Archive,
+    D::Archived: CheckBytes<DefaultArchiveValidator> + Deserialize<D, AllocDeserializer>,
+{
+    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>> {
+        if self.peer_finished
+            && self.bytes.is_empty()
+            && self.buffer1.is_empty()
+            && self.buffer2.is_empty()
+        {
+            *is_finished = true;
+            return Ok(None);
+        }
+
+        let message_header = (&self.buffer1[self.consumed..])
+            .read_u64::<LittleEndian>()
+            .map(|archive_len| archive_len as usize);
+
+        if let Ok(archive_length) = message_header {
+            let archive_start = self.consumed + mem::size_of::<u64>();
+
+            if let Some(slice) = self
+                .buffer1
+                .get(archive_start..archive_start + archive_length)
+            {
+                match check_archived_root::<RkyvEvent<T, D>>(slice) {
+                    Ok(archive) => {
+                        let event = archive
+                            .deserialize(&mut AllocDeserializer)
+                            .unwrap_or_else(|unreachable| match unreachable {});
+
+                        self.consumed += archive_length + mem::size_of::<u64>();
+                        return Ok(Some(event.into()));
+                    }
+
+                    Err(err) => tracing::warn!("failed to check archived event: {:?}", err),
+                }
+            }
+        }
+
+        // if we exhaust data we should shift back (if any shifting to do)
+        if self.consumed > 0 {
+            self.buffer2.clear();
+            self.buffer2
+                .extend_from_slice(&self.buffer1[self.consumed..]);
+
+            mem::swap(&mut self.buffer1, &mut self.buffer2);
+            self.consumed = 0;
+        }
+
+        if let Ok(len) = self.reader.read(&mut self.bytes[..]) {
+            if len == 0 {
+                self.peer_finished = true;
+            }
+
+            self.buffer1.extend_from_slice(&self.bytes[..len]);
+        }
+
+        Ok(None)
     }
 }
 

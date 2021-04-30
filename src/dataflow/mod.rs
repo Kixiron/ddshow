@@ -18,7 +18,7 @@ pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 use crate::{
     args::Args,
     dataflow::operators::{
-        rkyv_capture::RkyvTimelyEvent, CrossbeamPusher, DiffDuration, EventReader, FilterMap,
+        rkyv_capture::RkyvTimelyEvent, CrossbeamPusher, DiffDuration, EventIterator, FilterMap,
         InspectExt, JoinArranged, Max, Multiply, ReplayWithShutdown, RkyvEventWriter, SortBy,
     },
     ui::{ProgramStats, WorkerStats},
@@ -46,7 +46,6 @@ use std::{
     fmt::Debug,
     fs::{self, File},
     io::BufWriter,
-    net::TcpStream,
     sync::{atomic::AtomicBool, Arc},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -145,18 +144,18 @@ impl DataflowSenders {
     }
 }
 
-pub fn dataflow<S>(
+pub fn dataflow<S, TR, DR>(
     scope: &mut S,
     args: &Args,
-    timely_traces: Vec<EventReader<Duration, TimelyLogBundle<WorkerIdentifier>, TcpStream>>,
-    differential_traces: Option<
-        Vec<EventReader<Duration, DifferentialLogBundle<WorkerIdentifier>, TcpStream>>,
-    >,
+    timely_traces: Vec<TR>,
+    differential_traces: Option<Vec<DR>>,
     replay_shutdown: Arc<AtomicBool>,
     senders: DataflowSenders,
 ) -> Result<ProbeHandle<Duration>>
 where
     S: Scope<Timestamp = Duration>,
+    TR: EventIterator<Duration, TimelyLogBundle<WorkerIdentifier>> + 'static,
+    DR: EventIterator<Duration, DifferentialLogBundle<WorkerIdentifier>> + 'static,
 {
     let mut probe = ProbeHandle::new();
 
@@ -242,23 +241,15 @@ where
         &subgraphs_arranged,
     );
 
-    program_stats
-        .delay(granulate)
-        .consolidate()
-        .probe_with(&mut probe)
-        .inner
-        .capture_into(CrossbeamPusher::new(senders.program_stats));
-
-    worker_stats
-        .map(|(worker, stats)| ((), (worker, stats)))
-        .sort_by(|&(worker, _)| worker)
-        .map(|((), sorted_stats)| sorted_stats)
-        .delay(granulate)
-        .consolidate()
-        .probe_with(&mut probe)
-        .inner
-        .capture_into(CrossbeamPusher::new(senders.worker_stats));
-
+    channel_sink(&program_stats, &mut probe, senders.program_stats);
+    channel_sink(
+        &worker_stats
+            .map(|(worker, stats)| ((), (worker, stats)))
+            .sort_by(|&(worker, _)| worker)
+            .map(|((), sorted_stats)| sorted_stats),
+        &mut probe,
+        senders.worker_stats,
+    );
     channel_sink(
         &addressed_operators.semijoin(&leaves),
         &mut probe,
@@ -276,16 +267,6 @@ where
     // TODO: Save ddflow logs
     // If saving logs is enabled, write all log messages to the `save_logs` directory
     if let Some(save_logs) = args.save_logs.as_ref() {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect(
-                "the unix epoch happened before now (Unless you're a time traveler. \
-                if this is the case, I'm sure this tool not working is the least of your \
-                worries. Also, thanks for validating me, I knew ddflow was the software of \
-                the future!)",
-            )
-            .as_nanos();
-
         let timely = timely_stream
             .map(|(duration, worker, event)| (duration, worker, RkyvTimelyEvent::from(event)))
             .exchange(|_| 0);
@@ -294,7 +275,7 @@ where
 
         if scope.index() == 0 {
             let timely_file = BufWriter::new(
-                File::create(save_logs.join(format!("{}-timely.ddshow", timestamp)))
+                File::create(save_logs.join("timely.ddshow"))
                     .context("failed to create `--save-logs` timely file")?,
             );
 

@@ -60,6 +60,9 @@ pub struct Args {
     /// The folder to save the target process's logs to
     #[structopt(long = "save-logs")]
     pub save_logs: Option<PathBuf>,
+
+    #[structopt(long = "replay-logs")]
+    pub replay_logs: Option<PathBuf>,
 }
 
 macro_rules! parse_gradient {

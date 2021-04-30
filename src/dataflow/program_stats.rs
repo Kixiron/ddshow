@@ -1,5 +1,6 @@
 use crate::{
     dataflow::{
+        granulate,
         operators::{DiffDuration, JoinArranged, Max, Min},
         types::WorkerId,
         Channel, ChannelAddrs, Diff, DifferentialLogBundle, OperatesEvent, OperatorAddr,
@@ -15,7 +16,7 @@ use differential_dataflow::{
 };
 use std::{collections::HashSet, hash::Hash, iter, time::Duration};
 use timely::dataflow::{
-    operators::{Concat, Map},
+    operators::{Concat, Delay, Map},
     Scope, Stream,
 };
 
@@ -172,7 +173,7 @@ where
         events = events.concat(&differential.map(map_differential));
     }
 
-    events
+    events.delay_batch(granulate)
 }
 
 type AggregatedStats<S> = (
