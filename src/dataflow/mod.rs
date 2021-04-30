@@ -43,6 +43,7 @@ use operator_stats::operator_stats;
 #[cfg(feature = "timely-next")]
 use reachability::TrackerEvent;
 use std::{
+    convert::TryFrom,
     fmt::Debug,
     fs::{self, File},
     io::BufWriter,
@@ -70,13 +71,20 @@ use worker_timeline::worker_timeline;
 // FIXME: I don't think the very last window of elements
 //        are being flushed, this makes our final results
 //        incorrect.
-pub const PROGRAM_NS_GRANULARITY: u128 = 50_000_000;
+pub const PROGRAM_NS_GRANULARITY: u128 = 5_000_000_000;
 
-const fn granulate(time: &Duration) -> Duration {
+fn granulate(&time: &Duration) -> Duration {
     let timestamp = time.as_nanos();
     let window_idx = (timestamp / PROGRAM_NS_GRANULARITY) + 1;
 
-    Duration::from_nanos((window_idx * PROGRAM_NS_GRANULARITY) as u64)
+    let minted = Duration::from_nanos((window_idx * PROGRAM_NS_GRANULARITY) as u64);
+    debug_assert_eq!(
+        u64::try_from(window_idx * PROGRAM_NS_GRANULARITY).map(|res| res as u128),
+        Ok(window_idx * PROGRAM_NS_GRANULARITY),
+    );
+    debug_assert!(time <= minted);
+
+    minted
 }
 
 // TODO: Newtype channel ids, operators ids, channel addrs and operator addrs and worker ids

@@ -173,7 +173,14 @@ where
         events = events.concat(&differential.map(map_differential));
     }
 
-    events.delay_batch(granulate)
+    events
+    // FIXME: Two weirdness-es come out of this:
+    //        1. When delaying & involving more than one
+    //           worker, nebulous sync bugs happen within
+    //           timely
+    //        2. It seems we lose some amount information
+    //           when using delays
+    // .delay_batch(granulate)
 }
 
 type AggregatedStats<S> = (
@@ -191,7 +198,6 @@ pub fn aggregate_worker_stats<S>(
 where
     S: Scope<Timestamp = Duration>,
 {
-    // TODO: Arrange this
     let addressed_operators = operators
         .map(|(worker, operator)| ((worker, operator.addr), ()))
         .arrange_by_key();
@@ -232,8 +238,8 @@ where
         differential,
         |(time, worker, _)| (worker, time, 1),
     )
-    // .delay_batch(|&time| granulate(time))
     .as_collection()
+    .delay(granulate)
     .count();
 
     // TODO: Dear god this updates so much, figure out the ddflow
@@ -253,8 +259,8 @@ where
         differential,
         move |(time, worker, _)| create_timestamps(time, worker),
     )
-    // .delay_batch(|&time| granulate(time))
     .as_collection()
+    .delay(granulate)
     .count();
 
     // TODO: For whatever reason this part of the dataflow graph is de-prioritized,
