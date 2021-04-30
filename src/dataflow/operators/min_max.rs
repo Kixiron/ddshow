@@ -147,9 +147,9 @@ impl<T> Max<T> {
         Self { value }
     }
 
-    pub fn into_inner(self) -> T {
-        self.value
-    }
+    // pub fn into_inner(self) -> T {
+    //     self.value
+    // }
 }
 
 impl<T> Add<Self> for Max<T>

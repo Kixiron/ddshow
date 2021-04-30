@@ -18,8 +18,8 @@ pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 use crate::{
     args::Args,
     dataflow::operators::{
-        rkyv_capture::RkyvTimelyEvent, CrossbeamPusher, DiffDuration, EventIterator, FilterMap,
-        InspectExt, JoinArranged, Max, Multiply, ReplayWithShutdown, RkyvEventWriter, SortBy,
+        rkyv_capture::RkyvTimelyEvent, CrossbeamPusher, EventIterator, FilterMap, InspectExt,
+        JoinArranged, Multiply, ReplayWithShutdown, RkyvEventWriter, SortBy,
     },
     ui::{ProgramStats, WorkerStats},
 };
@@ -29,12 +29,12 @@ use crossbeam_channel::Sender;
 use differential::arrangement_stats;
 use differential_dataflow::{
     collection::AsCollection,
-    difference::{Abelian, DiffPair, Monoid, Semigroup},
+    difference::{Abelian, Monoid, Semigroup},
     lattice::Lattice,
     logging::DifferentialEvent,
     operators::{
         arrange::{ArrangeByKey, ArrangeBySelf, Arranged, TraceAgent},
-        Consolidate, CountTotal, Join, ThresholdTotal,
+        Consolidate, Join, ThresholdTotal,
     },
     trace::implementations::ord::OrdKeySpine,
     Collection, ExchangeData, Hashable,
@@ -48,7 +48,7 @@ use std::{
     fs::{self, File},
     io::BufWriter,
     sync::{atomic::AtomicBool, Arc},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 use subgraphs::rewire_channels;
 use timely::{
@@ -56,7 +56,7 @@ use timely::{
         operators::{
             capture::{Capture, Event},
             probe::Handle as ProbeHandle,
-            Concat, Exchange, Map, Probe,
+            Exchange, Map, Probe,
         },
         Scope, ScopeParent, Stream,
     },
@@ -68,9 +68,6 @@ use worker_timeline::worker_timeline;
 /// Only cause the program stats to update every N milliseconds to
 /// prevent this from absolutely thrashing the scheduler
 // TODO: Make this configurable by the user
-// FIXME: I don't think the very last window of elements
-//        are being flushed, this makes our final results
-//        incorrect.
 pub const PROGRAM_NS_GRANULARITY: u128 = 5_000_000_000;
 
 fn granulate(&time: &Duration) -> Duration {
@@ -86,8 +83,6 @@ fn granulate(&time: &Duration) -> Duration {
 
     minted
 }
-
-// TODO: Newtype channel ids, operators ids, channel addrs and operator addrs and worker ids
 
 type TimelyLogBundle<Id = WorkerId> = (Duration, Id, TimelyEvent);
 type DifferentialLogBundle<Id = WorkerId> = (Duration, Id, DifferentialEvent);
@@ -292,66 +287,6 @@ where
     }
 
     Ok(probe)
-}
-
-type AggregateOverview<S> = (
-    Collection<S, (Diff, Duration), Diff>,
-    Collection<S, (WorkerId, (Diff, Duration)), Diff>,
-);
-
-/// Returns the total events & highest timestamp (program duration) for the entire program
-/// in the first collection and the per-worker total events & highest timestamp for all
-/// workers of the program
-fn aggregate_overview_stats<S>(
-    timely: &Stream<S, TimelyLogBundle>,
-    differential: Option<&Stream<S, DifferentialLogBundle>>,
-) -> AggregateOverview<S>
-where
-    S: Scope<Timestamp = Duration>,
-{
-    let mut events = timely.map(|(time, worker, _event)| {
-        (
-            worker,
-            time,
-            DiffPair::new(1, Max::new(DiffDuration::new(time))),
-        )
-    });
-
-    if let Some(differential) = differential {
-        events = events.concat(&differential.map(|(time, worker, _event)| {
-            (
-                worker,
-                time,
-                DiffPair::new(1, Max::new(DiffDuration::new(time))),
-            )
-        }));
-    }
-
-    let total_events = events
-        .map(|(_worker, time, diff)| ((), time, diff))
-        .as_collection()
-        .count_total()
-        .map(
-            |(
-                (),
-                DiffPair {
-                    element1: total_events,
-                    element2: max_timestamp,
-                },
-            )| { (total_events, max_timestamp.into_inner().0) },
-        );
-
-    let worker_events = events.as_collection().count_total().map(
-        |(
-            worker,
-            DiffPair {
-                element1: total_events,
-                element2: max_timestamp,
-            },
-        )| { (worker, (total_events, max_timestamp.into_inner().0)) },
-    );
-
-    (total_events, worker_events)
 }
 
 fn operator_creations<S>(
