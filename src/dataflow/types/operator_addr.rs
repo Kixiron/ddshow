@@ -7,7 +7,7 @@ use rkyv::{
 use serde::{Deserialize, Serialize};
 use std::{
     convert::TryFrom,
-    fmt::{self, Debug},
+    fmt::{self, Debug, Display},
     io,
     iter::IntoIterator,
     mem::MaybeUninit,
@@ -109,6 +109,12 @@ impl<'a> Extend<&'a usize> for OperatorAddr {
 impl Debug for OperatorAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self.addr.iter()).finish()
+    }
+}
+
+impl Display for OperatorAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Debug::fmt(&self.addr.as_slice(), f)
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::dataflow::{
     operators::{FilterSplit, Multiply, Split},
-    Diff, DifferentialLogBundle, TimelyLogBundle, WorkerId,
+    Diff, DifferentialLogBundle, OperatorId, TimelyLogBundle, WorkerId,
 };
 use abomonation_derive::Abomonation;
 use differential_dataflow::{
@@ -37,7 +37,7 @@ pub fn worker_timeline<S, Trace>(
 ) -> Collection<S, WorkerTimelineEvent, Diff>
 where
     S: Scope<Timestamp = Duration>,
-    Trace: TraceReader<Key = (WorkerId, usize), Val = String, Time = Duration, R = Diff>
+    Trace: TraceReader<Key = (WorkerId, OperatorId), Val = String, Time = Duration, R = Diff>
         + Clone
         + 'static,
 {
@@ -154,7 +154,7 @@ fn process_timely_event(event_processor: &mut EventProcessor<'_, '_>, event: Tim
     match event {
         TimelyEvent::Schedule(schedule) => {
             let event_kind = EventKind::activation(schedule.id);
-            let partial_event = PartialTimelineEvent::activation(schedule.id);
+            let partial_event = PartialTimelineEvent::activation(OperatorId::new(schedule.id));
 
             event_processor.start_stop(event_kind, partial_event, schedule.start_stop);
         }
@@ -257,7 +257,7 @@ fn process_differential_event(
     match event {
         DifferentialEvent::Merge(merge) => {
             let event_kind = EventKind::merge(merge.operator);
-            let partial_event = PartialTimelineEvent::merge(merge.operator);
+            let partial_event = PartialTimelineEvent::merge(OperatorId::new(merge.operator));
             let is_start = merge.complete.is_none();
 
             event_processor.is_start(event_kind, partial_event, is_start);
@@ -265,7 +265,7 @@ fn process_differential_event(
 
         DifferentialEvent::MergeShortfall(shortfall) => {
             let event_kind = EventKind::merge(shortfall.operator);
-            let partial_event = PartialTimelineEvent::merge(shortfall.operator);
+            let partial_event = PartialTimelineEvent::merge(OperatorId::new(shortfall.operator));
 
             event_processor.remove(event_kind, partial_event);
         }
@@ -418,10 +418,10 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
                 {
                     let partial_event = match event_kind {
                         EventKind::OperatorActivation { operator_id } => {
-                            PartialTimelineEvent::activation(operator_id)
+                            PartialTimelineEvent::activation(OperatorId::new(operator_id))
                         }
                         EventKind::Merge { operator_id } => {
-                            PartialTimelineEvent::merge(operator_id)
+                            PartialTimelineEvent::merge(OperatorId::new(operator_id))
                         }
 
                         _ => unreachable!(),
@@ -651,25 +651,25 @@ impl EventKind {
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Abomonation,
 )]
 pub(super) enum PartialTimelineEvent {
-    OperatorActivation { operator_id: usize },
+    OperatorActivation { operator_id: OperatorId },
     Application,
     Parked,
     Input,
     Message,
     Progress,
-    Merge { operator_id: usize },
+    Merge { operator_id: OperatorId },
 }
 
 impl PartialTimelineEvent {
-    pub const fn activation(operator_id: usize) -> Self {
+    pub const fn activation(operator_id: OperatorId) -> Self {
         Self::OperatorActivation { operator_id }
     }
 
-    pub const fn merge(operator_id: usize) -> Self {
+    pub const fn merge(operator_id: OperatorId) -> Self {
         Self::Merge { operator_id }
     }
 
-    pub const fn operator_id(&self) -> Option<usize> {
+    pub const fn operator_id(&self) -> Option<OperatorId> {
         match *self {
             Self::OperatorActivation { operator_id } | Self::Merge { operator_id } => {
                 Some(operator_id)
@@ -705,7 +705,7 @@ impl Into<TimelineEvent> for PartialTimelineEvent {
 )]
 pub enum TimelineEvent {
     OperatorActivation {
-        operator_id: usize,
+        operator_id: OperatorId,
         operator_name: String,
     },
     Application,
@@ -714,7 +714,7 @@ pub enum TimelineEvent {
     Message,
     Progress,
     Merge {
-        operator_id: usize,
+        operator_id: OperatorId,
         operator_name: String,
     },
 }

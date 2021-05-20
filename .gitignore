@@ -6,4 +6,3 @@ dataflow.svg
 /.cargo
 /dataflow-graph
 **/node_modules
-/ddshow-dashboard

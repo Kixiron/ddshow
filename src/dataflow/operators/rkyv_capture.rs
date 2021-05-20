@@ -261,6 +261,7 @@ mod tests {
         operators::{RkyvEventReader, RkyvEventWriter},
         tests::init_test_logging,
         types::{OperatesEvent, OperatorAddr},
+        OperatorId,
     };
     use timely::dataflow::operators::capture::{Event, EventPusher};
 
@@ -274,7 +275,7 @@ mod tests {
             Event::Messages(
                 0,
                 vec![OperatesEvent::new(
-                    0,
+                    OperatorId::new(0),
                     OperatorAddr::from_elem(0),
                     "foobar".to_owned(),
                 )],

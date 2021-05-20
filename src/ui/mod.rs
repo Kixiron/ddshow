@@ -510,7 +510,7 @@ pub struct GraphData {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub struct Node {
-    pub id: usize,
+    pub id: OperatorId,
     pub worker: WorkerId,
     pub addr: OperatorAddr,
     pub name: String,
@@ -534,7 +534,7 @@ pub struct ActivationDuration {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub struct Subgraph {
-    pub id: usize,
+    pub id: OperatorId,
     pub worker: WorkerId,
     pub addr: OperatorAddr,
     pub name: String,

@@ -7,7 +7,7 @@ use crate::dataflow::{
     worker_timeline::{
         collect_differential_events, collect_timely_events, EventData, PartialTimelineEvent,
     },
-    WorkerId,
+    OperatorId, WorkerId,
 };
 use differential_dataflow::logging::{DifferentialEvent, MergeEvent, MergeShortfall};
 use std::{
@@ -87,7 +87,7 @@ fn timely_event_association() {
         vec![(
             EventData::new(
                 WorkerId::new(0),
-                PartialTimelineEvent::activation(0),
+                PartialTimelineEvent::activation(OperatorId::new(0)),
                 Duration::from_nanos(1000),
                 Duration::from_nanos(9000),
             ),
@@ -175,7 +175,7 @@ fn differential_event_association() {
             vec![(
                 EventData::new(
                     WorkerId::new(0),
-                    PartialTimelineEvent::merge(0),
+                    PartialTimelineEvent::merge(OperatorId::new(0)),
                     Duration::from_nanos(1000),
                     Duration::from_nanos(9000),
                 ),
@@ -188,7 +188,7 @@ fn differential_event_association() {
             vec![(
                 EventData::new(
                     WorkerId::new(0),
-                    PartialTimelineEvent::merge(1),
+                    PartialTimelineEvent::merge(OperatorId::new(1)),
                     Duration::from_nanos(20_000),
                     Duration::from_nanos(1000),
                 ),

@@ -80,7 +80,7 @@ pub fn wait_for_input(
     // Write a prompt to the terminal for the user
     write!(
         stdout,
-        "Press enter to finish collecting trace data (this will crash the source computation if it's currently running)",
+        "Press enter to finish collecting trace data (this will crash the source computation if it's currently running and cause data to not be fully processed)...",
     )
     .context("failed to write termination message to stdout")?;
     stdout.flush().context("failed to flush stdout")?;
@@ -110,7 +110,7 @@ pub fn wait_for_input(
     running.store(false, Ordering::Release);
     atomic::fence(Ordering::Acquire);
 
-    writeln!(stdout, "Processing data...").context("failed to write to stdout")?;
+    write!(stdout, " done!\nProcessing data...").context("failed to write to stdout")?;
     stdout.flush().context("failed to flush stdout")?;
 
     for thread in worker_guards.guards() {

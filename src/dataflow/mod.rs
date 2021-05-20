@@ -17,9 +17,12 @@ pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 
 use crate::{
     args::Args,
-    dataflow::operators::{
-        rkyv_capture::RkyvTimelyEvent, CrossbeamPusher, EventIterator, FilterMap, InspectExt,
-        JoinArranged, Multiply, ReplayWithShutdown, RkyvEventWriter, SortBy,
+    dataflow::{
+        differential::ArrangementStats,
+        operators::{
+            rkyv_capture::RkyvTimelyEvent, CrossbeamPusher, EventIterator, FilterMap, InspectExt,
+            JoinArranged, Multiply, ReplayWithShutdown, RkyvEventWriter, SortBy,
+        },
     },
     ui::{ProgramStats, WorkerStats},
 };
@@ -34,7 +37,7 @@ use differential_dataflow::{
     logging::DifferentialEvent,
     operators::{
         arrange::{ArrangeByKey, ArrangeBySelf, Arranged, TraceAgent},
-        Consolidate, Join, ThresholdTotal,
+        Consolidate, Join, Reduce, ThresholdTotal,
     },
     trace::implementations::ord::OrdKeySpine,
     Collection, ExchangeData, Hashable,
@@ -104,10 +107,13 @@ pub type EdgeBundle = (
     Diff,
 );
 pub type SubgraphBundle = (((WorkerId, OperatorAddr), OperatesEvent), Duration, Diff);
-pub type StatsBundle = (((WorkerId, usize), OperatorStats), Duration, Diff);
+pub type StatsBundle = (((WorkerId, OperatorId), OperatorStats), Duration, Diff);
+pub type AggStatsBundle = ((OperatorId, OperatorStats), Duration, Diff);
 pub type TimelineBundle = (WorkerTimelineEvent, Duration, Diff);
 pub type ProgramStatsBundle = (ProgramStats, Duration, Diff);
 pub type WorkerStatsBundle = (Vec<(WorkerId, WorkerStats)>, Duration, Diff);
+pub type NameLookupBundle = (((WorkerId, OperatorId), String), Duration, Diff);
+pub type AddrLookupBundle = (((WorkerId, OperatorId), OperatorAddr), Duration, Diff);
 
 type ChannelAddrs<S, D> = Arranged<
     S,
@@ -120,29 +126,39 @@ pub struct DataflowSenders {
     pub edge_sender: Sender<Event<Duration, EdgeBundle>>,
     pub subgraph_sender: Sender<Event<Duration, SubgraphBundle>>,
     pub stats_sender: Sender<Event<Duration, StatsBundle>>,
+    pub aggregated_stats_sender: Sender<Event<Duration, AggStatsBundle>>,
     pub timeline_sender: Sender<Event<Duration, TimelineBundle>>,
     pub program_stats: Sender<Event<Duration, ProgramStatsBundle>>,
     pub worker_stats: Sender<Event<Duration, WorkerStatsBundle>>,
+    pub name_lookup: Sender<Event<Duration, NameLookupBundle>>,
+    pub addr_lookup: Sender<Event<Duration, AddrLookupBundle>>,
 }
 
 impl DataflowSenders {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         node_sender: Sender<Event<Duration, NodeBundle>>,
         edge_sender: Sender<Event<Duration, EdgeBundle>>,
         subgraph_sender: Sender<Event<Duration, SubgraphBundle>>,
         stats_sender: Sender<Event<Duration, StatsBundle>>,
+        aggregated_stats_sender: Sender<Event<Duration, AggStatsBundle>>,
         timeline_sender: Sender<Event<Duration, TimelineBundle>>,
         program_stats: Sender<Event<Duration, ProgramStatsBundle>>,
         worker_stats: Sender<Event<Duration, WorkerStatsBundle>>,
+        name_lookup: Sender<Event<Duration, NameLookupBundle>>,
+        addr_lookup: Sender<Event<Duration, AddrLookupBundle>>,
     ) -> Self {
         Self {
             node_sender,
             edge_sender,
             subgraph_sender,
             stats_sender,
+            aggregated_stats_sender,
             timeline_sender,
             program_stats,
             worker_stats,
+            name_lookup,
+            addr_lookup,
         }
     }
 }
@@ -201,9 +217,9 @@ where
 
             let modified_stats = operator_stats.join_map(
                 &arrangement_stats,
-                |&operator, stats, arrangement_stats| {
+                |&operator, stats, &arrangement_stats| {
                     let mut stats = stats.clone();
-                    stats.arrangement_size = Some(arrangement_stats.clone());
+                    stats.arrangement_size = Some(arrangement_stats);
 
                     (operator, stats)
                 },
@@ -214,6 +230,86 @@ where
                 .concat(&modified_stats)
         })
         .unwrap_or(operator_stats);
+
+    // FIXME: This is pretty much a guess since there's no way to actually associate
+    //        operators/arrangements/channels across workers
+    // TODO: This should use a specialized struct to hold relevant things like "total size across workers"
+    //       in addition to per-worker stats
+    let cross_aggregated_operator_stats = operator_stats
+        .map(|((_worker, operator), stats)| (operator, stats))
+        .reduce(|&operator, worker_stats, aggregated| {
+            let activations = worker_stats.len();
+            let mut activation_durations = Vec::new();
+            let mut arrangements = Vec::new();
+            let mut totals = Vec::new();
+
+            for (stats, _diff) in worker_stats {
+                totals.push(stats.total);
+                activation_durations.extend(stats.activation_durations.iter().copied());
+
+                if let Some(size) = stats.arrangement_size {
+                    arrangements.push(size);
+                }
+            }
+
+            let max = activation_durations
+                .iter()
+                .map(|&(duration, _)| duration)
+                .max()
+                .expect("reduce is always called with non-empty input");
+
+            let min = activation_durations
+                .iter()
+                .map(|&(duration, _)| duration)
+                .min()
+                .expect("reduce is always called with non-empty input");
+
+            let average = activation_durations
+                .iter()
+                .map(|&(duration, _)| duration)
+                .sum::<Duration>()
+                / activation_durations.len() as u32;
+
+            let total = totals.iter().sum::<Duration>() / totals.len() as u32;
+
+            let arrangement_size = if arrangements.is_empty() {
+                None
+            } else {
+                let max_size = arrangements
+                    .iter()
+                    .map(|arr| arr.max_size)
+                    .max()
+                    .expect("arrangements is non-empty");
+
+                let min_size = arrangements
+                    .iter()
+                    .map(|arr| arr.max_size)
+                    .min()
+                    .expect("arrangements is non-empty");
+
+                let batches =
+                    arrangements.iter().map(|arr| arr.batches).sum::<usize>() / arrangements.len();
+
+                Some(ArrangementStats {
+                    max_size,
+                    min_size,
+                    batches,
+                })
+            };
+
+            let aggregate = OperatorStats {
+                id: operator,
+                worker: worker_stats[0].0.worker,
+                max,
+                min,
+                average,
+                total,
+                activations,
+                activation_durations,
+                arrangement_size,
+            };
+            aggregated.push((aggregate, 1))
+        });
 
     // TODO: Turn these into collections of `(WorkerId, OperatorId)` and arrange them
     let (leaves, subgraphs) = sift_leaves_and_scopes(scope, &operators);
@@ -244,6 +340,17 @@ where
         &subgraphs_arranged,
     );
 
+    channel_sink(
+        &operator_names
+            .as_collection(|&(worker, operator), name| ((worker, operator), name.to_owned())),
+        &mut probe,
+        senders.name_lookup,
+    );
+    channel_sink(
+        &operators.map(|(worker, event)| ((worker, event.id), event.addr)),
+        &mut probe,
+        senders.addr_lookup,
+    );
     channel_sink(&program_stats, &mut probe, senders.program_stats);
     channel_sink(
         &worker_stats
@@ -265,6 +372,11 @@ where
     );
     channel_sink(&edges, &mut probe, senders.edge_sender);
     channel_sink(&operator_stats, &mut probe, senders.stats_sender);
+    channel_sink(
+        &cross_aggregated_operator_stats,
+        &mut probe,
+        senders.aggregated_stats_sender,
+    );
     channel_sink(&worker_timeline, &mut probe, senders.timeline_sender);
 
     // TODO: Save ddflow logs

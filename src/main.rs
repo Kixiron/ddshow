@@ -4,18 +4,25 @@ mod dataflow;
 mod network;
 mod ui;
 
-use anyhow::{Context, Result};
-use args::Args;
-use colormap::{select_color, Color};
-use comfy_table::{presets::UTF8_FULL, Cell, ContentArrangement, Table};
-use dataflow::{
-    operators::{make_streams, CrossbeamExtractor},
-    Channel, DataflowSenders, OperatesEvent, OperatorStats, WorkerTimelineEvent,
+use crate::{
+    args::Args,
+    colormap::{select_color, Color},
+    dataflow::{
+        operators::{make_streams, CrossbeamExtractor},
+        Channel, DataflowSenders, OperatesEvent, OperatorAddr, OperatorId, OperatorStats, WorkerId,
+        WorkerTimelineEvent,
+    },
+    network::{wait_for_connections, wait_for_input},
+    ui::{ActivationDuration, EdgeKind},
 };
-use network::{wait_for_connections, wait_for_input};
+use anyhow::{Context, Result};
+use comfy_table::{presets::UTF8_FULL, Cell, ContentArrangement, Table};
 use std::{
+    cmp::Reverse,
     collections::HashMap,
-    env, fs,
+    env,
+    fs::{self, File},
+    io::Write,
     net::TcpStream,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -24,46 +31,22 @@ use std::{
     time::{Duration, Instant},
 };
 use structopt::StructOpt;
-use timely::{
-    communication::Config as ParallelConfig, dataflow::operators::capture::Extract, execute::Config,
-};
+use timely::dataflow::operators::capture::Extract;
 use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
     EnvFilter,
 };
-use ui::{ActivationDuration, EdgeKind};
 
 // TODO: Library-ify a lot of this
+// FIXME: Clean this up so much
 fn main() -> Result<()> {
-    let filter_layer = EnvFilter::from_env("DDSHOW_LOG");
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .pretty()
-        .with_timer(Uptime::default())
-        .with_thread_names(true)
-        .with_ansi(true);
-
-    tracing_subscriber::registry()
-        .with(filter_layer)
-        .with(fmt_layer)
-        .init();
+    init_logging();
 
     // Grab the args from the user and build the required configs
     let args = Arc::new(Args::from_args());
     tracing::trace!("initialized and received cli args: {:?}", args);
 
-    let config = {
-        let communication = if args.workers.get() == 1 {
-            ParallelConfig::Thread
-        } else {
-            ParallelConfig::Process(args.workers.get())
-        };
-
-        Config {
-            communication,
-            worker: Default::default(),
-        }
-    };
-    tracing::trace!("created timely config");
+    let config = args.timely_config();
 
     tracing::info!(
         "started waiting for {} timely connections on {}",
@@ -148,9 +131,12 @@ fn main() -> Result<()> {
     let (edge_sender, edge_receiver) = crossbeam_channel::unbounded();
     let (subgraph_sender, subgraph_receiver) = crossbeam_channel::unbounded();
     let (stats_sender, stats_receiver) = crossbeam_channel::unbounded();
+    let (agg_stats_sender, agg_stats_receiver) = crossbeam_channel::unbounded();
     let (timeline_sender, timeline_receiver) = crossbeam_channel::unbounded();
     let (program_stats_sender, program_stats_receiver) = crossbeam_channel::unbounded();
     let (worker_stats_sender, worker_stats_receiver) = crossbeam_channel::unbounded();
+    let (name_lookup_sender, name_lookup_receiver) = crossbeam_channel::unbounded();
+    let (addr_lookup_sender, addr_lookup_receiver) = crossbeam_channel::unbounded();
 
     tracing::info!("starting compute dataflow");
 
@@ -190,9 +176,12 @@ fn main() -> Result<()> {
             edge_sender.clone(),
             subgraph_sender.clone(),
             stats_sender.clone(),
+            agg_stats_sender.clone(),
             timeline_sender.clone(),
             program_stats_sender.clone(),
             worker_stats_sender.clone(),
+            name_lookup_sender.clone(),
+            addr_lookup_sender.clone(),
         );
 
         let dataflow_id = worker.next_dataflow_index();
@@ -240,15 +229,23 @@ fn main() -> Result<()> {
     // Wait for the user's prompt
     wait_for_input(&*running, &*workers_finished, worker_guards)?;
 
+    let mut report_file = if args.no_report_file {
+        None
+    } else {
+        Some(File::create(&args.report_file).context("failed to create report file")?)
+    };
+
     let mut program_stats = CrossbeamExtractor::new(program_stats_receiver).extract_all();
-    if let Some(stats) = program_stats.pop() {
+    if let Some((report_file, stats)) = report_file
+        .as_mut()
+        .and_then(|file| program_stats.pop().map(|stats| (file, stats)))
+    {
         let mut table = Table::new();
 
         table
             .load_preset(UTF8_FULL)
             .set_content_arrangement(ContentArrangement::Dynamic)
-            //.set_table_width(80)
-            .set_header(vec!["Program Overview"])
+            .set_header(vec!["Program Overview", ""])
             .add_row(vec![Cell::new("Workers"), Cell::new(stats.workers)])
             .add_row(vec![Cell::new("Dataflows"), Cell::new(stats.dataflows)])
             .add_row(vec![Cell::new("Operators"), Cell::new(stats.operators)])
@@ -260,57 +257,51 @@ fn main() -> Result<()> {
                 Cell::new(format!("{:#?}", stats.runtime)),
             ]);
 
-        println!("{}", table);
+        writeln!(report_file, "{}\n", table).context("failed to write to report file")?;
     }
 
     let mut worker_stats = CrossbeamExtractor::new(worker_stats_receiver).extract_all();
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        //.set_table_width(80)
-        .set_header(vec![
-            "Worker",
-            "Dataflows",
-            "Operators",
-            "Subgraphs",
-            "Channels",
-            "Events",
-            "Runtime",
-        ]);
 
-    debug_assert_eq!(worker_stats.len(), 1);
-    for (worker, stats) in worker_stats.remove(0) {
-        table.add_row(vec![
-            Cell::new(format!("Worker {}", worker.into_inner())),
-            Cell::new(stats.dataflows),
-            Cell::new(stats.operators),
-            Cell::new(stats.subgraphs),
-            Cell::new(stats.channels),
-            Cell::new(stats.events),
-            Cell::new(format!("{:#?}", stats.runtime)),
-        ]);
+    if let Some(report_file) = report_file.as_mut() {
+        let mut table = Table::new();
+        table
+            .load_preset(UTF8_FULL)
+            .set_content_arrangement(ContentArrangement::Dynamic)
+            .set_header(vec![
+                "Worker",
+                "Dataflows",
+                "Operators",
+                "Subgraphs",
+                "Channels",
+                "Events",
+                "Runtime",
+            ]);
+
+        debug_assert_eq!(worker_stats.len(), 1);
+        // Ensure the vector is sorted
+        debug_assert!(worker_stats[0].windows(2).all(|x| x[0] <= x[1]));
+        for (worker, stats) in worker_stats.remove(0) {
+            table.add_row(vec![
+                Cell::new(format!("Worker {}", worker.into_inner())),
+                Cell::new(stats.dataflows),
+                Cell::new(stats.operators),
+                Cell::new(stats.subgraphs),
+                Cell::new(stats.channels),
+                Cell::new(stats.events),
+                Cell::new(format!("{:#?}", stats.runtime)),
+            ]);
+        }
+
+        writeln!(report_file, "Per-Worker Statistics\n{}\n", table)
+            .context("failed to write to report file")?;
     }
 
-    println!("{}", table);
-
     // Extract the data from timely
-    // let mut graph_nodes = SequenceTrie::new();
-    // let mut operator_addresses = HashMap::new();
-    // let mut operator_names = HashMap::new();
     let mut subgraph_ids = Vec::new();
 
     let mut node_events = CrossbeamExtractor::new(node_receiver).extract_all();
     node_events.sort_unstable_by_key(|(addr, _)| addr.clone());
     tracing::info!("finished extracting {} node events", node_events.len());
-
-    // for (addr, event) in node_events.clone() {
-    //     let id = event.id;
-    //
-    //     operator_names.insert(id, event.name.clone());
-    //     graph_nodes.insert(&addr.addr, Graph::Node(event));
-    //     operator_addresses.insert(id, addr);
-    // }
 
     let mut subgraph_events = CrossbeamExtractor::new(subgraph_receiver).extract_all();
     subgraph_events.sort_unstable_by_key(|(addr, _)| addr.clone());
@@ -319,18 +310,24 @@ fn main() -> Result<()> {
         subgraph_events.len(),
     );
 
-    for &((worker, ref _addr), ref event) in subgraph_events.iter() {
-        let id = event.id;
+    let name_lookup: HashMap<(WorkerId, OperatorId), String> =
+        CrossbeamExtractor::new(name_lookup_receiver)
+            .extract_all()
+            .into_iter()
+            .collect();
 
-        // operator_names.insert(id, event.name.clone());
-        // graph_nodes.insert(&addr.addr, Graph::Subgraph(event));
-        // operator_addresses.insert(id, addr);
-        subgraph_ids.push((worker, id));
+    let addr_lookup: HashMap<(WorkerId, OperatorId), OperatorAddr> =
+        CrossbeamExtractor::new(addr_lookup_receiver)
+            .extract_all()
+            .into_iter()
+            .collect();
+
+    for &((worker, ref _addr), ref event) in subgraph_events.iter() {
+        subgraph_ids.push((worker, event.id));
     }
 
     let (mut operator_stats, mut raw_timings) = (HashMap::new(), Vec::new());
-    let mut stats_events = CrossbeamExtractor::new(stats_receiver).extract_all();
-    stats_events.sort_unstable_by_key(|&(operator, _)| operator);
+    let stats_events = CrossbeamExtractor::new(stats_receiver).extract_all();
     tracing::info!("finished extracting {} stats events", stats_events.len());
 
     for (operator, stats) in stats_events.clone() {
@@ -339,6 +336,139 @@ fn main() -> Result<()> {
         }
 
         operator_stats.insert(operator, stats);
+    }
+
+    if let Some(report_file) = report_file.as_mut() {
+        // TODO: Sort within timely
+        let mut operators_by_total_runtime =
+            CrossbeamExtractor::new(agg_stats_receiver).extract_all();
+        operators_by_total_runtime.sort_by_key(|(_operator, stats)| Reverse(stats.total));
+
+        let mut table = Table::new();
+        table
+            .load_preset(UTF8_FULL)
+            .set_content_arrangement(ContentArrangement::Dynamic)
+            .set_header(vec![
+                "Name",
+                "Id",
+                "Address",
+                "Total Runtime",
+                "Activations",
+                "Average Activation Time",
+                "Max Activation Time",
+                "Min Activation Time",
+                "Max Arrangement Size",
+                "Min Arrangement Size",
+                "Arrangement Batches",
+            ]);
+
+        for (operator, stats, addr, name) in operators_by_total_runtime
+            .iter()
+            .filter_map(|&(operator, ref stats)| {
+                addr_lookup
+                    .get(&(stats.worker, operator))
+                    .map(|addr| (operator, stats, addr))
+            })
+            .map(|(operator, stats, addr)| {
+                let name: Option<&str> = name_lookup
+                    .get(&(stats.worker, operator))
+                    .map(|name| &**name);
+
+                (operator, stats, addr, name.unwrap_or("N/A"))
+            })
+        {
+            let arrange = stats.arrangement_size.as_ref().map(|arrange| {
+                (
+                    format!("{}", arrange.max_size),
+                    format!("{}", arrange.min_size),
+                    format!("{}", arrange.batches),
+                )
+            });
+
+            let (max_arrange, min_arrange, arrange_batches) = arrange
+                .as_ref()
+                .map(|(max, min, batches)| (&**max, &**min, &**batches))
+                .unwrap_or(("", "", ""));
+
+            table.add_row(vec![
+                Cell::new(name),
+                Cell::new(operator),
+                Cell::new(addr),
+                Cell::new(format!("{:#?}", stats.total)),
+                Cell::new(stats.activations),
+                Cell::new(format!("{:#?}", stats.average)),
+                Cell::new(format!("{:#?}", stats.max)),
+                Cell::new(format!("{:#?}", stats.min)),
+                Cell::new(max_arrange),
+                Cell::new(min_arrange),
+                Cell::new(arrange_batches),
+            ]);
+        }
+
+        writeln!(
+            report_file,
+            "Operators Ranked by Total Runtime\n{}\n",
+            table,
+        )
+        .context("failed to write to report file")?;
+
+        let mut operators_by_arrangement_size: Vec<_> = operators_by_total_runtime
+            .into_iter()
+            .filter_map(|(operator, stats)| {
+                stats
+                    .arrangement_size
+                    .map(|arrange| (operator, stats, arrange))
+            })
+            .collect();
+        operators_by_arrangement_size
+            .sort_unstable_by_key(|(_, _, arrange)| Reverse(arrange.max_size));
+
+        let mut table = Table::new();
+        table
+            .load_preset(UTF8_FULL)
+            .set_content_arrangement(ContentArrangement::Dynamic)
+            .set_header(vec![
+                "Name",
+                "Id",
+                "Address",
+                "Total Runtime",
+                "Max Arrangement Size",
+                "Min Arrangement Size",
+                "Arrangement Batches",
+            ]);
+
+        for (operator, stats, arrange, addr, name) in operators_by_arrangement_size
+            .iter()
+            .filter_map(|&(operator, ref stats, arrange)| {
+                addr_lookup
+                    .get(&(stats.worker, operator))
+                    .map(|addr| (operator, stats, arrange, addr))
+            })
+            .map(|(operator, stats, arrange, addr)| {
+                let name: Option<&str> = name_lookup
+                    .get(&(stats.worker, operator))
+                    .map(|name| &**name);
+
+                (operator, stats, arrange, addr, name.unwrap_or("N/A"))
+            })
+        {
+            table.add_row(vec![
+                Cell::new(name),
+                Cell::new(operator),
+                Cell::new(addr),
+                Cell::new(format!("{:#?}", stats.total)),
+                Cell::new(arrange.max_size),
+                Cell::new(arrange.min_size),
+                Cell::new(arrange.batches),
+            ]);
+        }
+
+        writeln!(
+            report_file,
+            "Operators Ranked by Arrangement Size\n{}\n",
+            table,
+        )
+        .context("failed to write to report file")?;
     }
 
     let mut edge_events = CrossbeamExtractor::new(edge_receiver).extract_all();
@@ -385,7 +515,7 @@ fn main() -> Result<()> {
                 min,
                 average,
                 total,
-                invocations,
+                activations: invocations,
                 ref activation_durations,
                 ref arrangement_size,
                 ..
@@ -427,7 +557,7 @@ fn main() -> Result<()> {
                 min,
                 average,
                 total,
-                invocations,
+                activations: invocations,
                 ..
             } = *operator_stats.get(&(worker, id))?;
 
@@ -490,8 +620,14 @@ fn main() -> Result<()> {
         timeline_events,
     )?;
 
+    println!(" done!");
+
+    if !args.no_report_file {
+        println!("Wrote report file to {}", args.report_file.display());
+    }
+
     println!(
-        "Wrote the output graph to file://{}",
+        "Wrote output graph to file://{}",
         fs::canonicalize(&args.output_dir)
             .context("failed to get path of output dir")?
             .join("graph.html")
@@ -499,4 +635,18 @@ fn main() -> Result<()> {
     );
 
     Ok(())
+}
+
+fn init_logging() {
+    let filter_layer = EnvFilter::from_env("DDSHOW_LOG");
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .pretty()
+        .with_timer(Uptime::default())
+        .with_thread_names(true)
+        .with_ansi(true);
+
+    let _ = tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(fmt_layer)
+        .try_init();
 }

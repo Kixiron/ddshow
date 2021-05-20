@@ -6,7 +6,7 @@ use abomonation_derive::Abomonation;
 use bytecheck::CheckBytes;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
-use std::fmt::{self, Debug};
+use std::fmt::{self, Debug, Display};
 use timely::logging::{OperatesEvent as TimelyOperatesEvent, WorkerIdentifier};
 
 // TODO: ChannelId
@@ -49,6 +49,11 @@ impl Debug for WorkerId {
         write!(f, "WorkerId({})", self.worker)
     }
 }
+impl Display for WorkerId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.worker, f)
+    }
+}
 
 #[derive(
     Clone,
@@ -86,6 +91,12 @@ impl OperatorId {
 impl Debug for OperatorId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "OperatorId({})", self.operator)
+    }
+}
+
+impl Display for OperatorId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.operator, f)
     }
 }
 
@@ -185,13 +196,13 @@ impl Debug for ChannelId {
 )]
 #[archive(strict, derive(CheckBytes))]
 pub struct OperatesEvent {
-    pub id: usize,
+    pub id: OperatorId,
     pub addr: OperatorAddr,
     pub name: String,
 }
 
 impl OperatesEvent {
-    pub const fn new(id: usize, addr: OperatorAddr, name: String) -> Self {
+    pub const fn new(id: OperatorId, addr: OperatorAddr, name: String) -> Self {
         Self { id, addr, name }
     }
 }
@@ -199,7 +210,7 @@ impl OperatesEvent {
 impl From<TimelyOperatesEvent> for OperatesEvent {
     fn from(TimelyOperatesEvent { id, addr, name }: TimelyOperatesEvent) -> Self {
         Self {
-            id,
+            id: OperatorId::new(id),
             addr: OperatorAddr::from(addr),
             name,
         }

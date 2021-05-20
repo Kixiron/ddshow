@@ -1,6 +1,7 @@
 use colorous::Gradient;
 use std::{net::SocketAddr, num::NonZeroUsize, ops::Deref, path::PathBuf, str::FromStr};
 use structopt::StructOpt;
+use timely::{CommunicationConfig, Config};
 
 /// Tools for profiling and visualizing Timely Dataflow & Differential Dataflow Programs
 ///
@@ -63,6 +64,34 @@ pub struct Args {
 
     #[structopt(long = "replay-logs")]
     pub replay_logs: Option<PathBuf>,
+
+    #[structopt(long = "report-file", default_value = "report.txt")]
+    pub report_file: PathBuf,
+
+    #[structopt(long = "no-report-file")]
+    pub no_report_file: bool,
+}
+
+impl Args {
+    pub fn timely_config(&self) -> Config {
+        let config = {
+            let communication = if self.workers.get() == 1 {
+                CommunicationConfig::Thread
+            } else {
+                CommunicationConfig::Process(self.workers.get())
+            };
+
+            Config {
+                communication,
+                worker: Default::default(),
+            }
+        };
+
+        // TODO: Implement `Debug` for `timely::Config`
+        tracing::trace!("created timely config");
+
+        config
+    }
 }
 
 macro_rules! parse_gradient {

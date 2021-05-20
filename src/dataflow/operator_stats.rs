@@ -1,7 +1,7 @@
 use crate::dataflow::{
     differential::ArrangementStats,
     summation::{summation, Summation},
-    Diff, TimelyLogBundle, WorkerId,
+    Diff, OperatorId, TimelyLogBundle, WorkerId,
 };
 use abomonation_derive::Abomonation;
 use differential_dataflow::{
@@ -23,7 +23,7 @@ use timely::{
 pub fn operator_stats<S>(
     scope: &mut S,
     log_stream: &Stream<S, TimelyLogBundle>,
-) -> Collection<S, ((WorkerId, usize), OperatorStats), Diff>
+) -> Collection<S, ((WorkerId, OperatorId), OperatorStats), Diff>
 where
     S: Scope<Timestamp = Duration>,
 {
@@ -52,15 +52,17 @@ where
                             data.swap(&mut buffer);
 
                             for ((worker, event), time, _diff) in buffer.drain(..) {
+                                let operator = OperatorId::new(event.id);
+
                                 match event.start_stop {
                                     StartStop::Start => {
                                         schedule_map
-                                            .insert((worker, event.id), (time, capability.clone()));
+                                            .insert((worker, operator), (time, capability.clone()));
                                     }
 
                                     StartStop::Stop => {
                                         if let Some((start_time, mut stored_capability)) =
-                                            schedule_map.remove(&(worker, event.id))
+                                            schedule_map.remove(&(worker, operator))
                                         {
                                             let duration = time - start_time;
                                             stored_capability.downgrade(
@@ -68,7 +70,7 @@ where
                                             );
 
                                             output.session(&stored_capability).give((
-                                                ((worker, event.id), duration),
+                                                ((worker, operator), duration),
                                                 time,
                                                 // Product::new(start_time, time),
                                                 1,
@@ -107,7 +109,7 @@ where
                      min,
                      total,
                      average,
-                     count: invocations,
+                     count: activations,
                  }| {
                     let stats = OperatorStats {
                         id,
@@ -116,7 +118,7 @@ where
                         min,
                         average,
                         total,
-                        invocations,
+                        activations,
                         activation_durations: activation_durations.to_owned(),
                         arrangement_size: None,
                     };
@@ -130,13 +132,13 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Abomonation)]
 pub struct OperatorStats {
-    pub id: usize,
+    pub id: OperatorId,
     pub worker: WorkerId,
     pub max: Duration,
     pub min: Duration,
     pub average: Duration,
     pub total: Duration,
-    pub invocations: usize,
+    pub activations: usize,
     pub activation_durations: Vec<(Duration, Duration)>,
     pub arrangement_size: Option<ArrangementStats>,
     // pub messages_sent: usize,

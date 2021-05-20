@@ -1,7 +1,7 @@
 use crate::dataflow::{
     operators::ActivateCapabilitySet,
     worker_timeline::{EventData, PartialTimelineEvent},
-    Diff, WorkerId,
+    Diff, OperatorId, WorkerId,
 };
 use differential_dataflow::logging::{DifferentialEvent, DropEvent, MergeEvent, MergeShortfall};
 use proptest::{
@@ -96,7 +96,7 @@ impl Expected for EventPair<TimelyEvent> {
     fn expected(&self) -> ExpectedEvent {
         let event = match &self.start.event {
             TimelyEvent::Schedule(schedule) => PartialTimelineEvent::OperatorActivation {
-                operator_id: schedule.id,
+                operator_id: OperatorId::new(schedule.id),
             },
 
             TimelyEvent::Operates(_)
@@ -121,7 +121,7 @@ impl Expected for EventPair<DifferentialEvent> {
     fn expected(&self) -> ExpectedEvent {
         let event = match &self.start.event {
             DifferentialEvent::Merge(merge) => PartialTimelineEvent::Merge {
-                operator_id: merge.operator,
+                operator_id: OperatorId::new(merge.operator),
             },
 
             DifferentialEvent::Batch(_)
