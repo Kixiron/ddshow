@@ -6,3 +6,4 @@ dataflow.svg
 /.cargo
 /dataflow-graph
 **/node_modules
+report.txt
