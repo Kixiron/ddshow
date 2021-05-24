@@ -18,18 +18,21 @@ pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 use crate::{
     args::Args,
     dataflow::{
-        differential::ArrangementStats,
+        differential::{arrangement_stats, ArrangementStats},
+        operator_stats::operator_stats,
         operators::{
-            rkyv_capture::RkyvTimelyEvent, CrossbeamPusher, EventIterator, FilterMap, InspectExt,
-            JoinArranged, Multiply, ReplayWithShutdown, RkyvEventWriter, SortBy,
+            rkyv_capture::{RkyvOperatesEvent, RkyvTimelyEvent},
+            CrossbeamPusher, FilterMap, JoinArranged, Multiply, RkyvChannelsEvent, RkyvEventWriter,
+            SortBy,
         },
+        subgraphs::rewire_channels,
+        worker_timeline::worker_timeline,
     },
     ui::{ProgramStats, WorkerStats},
 };
 use abomonation_derive::Abomonation;
 use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
-use differential::arrangement_stats;
 use differential_dataflow::{
     collection::AsCollection,
     difference::{Abelian, Monoid, Semigroup},
@@ -42,7 +45,6 @@ use differential_dataflow::{
     trace::implementations::ord::OrdKeySpine,
     Collection, ExchangeData, Hashable,
 };
-use operator_stats::operator_stats;
 #[cfg(feature = "timely-next")]
 use reachability::TrackerEvent;
 use std::{
@@ -50,10 +52,8 @@ use std::{
     fmt::Debug,
     fs::{self, File},
     io::BufWriter,
-    sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
-use subgraphs::rewire_channels;
 use timely::{
     dataflow::{
         operators::{
@@ -63,10 +63,18 @@ use timely::{
         },
         Scope, ScopeParent, Stream,
     },
-    logging::{ChannelsEvent, TimelyEvent, WorkerIdentifier},
     order::TotalOrder,
 };
-use worker_timeline::worker_timeline;
+
+// TODO: Dataflow lints
+//       - Inconsistent dataflows across workers
+//       - Not arranging before a loop feedback
+//       - you aren't supposed to be able to forge capabilities,
+//         but you can take an incoming CapabilityRef and turn
+//         it in to a Capability for any output, even those that
+//         the input should not be connected to via the summary.
+//       - Packing `(data, time, diff)` updates in DD where time
+//         is not greater or equal to the message capability.
 
 /// Only cause the program stats to update every N milliseconds to
 /// prevent this from absolutely thrashing the scheduler
@@ -87,26 +95,34 @@ fn granulate(&time: &Duration) -> Duration {
     minted
 }
 
-type TimelyLogBundle<Id = WorkerId> = (Duration, Id, TimelyEvent);
-type DifferentialLogBundle<Id = WorkerId> = (Duration, Id, DifferentialEvent);
+pub type TimelyLogBundle<Id = WorkerId> = (Duration, Id, RkyvTimelyEvent);
+pub type DifferentialLogBundle<Id = WorkerId> = (Duration, Id, DifferentialEvent);
 
 #[cfg(feature = "timely-next")]
 type ReachabilityLogBundle = (Duration, WorkerId, TrackerEvent);
 type Diff = isize;
 
-pub type NodeBundle = (((WorkerId, OperatorAddr), OperatesEvent), Duration, Diff);
+pub type NodeBundle = (
+    ((WorkerId, OperatorAddr), RkyvOperatesEvent),
+    Duration,
+    Diff,
+);
 pub type EdgeBundle = (
     (
         WorkerId,
-        OperatesEvent,
+        RkyvOperatesEvent,
         Channel,
-        OperatesEvent,
+        RkyvOperatesEvent,
         // Option<ChannelMessageStats>,
     ),
     Duration,
     Diff,
 );
-pub type SubgraphBundle = (((WorkerId, OperatorAddr), OperatesEvent), Duration, Diff);
+pub type SubgraphBundle = (
+    ((WorkerId, OperatorAddr), RkyvOperatesEvent),
+    Duration,
+    Diff,
+);
 pub type StatsBundle = (((WorkerId, OperatorId), OperatorStats), Duration, Diff);
 pub type AggStatsBundle = ((OperatorId, OperatorStats), Duration, Diff);
 pub type TimelineBundle = (WorkerTimelineEvent, Duration, Diff);
@@ -163,33 +179,17 @@ impl DataflowSenders {
     }
 }
 
-pub fn dataflow<S, TR, DR>(
+pub fn dataflow<S>(
     scope: &mut S,
     args: &Args,
-    timely_traces: Vec<TR>,
-    differential_traces: Option<Vec<DR>>,
-    replay_shutdown: Arc<AtomicBool>,
+    timely_stream: &Stream<S, TimelyLogBundle>,
+    differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
     senders: DataflowSenders,
 ) -> Result<ProbeHandle<Duration>>
 where
     S: Scope<Timestamp = Duration>,
-    TR: EventIterator<Duration, TimelyLogBundle<WorkerIdentifier>> + 'static,
-    DR: EventIterator<Duration, DifferentialLogBundle<WorkerIdentifier>> + 'static,
 {
     let mut probe = ProbeHandle::new();
-
-    // The timely log stream filtered down to worker 0's events
-    let timely_stream = timely_traces
-        .replay_with_shutdown_into_named("Timely Replay", scope, replay_shutdown.clone())
-        .map(|(time, worker, event)| (time, WorkerId::new(worker), event))
-        .debug_inspect(|x| tracing::trace!("timely event: {:?}", x));
-
-    let differential_stream = differential_traces.map(|traces| {
-        traces
-            .replay_with_shutdown_into_named("Differential Replay", scope, replay_shutdown)
-            .map(|(time, worker, event)| (time, WorkerId::new(worker), event))
-            .debug_inspect(|x| tracing::trace!("differential dataflow event: {:?}", x))
-    });
 
     // let (program_event_overview, worker_event_overview) =
     //     aggregate_overview_stats(&timely_stream, differential_stream.as_ref());
@@ -321,12 +321,8 @@ where
 
     let edges = attach_operators(scope, &operators, &channels, &leaves_arranged);
 
-    let worker_timeline = worker_timeline(
-        scope,
-        &timely_stream,
-        differential_stream.as_ref(),
-        &operator_names,
-    );
+    let worker_timeline =
+        worker_timeline(scope, &timely_stream, differential_stream, &operator_names);
 
     // TODO: Arrange this
     let addressed_operators =
@@ -334,7 +330,7 @@ where
 
     let (program_stats, worker_stats) = program_stats::aggregate_worker_stats(
         &timely_stream,
-        differential_stream.as_ref(),
+        differential_stream,
         &operators,
         &channels,
         &subgraphs_arranged,
@@ -382,20 +378,27 @@ where
     // TODO: Save ddflow logs
     // If saving logs is enabled, write all log messages to the `save_logs` directory
     if let Some(save_logs) = args.save_logs.as_ref() {
-        let timely = timely_stream
-            .map(|(duration, worker, event)| (duration, worker, RkyvTimelyEvent::from(event)))
-            .exchange(|_| 0);
-
         fs::create_dir_all(&save_logs).context("failed to create `--save-logs` directory")?;
 
-        if scope.index() == 0 {
-            let timely_file = BufWriter::new(
-                File::create(save_logs.join("timely.ddshow"))
-                    .context("failed to create `--save-logs` timely file")?,
-            );
+        let file_name = if scope.index() == 0 {
+            "timely.ddshow"
 
-            timely.capture_into(RkyvEventWriter::new(timely_file));
-        }
+        // Make other workers pipe to a null output
+        } else if cfg!(windows) {
+            "nul"
+        } else {
+            "/dev/null"
+        };
+
+        let timely_file = BufWriter::new(
+            File::create(save_logs.join(file_name))
+                .context("failed to create `--save-logs` timely file")?,
+        );
+
+        timely_stream
+            .exchange(|_| 0)
+            .probe_with(&mut probe)
+            .capture_into(RkyvEventWriter::new(timely_file));
     }
 
     Ok(probe)
@@ -403,14 +406,14 @@ where
 
 fn operator_creations<S>(
     log_stream: &Stream<S, TimelyLogBundle>,
-) -> Collection<S, (WorkerId, OperatesEvent), Diff>
+) -> Collection<S, (WorkerId, RkyvOperatesEvent), Diff>
 where
     S: Scope<Timestamp = Duration>,
 {
     log_stream
         .flat_map(|(time, worker, event)| {
-            if let TimelyEvent::Operates(event) = event {
-                Some(((worker, OperatesEvent::from(event)), time, 1))
+            if let RkyvTimelyEvent::Operates(event) = event {
+                Some(((worker, event), time, 1))
             } else {
                 None
             }
@@ -420,13 +423,13 @@ where
 
 fn channel_creations<S>(
     log_stream: &Stream<S, TimelyLogBundle>,
-) -> Collection<S, (WorkerId, ChannelsEvent), Diff>
+) -> Collection<S, (WorkerId, RkyvChannelsEvent), Diff>
 where
     S: Scope<Timestamp = Duration>,
 {
     log_stream
         .flat_map(|(time, worker, event)| {
-            if let TimelyEvent::Channels(event) = event {
+            if let RkyvTimelyEvent::Channels(event) = event {
                 Some(((worker, event), time, 1))
             } else {
                 None
@@ -442,7 +445,7 @@ type LeavesAndScopes<S, D> = (
 
 fn sift_leaves_and_scopes<S, D>(
     scope: &mut S,
-    operators: &Collection<S, (WorkerId, OperatesEvent), D>,
+    operators: &Collection<S, (WorkerId, RkyvOperatesEvent), D>,
 ) -> LeavesAndScopes<S, D>
 where
     S: Scope,
@@ -481,10 +484,10 @@ where
 
 fn attach_operators<S, D>(
     scope: &mut S,
-    operators: &Collection<S, (WorkerId, OperatesEvent), D>,
+    operators: &Collection<S, (WorkerId, RkyvOperatesEvent), D>,
     channels: &Collection<S, (WorkerId, Channel), D>,
     leaves: &ChannelAddrs<S, D>,
-) -> Collection<S, (WorkerId, OperatesEvent, Channel, OperatesEvent), D>
+) -> Collection<S, (WorkerId, RkyvOperatesEvent, Channel, RkyvOperatesEvent), D>
 where
     S: Scope,
     S::Timestamp: Lattice,
@@ -553,20 +556,20 @@ fn channel_sink<S, D, R>(
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
 pub enum Channel {
     ScopeCrossing {
-        channel_id: usize,
+        channel_id: OperatorId,
         source_addr: OperatorAddr,
         target_addr: OperatorAddr,
     },
 
     Normal {
-        channel_id: usize,
+        channel_id: OperatorId,
         source_addr: OperatorAddr,
         target_addr: OperatorAddr,
     },
 }
 
 impl Channel {
-    pub const fn channel_id(&self) -> usize {
+    pub const fn channel_id(&self) -> OperatorId {
         match *self {
             Self::ScopeCrossing { channel_id, .. } | Self::Normal { channel_id, .. } => channel_id,
         }

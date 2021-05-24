@@ -1,5 +1,8 @@
 use crate::dataflow::{
-    operators::ActivateCapabilitySet,
+    operators::{
+        rkyv_capture::{RkyvScheduleEvent, RkyvShutdownEvent, RkyvStartStop},
+        ActivateCapabilitySet, RkyvTimelyEvent,
+    },
     worker_timeline::{EventData, PartialTimelineEvent},
     Diff, OperatorId, WorkerId,
 };
@@ -14,7 +17,7 @@ use proptest::{
 use std::{fmt::Debug, time::Duration};
 use timely::{
     dataflow::operators::{input::Handle as InputHandle, unordered_input::UnorderedHandle},
-    logging::{ScheduleEvent, ShutdownEvent, StartStop, TimelyEvent, WorkerIdentifier},
+    logging::WorkerIdentifier,
 };
 
 type ExpectedEvent = (Duration, (EventData, Duration, Diff));
@@ -92,25 +95,25 @@ pub(super) trait Expected {
     fn expected(&self) -> ExpectedEvent;
 }
 
-impl Expected for EventPair<TimelyEvent> {
+impl Expected for EventPair<RkyvTimelyEvent> {
     fn expected(&self) -> ExpectedEvent {
         let event = match &self.start.event {
-            TimelyEvent::Schedule(schedule) => PartialTimelineEvent::OperatorActivation {
-                operator_id: OperatorId::new(schedule.id),
+            RkyvTimelyEvent::Schedule(schedule) => PartialTimelineEvent::OperatorActivation {
+                operator_id: schedule.id,
             },
 
-            TimelyEvent::Operates(_)
-            | TimelyEvent::Channels(_)
-            | TimelyEvent::PushProgress(_)
-            | TimelyEvent::Messages(_)
-            | TimelyEvent::Shutdown(_)
-            | TimelyEvent::Application(_)
-            | TimelyEvent::GuardedMessage(_)
-            | TimelyEvent::GuardedProgress(_)
-            | TimelyEvent::CommChannels(_)
-            | TimelyEvent::Input(_)
-            | TimelyEvent::Park(_)
-            | TimelyEvent::Text(_) => unreachable!(),
+            RkyvTimelyEvent::Operates(_)
+            | RkyvTimelyEvent::Channels(_)
+            | RkyvTimelyEvent::PushProgress(_)
+            | RkyvTimelyEvent::Messages(_)
+            | RkyvTimelyEvent::Shutdown(_)
+            | RkyvTimelyEvent::Application(_)
+            | RkyvTimelyEvent::GuardedMessage(_)
+            | RkyvTimelyEvent::GuardedProgress(_)
+            | RkyvTimelyEvent::CommChannels(_)
+            | RkyvTimelyEvent::Input(_)
+            | RkyvTimelyEvent::Park(_)
+            | RkyvTimelyEvent::Text(_) => unreachable!(),
         };
 
         self.build_expected(event)
@@ -193,6 +196,8 @@ fn gen_event<E>(
 where
     E: EventInner + Debug,
 {
+    let operator_id = OperatorId::new(operator_id);
+
     if should_terminate {
         E::terminating_event(operator_id, allow_stops, rng)
     } else {
@@ -213,42 +218,44 @@ where
 }
 
 pub trait EventInner: Sized {
-    fn starting_event(operator_id: usize, rng: &mut TestRng) -> BoxedStrategy<Self>;
+    fn starting_event(operator_id: OperatorId, rng: &mut TestRng) -> BoxedStrategy<Self>;
 
     fn terminating_event(
-        operator_id: usize,
+        operator_id: OperatorId,
         allow_stops: bool,
         rng: &mut TestRng,
     ) -> BoxedStrategy<Self>;
 }
 
-impl EventInner for TimelyEvent {
-    fn starting_event(operator_id: usize, _rng: &mut TestRng) -> BoxedStrategy<Self> {
-        Just(TimelyEvent::Schedule(ScheduleEvent {
+impl EventInner for RkyvTimelyEvent {
+    fn starting_event(operator_id: OperatorId, _rng: &mut TestRng) -> BoxedStrategy<Self> {
+        Just(RkyvTimelyEvent::Schedule(RkyvScheduleEvent {
             id: operator_id,
-            start_stop: StartStop::Start,
+            start_stop: RkyvStartStop::Start,
         }))
         .boxed()
     }
 
     fn terminating_event(
-        operator_id: usize,
+        operator_id: OperatorId,
         allow_stops: bool,
         _rng: &mut TestRng,
     ) -> BoxedStrategy<Self> {
         if allow_stops {
             prop_oneof![
-                Just(TimelyEvent::Schedule(ScheduleEvent {
+                Just(RkyvTimelyEvent::Schedule(RkyvScheduleEvent {
                     id: operator_id,
-                    start_stop: StartStop::Stop,
+                    start_stop: RkyvStartStop::Stop,
                 })),
-                Just(TimelyEvent::Shutdown(ShutdownEvent { id: operator_id }))
+                Just(RkyvTimelyEvent::Shutdown(RkyvShutdownEvent {
+                    id: operator_id
+                }))
             ]
             .boxed()
         } else {
-            Just(TimelyEvent::Schedule(ScheduleEvent {
+            Just(RkyvTimelyEvent::Schedule(RkyvScheduleEvent {
                 id: operator_id,
-                start_stop: StartStop::Stop,
+                start_stop: RkyvStartStop::Stop,
             }))
             .boxed()
         }
@@ -257,9 +264,9 @@ impl EventInner for TimelyEvent {
 
 // FIXME: Make these numbers realistic
 impl EventInner for DifferentialEvent {
-    fn starting_event(operator_id: usize, rng: &mut TestRng) -> BoxedStrategy<Self> {
+    fn starting_event(operator_id: OperatorId, rng: &mut TestRng) -> BoxedStrategy<Self> {
         Just(DifferentialEvent::Merge(MergeEvent {
-            operator: operator_id,
+            operator: operator_id.into_inner(),
             scale: rng.gen(),
             length1: rng.gen(),
             length2: rng.gen(),
@@ -269,26 +276,26 @@ impl EventInner for DifferentialEvent {
     }
 
     fn terminating_event(
-        operator_id: usize,
+        operator_id: OperatorId,
         allow_stops: bool,
         rng: &mut TestRng,
     ) -> BoxedStrategy<Self> {
         if allow_stops {
             prop_oneof![
                 Just(DifferentialEvent::Merge(MergeEvent {
-                    operator: operator_id,
+                    operator: operator_id.into_inner(),
                     scale: rng.gen(),
                     length1: rng.gen(),
                     length2: rng.gen(),
                     complete: Some(rng.gen()),
                 })),
                 Just(DifferentialEvent::MergeShortfall(MergeShortfall {
-                    operator: operator_id,
+                    operator: operator_id.into_inner(),
                     scale: rng.gen(),
                     shortfall: rng.gen(),
                 })),
                 Just(DifferentialEvent::Drop(DropEvent {
-                    operator: operator_id,
+                    operator: operator_id.into_inner(),
                     length: rng.gen(),
                 })),
             ]
@@ -296,14 +303,14 @@ impl EventInner for DifferentialEvent {
         } else {
             prop_oneof![
                 Just(DifferentialEvent::Merge(MergeEvent {
-                    operator: operator_id,
+                    operator: operator_id.into_inner(),
                     scale: rng.gen(),
                     length1: rng.gen(),
                     length2: rng.gen(),
                     complete: Some(rng.gen()),
                 })),
                 Just(DifferentialEvent::MergeShortfall(MergeShortfall {
-                    operator: operator_id,
+                    operator: operator_id.into_inner(),
                     scale: rng.gen(),
                     shortfall: rng.gen(),
                 })),

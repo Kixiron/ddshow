@@ -5,6 +5,7 @@ use differential_dataflow::{
 };
 use timely::dataflow::{operators::Map, Scope};
 
+#[allow(dead_code)]
 const DEFAULT_HIERARCHICAL_BUCKETS: [u64; 16] =
     [60, 56, 52, 48, 44, 40, 36, 32, 28, 24, 20, 16, 12, 8, 4, 0];
 

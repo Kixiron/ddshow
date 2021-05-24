@@ -131,6 +131,14 @@ impl PortId {
     pub const fn into_inner(self) -> usize {
         self.port
     }
+
+    pub const fn zero() -> Self {
+        Self::new(0)
+    }
+
+    pub const fn is_zero(&self) -> bool {
+        self.port == 0
+    }
 }
 
 impl Debug for PortId {

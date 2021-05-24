@@ -1,5 +1,6 @@
 use crate::dataflow::{
     differential::ArrangementStats,
+    operators::{rkyv_capture::RkyvStartStop, RkyvTimelyEvent},
     summation::{summation, Summation},
     Diff, OperatorId, TimelyLogBundle, WorkerId,
 };
@@ -11,13 +12,10 @@ use differential_dataflow::{
     Collection,
 };
 use std::{collections::HashMap, time::Duration};
-use timely::{
-    dataflow::{
-        channels::pact::Pipeline,
-        operators::{Enter, Map, Operator},
-        Scope, Stream,
-    },
-    logging::{StartStop, TimelyEvent},
+use timely::dataflow::{
+    channels::pact::Pipeline,
+    operators::{Enter, Map, Operator},
+    Scope, Stream,
 };
 
 pub fn operator_stats<S>(
@@ -31,7 +29,7 @@ where
         let log_stream = log_stream.enter(region);
 
         let scheduling_events = log_stream.flat_map(|(time, worker, event)| {
-            if let TimelyEvent::Schedule(event) = event {
+            if let RkyvTimelyEvent::Schedule(event) = event {
                 Some(((worker, event), time, 1))
             } else {
                 None
@@ -52,15 +50,15 @@ where
                             data.swap(&mut buffer);
 
                             for ((worker, event), time, _diff) in buffer.drain(..) {
-                                let operator = OperatorId::new(event.id);
+                                let operator = event.id;
 
                                 match event.start_stop {
-                                    StartStop::Start => {
+                                    RkyvStartStop::Start => {
                                         schedule_map
                                             .insert((worker, operator), (time, capability.clone()));
                                     }
 
-                                    StartStop::Stop => {
+                                    RkyvStartStop::Stop => {
                                         if let Some((start_time, mut stored_capability)) =
                                             schedule_map.remove(&(worker, operator))
                                         {

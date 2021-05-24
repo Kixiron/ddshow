@@ -5,10 +5,9 @@ use abomonation_derive::Abomonation;
 use bytecheck::CheckBytes;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use rkyv::{
-    check_archived_root,
+    archived_root,
     de::deserializers::AllocDeserializer,
     ser::{serializers::AlignedSerializer, Serializer},
-    validation::DefaultArchiveValidator,
     AlignedVec, Archive, Deserialize, Serialize,
 };
 use std::{
@@ -109,6 +108,7 @@ where
 }
 
 /// A Wrapper for `R: Read` implementing `EventIterator<T, D>`.
+#[derive(Debug)]
 pub struct RkyvEventReader<T, D, R> {
     reader: R,
     bytes: Vec<u8>,
@@ -138,9 +138,9 @@ impl<T, D, R> EventIterator<T, D> for RkyvEventReader<T, D, R>
 where
     R: Read,
     T: Archive,
-    T::Archived: CheckBytes<DefaultArchiveValidator> + Deserialize<T, AllocDeserializer>,
+    T::Archived: Deserialize<T, AllocDeserializer>, // + CheckBytes<DefaultArchiveValidator>,
     D: Archive,
-    D::Archived: CheckBytes<DefaultArchiveValidator> + Deserialize<D, AllocDeserializer>,
+    D::Archived: Deserialize<D, AllocDeserializer>, // + CheckBytes<DefaultArchiveValidator>,
 {
     fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>> {
         if self.peer_finished
@@ -163,18 +163,26 @@ where
                 .buffer1
                 .get(archive_start..archive_start + archive_length)
             {
-                match check_archived_root::<RkyvEvent<T, D>>(slice) {
-                    Ok(archive) => {
-                        let event = archive
-                            .deserialize(&mut AllocDeserializer)
-                            .unwrap_or_else(|unreachable| match unreachable {});
+                // Safety: This isn't safe whatsoever, get `CheckBytes` implemented for `Duration`
+                let event = unsafe { archived_root::<RkyvEvent<T, D>>(slice) }
+                    .deserialize(&mut AllocDeserializer)
+                    .unwrap_or_else(|unreachable| match unreachable {});
 
-                        self.consumed += archive_length + mem::size_of::<u64>();
-                        return Ok(Some(event.into()));
-                    }
+                self.consumed += archive_length + mem::size_of::<u64>();
+                return Ok(Some(event.into()));
 
-                    Err(err) => tracing::warn!("failed to check archived event: {:?}", err),
-                }
+                // match check_archived_root::<RkyvEvent<T, D>>(slice) {
+                //     Ok(archive) => {
+                //         let event = archive
+                //             .deserialize(&mut AllocDeserializer)
+                //             .unwrap_or_else(|unreachable| match unreachable {});
+                //
+                //         self.consumed += archive_length + mem::size_of::<u64>();
+                //         return Ok(Some(event.into()));
+                //     }
+                //
+                //     Err(err) => tracing::error!("failed to check archived event: {:?}", err),
+                // }
             }
         }
 
@@ -204,55 +212,23 @@ impl<T, D, R> Iterator for RkyvEventReader<T, D, R>
 where
     R: Read,
     T: Archive,
-    T::Archived: CheckBytes<DefaultArchiveValidator> + Deserialize<T, AllocDeserializer>,
+    T::Archived: Deserialize<T, AllocDeserializer>, // + CheckBytes<DefaultArchiveValidator>,
     D: Archive,
-    D::Archived: CheckBytes<DefaultArchiveValidator> + Deserialize<D, AllocDeserializer>,
+    D::Archived: Deserialize<D, AllocDeserializer>, // + CheckBytes<DefaultArchiveValidator>,
 {
     type Item = Event<T, D>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let message_header = (&self.buffer1[self.consumed..])
-            .read_u64::<LittleEndian>()
-            .map(|archive_len| archive_len as usize);
-
-        if let Ok(archive_length) = message_header {
-            let archive_start = self.consumed + mem::size_of::<u64>();
-
-            if let Some(slice) = self
-                .buffer1
-                .get(archive_start..archive_start + archive_length)
-            {
-                match check_archived_root::<RkyvEvent<T, D>>(slice) {
-                    Ok(archive) => {
-                        let event = archive
-                            .deserialize(&mut AllocDeserializer)
-                            .unwrap_or_else(|unreachable| match unreachable {});
-
-                        self.consumed += archive_length + mem::size_of::<u64>();
-                        return Some(event.into());
-                    }
-
-                    Err(err) => tracing::warn!("failed to check archived event: {:?}", err),
-                }
-            }
-        }
-
-        // if we exhaust data we should shift back (if any shifting to do)
-        if self.consumed > 0 {
-            self.buffer2.clear();
-            self.buffer2
-                .extend_from_slice(&self.buffer1[self.consumed..]);
-
-            mem::swap(&mut self.buffer1, &mut self.buffer2);
-            self.consumed = 0;
-        }
-
-        if let Ok(len) = self.reader.read(&mut self.bytes[..]) {
-            self.buffer1.extend_from_slice(&self.bytes[..len]);
-        }
-
-        None
+        EventIterator::next(self, &mut false).ok().flatten()
     }
+}
+
+unsafe impl<T, D, R> Send for RkyvEventReader<T, D, R>
+where
+    T: Send,
+    D: Send,
+    R: Send,
+{
 }
 
 #[cfg(test)]
@@ -263,6 +239,7 @@ mod tests {
         types::{OperatesEvent, OperatorAddr},
         OperatorId,
     };
+    use std::time::Duration;
     use timely::dataflow::operators::capture::{Event, EventPusher};
 
     // TODO: Make this a proptest
@@ -271,9 +248,15 @@ mod tests {
         init_test_logging();
 
         let events = vec![
-            Event::Progress(vec![(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)]),
+            Event::Progress(vec![
+                (Duration::from_secs(0), 1),
+                (Duration::from_secs(1), 2),
+                (Duration::from_secs(2), 3),
+                (Duration::from_secs(3), 4),
+                (Duration::from_secs(4), 5),
+            ]),
             Event::Messages(
-                0,
+                Duration::from_secs(0),
                 vec![OperatesEvent::new(
                     OperatorId::new(0),
                     OperatorAddr::from_elem(0),

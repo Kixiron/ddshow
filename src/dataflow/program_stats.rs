@@ -1,10 +1,9 @@
 use crate::{
     dataflow::{
         granulate,
-        operators::{DiffDuration, JoinArranged, Max, Min},
+        operators::{rkyv_capture::RkyvOperatesEvent, DiffDuration, JoinArranged, Max, Min},
         types::WorkerId,
-        Channel, ChannelAddrs, Diff, DifferentialLogBundle, OperatesEvent, OperatorAddr,
-        TimelyLogBundle,
+        Channel, ChannelAddrs, Diff, DifferentialLogBundle, OperatorAddr, TimelyLogBundle,
     },
     ui::{ProgramStats, WorkerStats},
 };
@@ -47,7 +46,7 @@ type AggregatedStats<S> = (
 pub fn aggregate_worker_stats<S>(
     timely: &Stream<S, TimelyLogBundle>,
     differential: Option<&Stream<S, DifferentialLogBundle>>,
-    operators: &Collection<S, (WorkerId, OperatesEvent), Diff>,
+    operators: &Collection<S, (WorkerId, RkyvOperatesEvent), Diff>,
     channels: &Collection<S, (WorkerId, Channel), Diff>,
     subgraph_addresses: &ChannelAddrs<S, Diff>,
 ) -> AggregatedStats<S>

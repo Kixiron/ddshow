@@ -55,9 +55,6 @@ pub struct Args {
     #[structopt(long = "dump-json")]
     pub dump_json: Option<PathBuf>,
 
-    #[structopt(long = "dump-json-v2")]
-    pub dump_json_v2: Option<PathBuf>,
-
     /// The folder to save the target process's logs to
     #[structopt(long = "save-logs")]
     pub save_logs: Option<PathBuf>,
@@ -91,6 +88,11 @@ impl Args {
         tracing::trace!("created timely config");
 
         config
+    }
+
+    /// Returns `true` if the program is replaying logs from a file
+    pub const fn is_file_sourced(&self) -> bool {
+        self.replay_logs.is_some()
     }
 }
 

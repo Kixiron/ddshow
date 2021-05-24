@@ -1,3 +1,4 @@
+use crate::{dataflow::operators::util::Fuel, network::ReplaySource};
 use abomonation::Abomonation;
 use anyhow::Result;
 use crossbeam_channel::Receiver;
@@ -25,19 +26,35 @@ use timely::{
 
 const DEFAULT_REACTIVATION_DELAY: Duration = Duration::from_millis(200);
 
-type EventReceivers<T, D, R> = Arc<[Receiver<Vec<EventReader<T, D, R>>>]>;
+type EventReceivers<R, A> = Arc<[Receiver<ReplaySource<R, A>>]>;
 
-pub fn make_streams<I, T, D, R>(num_workers: usize, sources: I) -> Result<EventReceivers<T, D, R>>
-where
-    I: IntoIterator<Item = R>,
-    R: Read,
-{
-    let mut readers = Vec::with_capacity(num_workers);
-    readers.extend(iter::repeat_with(Vec::new).take(num_workers));
+pub fn make_streams<R, A>(
+    num_workers: usize,
+    sources: ReplaySource<R, A>,
+) -> Result<EventReceivers<R, A>> {
+    let readers: Vec<_> = match sources {
+        ReplaySource::Rkyv(rkyv) => {
+            let mut readers = Vec::with_capacity(num_workers);
+            readers.extend(iter::repeat_with(Vec::new).take(num_workers));
 
-    for (idx, source) in sources.into_iter().enumerate() {
-        readers[idx % num_workers].push(EventReader::new(source));
-    }
+            for (idx, source) in rkyv.into_iter().enumerate() {
+                readers[idx % num_workers].push(source);
+            }
+
+            readers.into_iter().map(ReplaySource::Rkyv).collect()
+        }
+
+        ReplaySource::Abomonation(abomonation) => {
+            let mut readers = Vec::with_capacity(num_workers);
+            readers.extend(iter::repeat_with(Vec::new).take(num_workers));
+
+            for (idx, source) in abomonation.into_iter().enumerate() {
+                readers[idx % num_workers].push(source);
+            }
+
+            readers.into_iter().map(ReplaySource::Abomonation).collect()
+        }
+    };
 
     let (senders, receivers): (Vec<_>, Vec<_>) = (0..num_workers)
         .map(|_| crossbeam_channel::bounded(1))
@@ -63,7 +80,29 @@ pub trait EventIterator<T, D> {
     fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>>;
 }
 
+impl<I, T, D> EventIterator<T, D> for Box<I>
+where
+    I: EventIterator<T, D>,
+{
+    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>> {
+        self.as_mut().next(is_finished)
+    }
+}
+
+impl<T, D> EventIterator<T, D> for Box<dyn EventIterator<T, D>> {
+    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>> {
+        self.as_mut().next(is_finished)
+    }
+}
+
+impl<T, D> EventIterator<T, D> for Box<dyn EventIterator<T, D> + Send + 'static> {
+    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>> {
+        self.as_mut().next(is_finished)
+    }
+}
+
 /// A Wrapper for `R: Read` implementing `EventIterator<T, D>`.
+#[derive(Debug)]
 pub struct EventReader<T, D, R> {
     reader: R,
     bytes: Vec<u8>,
@@ -155,6 +194,7 @@ pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
             "ReplayWithShutdown",
             scope,
             is_running,
+            Fuel::unlimited(),
             DEFAULT_REACTIVATION_DELAY,
         )
     }
@@ -164,13 +204,20 @@ pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
         name: N,
         scope: &mut S,
         is_running: Arc<AtomicBool>,
+        fuel: Fuel,
     ) -> Stream<S, D>
     where
         Self: Sized,
         N: Into<String>,
         S: Scope<Timestamp = T>,
     {
-        self.replay_with_shutdown_into_core(name, scope, is_running, DEFAULT_REACTIVATION_DELAY)
+        self.replay_with_shutdown_into_core(
+            name,
+            scope,
+            is_running,
+            fuel,
+            DEFAULT_REACTIVATION_DELAY,
+        )
     }
 
     fn replay_with_shutdown_into_core<N, S>(
@@ -178,6 +225,7 @@ pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
         name: N,
         scope: &mut S,
         is_running: Arc<AtomicBool>,
+        fuel: Fuel,
         reactivation_delay: Duration,
     ) -> Stream<S, D>
     where
@@ -197,7 +245,7 @@ where
         name: N,
         scope: &mut S,
         is_running: Arc<AtomicBool>,
-
+        mut fuel: Fuel,
         reactivation_delay: Duration,
     ) -> Stream<S, D>
     where
@@ -233,11 +281,7 @@ where
                 started = true;
             }
 
-            // If all streams are finished we are totally complete
-            if streams_finished.iter().copied().all(identity) {
-                return false;
-            }
-
+            fuel.reset();
             'event_loop: for (stream_idx, event_stream) in event_streams.iter_mut().enumerate() {
                 'stream_loop: loop {
                     let next = event_stream.next(&mut streams_finished[stream_idx]);
@@ -245,11 +289,17 @@ where
                     match next {
                         Ok(Some(event)) => match event {
                             Event::Progress(vec) => {
+                                // Exert a little bit of effort for propagating timestamps
+                                fuel.exert(1);
+
                                 progress.internals[0].extend(vec.iter().cloned());
                                 antichain.update_iter(vec.into_iter());
                             }
 
                             Event::Messages(time, mut data) => {
+                                // Exert effort for each record we receive
+                                fuel.exert(data.len());
+
                                 output.session(&time).give_vec(&mut data);
                             }
                         },
@@ -272,6 +322,14 @@ where
                             break 'event_loop;
                         }
                     }
+
+                    if fuel.is_exhausted() {
+                        break 'event_loop;
+                    }
+                }
+
+                if fuel.is_exhausted() {
+                    break 'event_loop;
                 }
             }
 

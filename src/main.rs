@@ -8,22 +8,26 @@ use crate::{
     args::Args,
     colormap::{select_color, Color},
     dataflow::{
-        operators::{make_streams, CrossbeamExtractor},
-        Channel, DataflowSenders, OperatesEvent, OperatorAddr, OperatorId, OperatorStats, WorkerId,
-        WorkerTimelineEvent,
+        operators::{
+            make_streams, rkyv_capture::RkyvOperatesEvent, CrossbeamExtractor, EventReader, Fuel,
+            InspectExt, ReplayWithShutdown, RkyvEventReader, RkyvTimelyEvent,
+        },
+        Channel, DataflowSenders, DifferentialLogBundle, OperatorAddr, OperatorId, OperatorStats,
+        WorkerId, WorkerTimelineEvent,
     },
-    network::{wait_for_connections, wait_for_input},
+    network::{wait_for_connections, wait_for_input, ReplaySource},
     ui::{ActivationDuration, EdgeKind},
 };
 use anyhow::{Context, Result};
-use comfy_table::{presets::UTF8_FULL, Cell, ContentArrangement, Table};
+use comfy_table::{presets::UTF8_FULL, Cell, ColumnConstraint, ContentArrangement, Table};
 use std::{
     cmp::Reverse,
     collections::HashMap,
     env,
     fs::{self, File},
-    io::Write,
+    io::{BufReader, Write},
     net::TcpStream,
+    num::NonZeroUsize,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
@@ -31,7 +35,10 @@ use std::{
     time::{Duration, Instant},
 };
 use structopt::StructOpt;
-use timely::dataflow::operators::capture::Extract;
+use timely::{
+    dataflow::operators::{capture::Extract, Map},
+    logging::TimelyEvent,
+};
 use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
     EnvFilter,
@@ -65,20 +72,30 @@ fn main() -> Result<()> {
     );
     let start_time = Instant::now();
 
-    let timely_connections = wait_for_connections(args.address, args.timely_connections)?;
+    let timely_connections = if let Some(log_dir) = args.replay_logs.as_ref() {
+        let timely_file = File::open(log_dir.join("timely.ddshow"))
+            .context("failed to open timely log file within replay directory")?;
+
+        ReplaySource::Rkyv(vec![RkyvEventReader::new(BufReader::new(timely_file))])
+    } else {
+        wait_for_connections(args.address, args.timely_connections)?
+    };
+
     let event_receivers = make_streams(args.workers.get(), timely_connections)?;
 
-    let elapsed = start_time.elapsed();
-    println!(
-        "Connected to {} Timely trace{} in {:#?}",
-        args.timely_connections,
-        if args.timely_connections.get() == 1 {
-            ""
-        } else {
-            "s"
-        },
-        elapsed,
-    );
+    if args.replay_logs.is_none() {
+        let elapsed = start_time.elapsed();
+        println!(
+            "Connected to {} Timely trace{} in {:#?}",
+            args.timely_connections,
+            if args.timely_connections.get() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            elapsed,
+        );
+    }
 
     let differential_receivers = if args.differential_enabled {
         tracing::info!(
@@ -99,8 +116,26 @@ fn main() -> Result<()> {
         );
         let start_time = Instant::now();
 
-        let differential_connections =
-            wait_for_connections(args.differential_address, args.timely_connections)?;
+        type DifferentialReader = EventReader<Duration, DifferentialLogBundle<usize>, TcpStream>;
+        let differential_connections: ReplaySource<DifferentialReader, DifferentialReader> =
+            // TODO: Differential replays
+            if let Some(log_dir) = args.replay_logs.as_ref() {
+                // let differential_file = File::open(log_dir.join("differential.ddshow"))
+                //     .context("failed to open differential log file within replay directory")?;
+                //
+                // vec![
+                //     Box::new(RkyvEventReader::new(BufReader::new(differential_file)))
+                //         as Box<dyn EventIterator<_, _> + Send + 'static>,
+                // ]
+
+                if log_dir.join("differential.ddshow").exists() {
+                    tracing::warn!("differential file replays are unimplemented");
+                }
+
+                ReplaySource::Rkyv(Vec::new())
+            } else {
+                wait_for_connections(args.differential_address, args.timely_connections)?
+            };
         let event_receivers = make_streams(args.workers.get(), differential_connections)?;
 
         let elapsed = start_time.elapsed();
@@ -163,8 +198,10 @@ fn main() -> Result<()> {
 
         // Distribute the tcp streams across workers, converting each of them into an event reader
         let timely_traces = event_receivers[worker.index()]
+            .clone()
             .recv()
             .expect("failed to receive timely event traces");
+
         let differential_traces = differential_receivers.as_ref().map(|recv| {
             recv[worker.index()]
                 .recv()
@@ -186,12 +223,67 @@ fn main() -> Result<()> {
 
         let dataflow_id = worker.next_dataflow_index();
         let probe = worker.dataflow_named(dataflow_name, |scope| {
+            // If the dataflow is being sourced from a file, limit the
+            // number of events read out in each batch so we don't overload
+            // downstream consumers
+            let fuel = if args.is_file_sourced() {
+                Fuel::limited(NonZeroUsize::new(100_000_000).unwrap())
+
+            // If the dataflow is being sourced from a running program,
+            // take as many events as we possibly can so that we don't
+            // slow down its execution
+            } else {
+                Fuel::unlimited()
+            };
+
+            // The timely log stream filtered down to worker 0's events
+            let timely_stream = match timely_traces {
+                ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
+                    "Timely Replay",
+                    scope,
+                    replay_shutdown.clone(),
+                    fuel.clone(),
+                ),
+
+                ReplaySource::Abomonation(abomonation) => abomonation
+                    .replay_with_shutdown_into_named(
+                        "Timely Replay",
+                        scope,
+                        replay_shutdown.clone(),
+                        fuel.clone(),
+                    )
+                    .map(|(time, worker, event): (Duration, usize, TimelyEvent)| {
+                        (time, WorkerId::new(worker), RkyvTimelyEvent::from(event))
+                    }),
+            }
+            .debug_inspect(|x| tracing::trace!("timely event: {:?}", x));
+
+            let differential_stream = differential_traces.map(|traces| {
+                match traces {
+                    ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
+                        "Differential Replay",
+                        scope,
+                        replay_shutdown.clone(),
+                        fuel,
+                    ),
+
+                    ReplaySource::Abomonation(abomonation) => abomonation
+                        .replay_with_shutdown_into_named(
+                            "Differential Replay",
+                            scope,
+                            replay_shutdown.clone(),
+                            fuel,
+                        ),
+                }
+                .map(|(time, worker, event)| (time, WorkerId::new(worker), event))
+                .debug_inspect(|x| tracing::trace!("differential dataflow event: {:?}", x))
+            });
+
             dataflow::dataflow(
                 scope,
                 &*args,
-                timely_traces,
-                differential_traces,
-                replay_shutdown.clone(),
+                &timely_stream,
+                differential_stream.as_ref(),
                 senders,
             )
         })?;
@@ -345,22 +437,28 @@ fn main() -> Result<()> {
         operators_by_total_runtime.sort_by_key(|(_operator, stats)| Reverse(stats.total));
 
         let mut table = Table::new();
+        table.load_preset(UTF8_FULL);
+
+        let headers = vec![
+            "Name",
+            "Id",
+            "Address",
+            "Total Runtime",
+            "Activations",
+            "Average Activation Time",
+            "Max Activation Time",
+            "Min Activation Time",
+            "Max Arrangement Size",
+            "Min Arrangement Size",
+            "Arrangement Batches",
+        ];
         table
-            .load_preset(UTF8_FULL)
-            .set_content_arrangement(ContentArrangement::Dynamic)
-            .set_header(vec![
-                "Name",
-                "Id",
-                "Address",
-                "Total Runtime",
-                "Activations",
-                "Average Activation Time",
-                "Max Activation Time",
-                "Min Activation Time",
-                "Max Arrangement Size",
-                "Min Arrangement Size",
-                "Arrangement Batches",
-            ]);
+            .set_constraints(
+                headers
+                    .iter()
+                    .map(|header| ColumnConstraint::MinWidth(header.len() as u16)),
+            )
+            .set_header(headers);
 
         for (operator, stats, addr, name) in operators_by_total_runtime
             .iter()
@@ -509,7 +607,7 @@ fn main() -> Result<()> {
 
     let html_nodes: Vec<_> = node_events
         .into_iter()
-        .filter_map(|((worker, addr), OperatesEvent { id, name, .. })| {
+        .filter_map(|((worker, addr), RkyvOperatesEvent { id, name, .. })| {
             let &OperatorStats {
                 max,
                 min,
@@ -551,7 +649,7 @@ fn main() -> Result<()> {
 
     let html_subgraphs: Vec<_> = subgraph_events
         .into_iter()
-        .filter_map(|((worker, addr), OperatesEvent { id, name, .. })| {
+        .filter_map(|((worker, addr), RkyvOperatesEvent { id, name, .. })| {
             let OperatorStats {
                 max,
                 min,
@@ -586,9 +684,9 @@ fn main() -> Result<()> {
         .map(
             |(
                 worker,
-                OperatesEvent { addr: src, .. },
+                RkyvOperatesEvent { addr: src, .. },
                 channel,
-                OperatesEvent { addr: dest, .. },
+                RkyvOperatesEvent { addr: dest, .. },
             )| {
                 ui::Edge {
                     src,

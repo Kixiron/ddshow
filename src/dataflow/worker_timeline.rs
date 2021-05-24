@@ -1,5 +1,8 @@
 use crate::dataflow::{
-    operators::{FilterSplit, Multiply, Split},
+    operators::{
+        rkyv_capture::{RkyvParkEvent, RkyvStartStop},
+        FilterSplit, Multiply, RkyvTimelyEvent, Split,
+    },
     Diff, DifferentialLogBundle, OperatorId, TimelyLogBundle, WorkerId,
 };
 use abomonation_derive::Abomonation;
@@ -17,16 +20,13 @@ use differential_dataflow::{
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, iter, mem, time::Duration};
-use timely::{
-    dataflow::{
-        channels::{pact::Pipeline, pushers::Tee},
-        operators::{
-            aggregation::StateMachine, generic::OutputHandle, Capability, Concat, Delay, Enter,
-            Map, Operator,
-        },
-        Scope, Stream,
+use timely::dataflow::{
+    channels::{pact::Pipeline, pushers::Tee},
+    operators::{
+        aggregation::StateMachine, generic::OutputHandle, Capability, Concat, Delay, Enter, Map,
+        Operator,
     },
-    logging::{ParkEvent, StartStop, TimelyEvent},
+    Scope, Stream,
 };
 
 pub fn worker_timeline<S, Trace>(
@@ -150,49 +150,49 @@ where
     )
 }
 
-fn process_timely_event(event_processor: &mut EventProcessor<'_, '_>, event: TimelyEvent) {
+fn process_timely_event(event_processor: &mut EventProcessor<'_, '_>, event: RkyvTimelyEvent) {
     match event {
-        TimelyEvent::Schedule(schedule) => {
+        RkyvTimelyEvent::Schedule(schedule) => {
             let event_kind = EventKind::activation(schedule.id);
-            let partial_event = PartialTimelineEvent::activation(OperatorId::new(schedule.id));
+            let partial_event = PartialTimelineEvent::activation(schedule.id);
 
             event_processor.start_stop(event_kind, partial_event, schedule.start_stop);
         }
 
-        TimelyEvent::Application(app) => {
+        RkyvTimelyEvent::Application(app) => {
             let event_kind = EventKind::application(app.id);
             let partial_event = PartialTimelineEvent::Application;
 
             event_processor.is_start(event_kind, partial_event, app.is_start);
         }
 
-        TimelyEvent::GuardedMessage(message) => {
+        RkyvTimelyEvent::GuardedMessage(message) => {
             let event_kind = EventKind::Message;
             let partial_event = PartialTimelineEvent::Message;
 
             event_processor.is_start(event_kind, partial_event, message.is_start);
         }
 
-        TimelyEvent::GuardedProgress(progress) => {
+        RkyvTimelyEvent::GuardedProgress(progress) => {
             let event_kind = EventKind::Progress;
             let partial_event = PartialTimelineEvent::Progress;
 
             event_processor.is_start(event_kind, partial_event, progress.is_start);
         }
 
-        TimelyEvent::Input(input) => {
+        RkyvTimelyEvent::Input(input) => {
             let event_kind = EventKind::Input;
             let partial_event = PartialTimelineEvent::Input;
 
             event_processor.start_stop(event_kind, partial_event, input.start_stop);
         }
 
-        TimelyEvent::Park(park) => {
+        RkyvTimelyEvent::Park(park) => {
             let event_kind = EventKind::Park;
 
             match park {
-                ParkEvent::Park(_) => event_processor.insert(event_kind),
-                ParkEvent::Unpark => {
+                RkyvParkEvent::Park(_) => event_processor.insert(event_kind),
+                RkyvParkEvent::Unpark => {
                     event_processor.remove(event_kind, PartialTimelineEvent::Parked);
                 }
             }
@@ -200,14 +200,14 @@ fn process_timely_event(event_processor: &mut EventProcessor<'_, '_>, event: Tim
 
         // When an operator shuts down, release all capabilities associated with it.
         // This works to counteract dataflow stalling
-        TimelyEvent::Shutdown(shutdown) => event_processor.remove_referencing(shutdown.id),
+        RkyvTimelyEvent::Shutdown(shutdown) => event_processor.remove_referencing(shutdown.id),
 
-        TimelyEvent::Operates(_)
-        | TimelyEvent::Channels(_)
-        | TimelyEvent::PushProgress(_)
-        | TimelyEvent::Messages(_)
-        | TimelyEvent::CommChannels(_)
-        | TimelyEvent::Text(_) => {}
+        RkyvTimelyEvent::Operates(_)
+        | RkyvTimelyEvent::Channels(_)
+        | RkyvTimelyEvent::PushProgress(_)
+        | RkyvTimelyEvent::Messages(_)
+        | RkyvTimelyEvent::CommChannels(_)
+        | RkyvTimelyEvent::Text(_) => {}
     }
 }
 
@@ -256,7 +256,7 @@ fn process_differential_event(
 ) {
     match event {
         DifferentialEvent::Merge(merge) => {
-            let event_kind = EventKind::merge(merge.operator);
+            let event_kind = EventKind::merge(OperatorId::new(merge.operator));
             let partial_event = PartialTimelineEvent::merge(OperatorId::new(merge.operator));
             let is_start = merge.complete.is_none();
 
@@ -264,14 +264,16 @@ fn process_differential_event(
         }
 
         DifferentialEvent::MergeShortfall(shortfall) => {
-            let event_kind = EventKind::merge(shortfall.operator);
+            let event_kind = EventKind::merge(OperatorId::new(shortfall.operator));
             let partial_event = PartialTimelineEvent::merge(OperatorId::new(shortfall.operator));
 
             event_processor.remove(event_kind, partial_event);
         }
 
         // Sometimes merges don't complete since they're dropped part way through
-        DifferentialEvent::Drop(drop) => event_processor.remove_referencing(drop.operator),
+        DifferentialEvent::Drop(drop) => {
+            event_processor.remove_referencing(OperatorId::new(drop.operator))
+        }
 
         DifferentialEvent::Batch(_) | DifferentialEvent::TraceShare(_) => {}
     }
@@ -378,11 +380,11 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
         &mut self,
         event_kind: EventKind,
         partial_event: PartialTimelineEvent,
-        start_stop: StartStop,
+        start_stop: RkyvStartStop,
     ) {
         match start_stop {
-            StartStop::Start => self.insert(event_kind),
-            StartStop::Stop => self.remove(event_kind, partial_event),
+            RkyvStartStop::Start => self.insert(event_kind),
+            RkyvStartStop::Stop => self.remove(event_kind, partial_event),
         }
     }
 
@@ -396,16 +398,16 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
             event_kind,
             partial_event,
             if is_start {
-                StartStop::Start
+                RkyvStartStop::Start
             } else {
-                StartStop::Stop
+                RkyvStartStop::Stop
             },
         )
     }
 
     /// Remove all events that reference the given operator id,
     /// releasing their associated capabilities
-    fn remove_referencing(&mut self, operator: usize) {
+    fn remove_referencing(&mut self, operator: OperatorId) {
         mem::swap(self.event_map, self.map_buffer);
 
         let mut removed_refs = 0;
@@ -418,10 +420,10 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
                 {
                     let partial_event = match event_kind {
                         EventKind::OperatorActivation { operator_id } => {
-                            PartialTimelineEvent::activation(OperatorId::new(operator_id))
+                            PartialTimelineEvent::activation(operator_id)
                         }
                         EventKind::Merge { operator_id } => {
-                            PartialTimelineEvent::merge(OperatorId::new(operator_id))
+                            PartialTimelineEvent::merge(operator_id)
                         }
 
                         _ => unreachable!(),
@@ -461,7 +463,7 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
 
         if removed_refs != 0 {
             tracing::warn!(
-                operator = operator,
+                operator = %operator,
                 removed_refs = removed_refs,
                 "removed {} dangling event{} pointing to a dropped operator",
                 removed_refs,
@@ -624,17 +626,17 @@ impl EventData {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
 pub(super) enum EventKind {
-    OperatorActivation { operator_id: usize },
+    OperatorActivation { operator_id: OperatorId },
     Message,
     Progress,
     Input,
     Park,
     Application { id: usize },
-    Merge { operator_id: usize },
+    Merge { operator_id: OperatorId },
 }
 
 impl EventKind {
-    pub const fn activation(operator_id: usize) -> Self {
+    pub const fn activation(operator_id: OperatorId) -> Self {
         Self::OperatorActivation { operator_id }
     }
 
@@ -642,7 +644,7 @@ impl EventKind {
         Self::Application { id }
     }
 
-    pub const fn merge(operator_id: usize) -> Self {
+    pub const fn merge(operator_id: OperatorId) -> Self {
         Self::Merge { operator_id }
     }
 }

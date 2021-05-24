@@ -6,9 +6,7 @@ use abomonation_derive::Abomonation;
 #[cfg(not(feature = "timely-next"))]
 use differential_dataflow::difference::DiffPair;
 use differential_dataflow::{
-    logging::DifferentialEvent,
-    operators::{CountTotal, Join},
-    AsCollection, Collection,
+    logging::DifferentialEvent, operators::CountTotal, AsCollection, Collection,
 };
 use std::time::Duration;
 use timely::dataflow::{operators::Enter, Scope, Stream};
@@ -28,7 +26,7 @@ where
                 DifferentialEvent::Batch(batch) => Some((
                     (
                         (worker, OperatorId::new(batch.operator)),
-                        batch.length as isize,
+                        (batch.length as isize, 1),
                     ),
                     time,
                     1,
@@ -37,7 +35,7 @@ where
                     (
                         (
                             (worker, OperatorId::new(merge.operator)),
-                            complete_size as isize,
+                            (complete_size as isize, 0),
                         ),
                         time,
                         1,
@@ -52,16 +50,17 @@ where
 
         #[cfg(feature = "timely-next")]
         let merge_stats = merge_diffs
-            .explode(|(key, size)| {
+            .explode(|(key, (size, batches))| {
                 let (min, max) = (Min::new(size), Max::new(size));
 
-                Some((key, (1, size, min, max)))
+                Some((key, (1, size, batches, min, max)))
             })
             .count_total()
-            .map(|(key, (_count, _total, min, max))| {
+            .map(|(key, (_count, _total, batches, min, max))| {
                 let stats = ArrangementStats {
                     max_size: max.value as usize,
                     min_size: min.value as usize,
+                    batches: batches as usize,
                 };
 
                 (key, stats)
@@ -69,12 +68,15 @@ where
 
         #[cfg(not(feature = "timely-next"))]
         let merge_stats = merge_diffs
-            .explode(|(key, size)| {
+            .explode(|(key, (size, batches))| {
                 let (min, max) = (Min::new(size), Max::new(size));
 
                 Some((
                     key,
-                    DiffPair::new(1, DiffPair::new(size, DiffPair::new(min, max))),
+                    DiffPair::new(
+                        1,
+                        DiffPair::new(size, DiffPair::new(batches, DiffPair::new(min, max))),
+                    ),
                 ))
             })
             .count_total()
@@ -88,8 +90,12 @@ where
                                 element1: _total,
                                 element2:
                                     DiffPair {
-                                        element1: min,
-                                        element2: max,
+                                        element1: batches,
+                                        element2:
+                                            DiffPair {
+                                                element1: min,
+                                                element2: max,
+                                            },
                                     },
                             },
                     },
@@ -97,38 +103,14 @@ where
                     let stats = ArrangementStats {
                         max_size: max.value as usize,
                         min_size: min.value as usize,
-                        batches: 0,
+                        batches: batches as usize,
                     };
 
                     (key, stats)
                 },
             );
 
-        let total_batches = differential_trace
-            .filter_map(|(time, worker, event)| match event {
-                DifferentialEvent::Batch(batch) => {
-                    Some((((worker, OperatorId::new(batch.operator)), ()), time, 1))
-                }
-                DifferentialEvent::Merge(_)
-                | DifferentialEvent::MergeShortfall(_)
-                | DifferentialEvent::Drop(_)
-                | DifferentialEvent::TraceShare(_) => None,
-            })
-            .as_collection()
-            .count_total()
-            .map(|(((worker, operator), ()), batches)| ((worker, operator), batches));
-
-        merge_stats
-            .join_map(&total_batches, |&key, &stats, &batches| {
-                (
-                    key,
-                    ArrangementStats {
-                        batches: batches as usize,
-                        ..stats
-                    },
-                )
-            })
-            .leave_region()
+        merge_stats.leave_region()
     })
 }
 

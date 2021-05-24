@@ -1,3 +1,5 @@
+use crate::dataflow::operators::EventReader;
+use abomonation::Abomonation;
 use anyhow::{Context, Result};
 use std::{
     hint,
@@ -11,19 +13,28 @@ use std::{
     thread,
     time::Duration,
 };
-use timely::communication::WorkerGuards;
+use timely::{communication::WorkerGuards, dataflow::operators::capture::Event};
 
-pub type Connections = Vec<TcpStream>;
+#[derive(Debug)]
+pub enum ReplaySource<R, A> {
+    Rkyv(Vec<R>),
+    Abomonation(Vec<A>),
+}
 
 /// The read timeout to impose on tcp connections
 const TCP_READ_TIMEOUT: Option<Duration> = Some(Duration::from_millis(200));
 
 /// Connect to the given address and collect `connections` streams, returning all of them
 /// in non-blocking mode
-pub fn wait_for_connections(
+pub fn wait_for_connections<T, D, R>(
     timely_addr: SocketAddr,
     connections: NonZeroUsize,
-) -> Result<Connections> {
+) -> Result<ReplaySource<R, EventReader<T, D, TcpStream>>>
+where
+    Event<T, D>: Clone,
+    T: Abomonation + Send + 'static,
+    D: Abomonation + Send + 'static,
+{
     let timely_listener =
         TcpListener::bind(timely_addr).context("failed to bind to socket address")?;
 
@@ -45,11 +56,11 @@ pub fn wait_for_connections(
             };
 
             println!("Connected to socket {}/{}", i + 1, connections);
-            Ok(socket)
+            Ok(EventReader::new(socket))
         })
         .collect::<Result<Vec<_>>>()?;
 
-    Ok(timely_conns)
+    Ok(ReplaySource::Abomonation(timely_conns))
 }
 
 /// Wait for user input to terminate the trace replay and wait for all timely

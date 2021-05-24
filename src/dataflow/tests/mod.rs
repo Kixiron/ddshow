@@ -4,6 +4,10 @@ mod proptest_utils;
 mod proptests;
 
 use crate::dataflow::{
+    operators::{
+        rkyv_capture::{RkyvScheduleEvent, RkyvStartStop},
+        RkyvTimelyEvent,
+    },
     worker_timeline::{
         collect_differential_events, collect_timely_events, EventData, PartialTimelineEvent,
     },
@@ -14,10 +18,7 @@ use std::{
     sync::{mpsc, Arc, Mutex},
     time::Duration,
 };
-use timely::{
-    dataflow::operators::{capture::Extract, Capture, Input, Probe},
-    logging::{ScheduleEvent, StartStop, TimelyEvent},
-};
+use timely::dataflow::operators::{capture::Extract, Capture, Input, Probe};
 use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
 };
@@ -61,9 +62,9 @@ fn timely_event_association() {
         input.send((
             Duration::from_nanos(1000),
             WorkerId::new(0),
-            TimelyEvent::Schedule(ScheduleEvent {
-                id: 0,
-                start_stop: StartStop::Start,
+            RkyvTimelyEvent::Schedule(RkyvScheduleEvent {
+                id: OperatorId::new(0),
+                start_stop: RkyvStartStop::Start,
             }),
         ));
 
@@ -71,9 +72,9 @@ fn timely_event_association() {
         input.send((
             Duration::from_nanos(10_000),
             WorkerId::new(0),
-            TimelyEvent::Schedule(ScheduleEvent {
-                id: 0,
-                start_stop: StartStop::Stop,
+            RkyvTimelyEvent::Schedule(RkyvScheduleEvent {
+                id: OperatorId::new(0),
+                start_stop: RkyvStartStop::Stop,
             }),
         ));
 

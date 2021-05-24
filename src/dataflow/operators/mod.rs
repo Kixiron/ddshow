@@ -22,9 +22,10 @@ pub use inspect::InspectExt;
 pub use min_max::{DiffDuration, Max, Min};
 pub use replay_with_shutdown::{make_streams, EventIterator, EventReader, ReplayWithShutdown};
 pub use rkyv_capture::{
-    ArchivedRkyvEvent, RkyvEvent, RkyvEventReader, RkyvEventResolver, RkyvEventWriter,
+    ArchivedRkyvEvent, RkyvApplicationEvent, RkyvChannelsEvent, RkyvEvent, RkyvEventReader,
+    RkyvEventResolver, RkyvEventWriter, RkyvTimelyEvent,
 };
 pub use sort::SortBy;
 pub use split::Split;
 pub use timely_version_hack::Multiply;
-pub use util::{CrossbeamExtractor, CrossbeamPusher, OperatorExt};
+pub use util::{CrossbeamExtractor, CrossbeamPusher, Fuel, OperatorExt};

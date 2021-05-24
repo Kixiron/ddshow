@@ -16,6 +16,8 @@ use std::{
 };
 use tinyvec::{ArrayVec, TinyVec};
 
+use crate::dataflow::PortId;
+
 // TODO: Change this to use `OperatorId` instead of `usize
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -42,8 +44,8 @@ impl OperatorAddr {
         Self::new(tiny_vec)
     }
 
-    pub fn push(&mut self, segment: usize) {
-        self.addr.push(segment);
+    pub fn push(&mut self, segment: PortId) {
+        self.addr.push(segment.into_inner());
     }
 
     pub fn pop(&mut self) -> Option<usize> {

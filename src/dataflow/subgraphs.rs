@@ -1,5 +1,6 @@
 use crate::dataflow::{
-    operators::JoinArranged, Channel, ChannelAddrs, FilterMap, Multiply, OperatorAddr, WorkerId,
+    operators::{JoinArranged, RkyvChannelsEvent},
+    Channel, ChannelAddrs, FilterMap, Multiply, OperatorAddr, OperatorId, PortId, WorkerId,
 };
 use differential_dataflow::{
     difference::Abelian,
@@ -7,11 +8,11 @@ use differential_dataflow::{
     operators::{arrange::ArrangeByKey, Consolidate, Iterate, JoinCore, Threshold},
     Collection, ExchangeData,
 };
-use timely::{dataflow::Scope, logging::ChannelsEvent};
+use timely::dataflow::Scope;
 
 pub fn rewire_channels<S, D>(
     scope: &mut S,
-    channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
+    channels: &Collection<S, (WorkerId, RkyvChannelsEvent), D>,
     subgraphs: &ChannelAddrs<S, D>,
 ) -> Collection<S, (WorkerId, Channel), D>
 where
@@ -37,7 +38,7 @@ where
 
 fn subgraph_crosses<S, D>(
     scope: &mut S,
-    channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
+    channels: &Collection<S, (WorkerId, RkyvChannelsEvent), D>,
     subgraphs: &ChannelAddrs<S, D>,
 ) -> Collection<S, (WorkerId, Channel), D>
 where
@@ -52,17 +53,17 @@ where
         );
 
         let channels = channels.map(|(worker, channel)| {
-            let mut source = OperatorAddr::from(&channel.scope_addr);
+            let mut source = channel.scope_addr.clone();
             source.push(channel.source.0);
 
-            let mut target = OperatorAddr::from(channel.scope_addr);
+            let mut target = channel.scope_addr;
             target.push(channel.target.0);
 
             (
                 (worker, source, channel.source.1),
                 (
                     (target, channel.target.1),
-                    OperatorAddr::from_elem(channel.id),
+                    OperatorAddr::from_elem(channel.id.into_inner()),
                 ),
             )
         });
@@ -82,13 +83,13 @@ where
         let propagated_channels = channels.iterate(|links| {
             let ingress_candidates = links.map(|((worker, source, channel), (target, path))| {
                 let mut new_target = target.0.clone();
-                new_target.push(0);
+                new_target.push(PortId::zero());
 
                 ((worker, new_target, target.1), ((source, channel), path))
             });
 
             let egress_candidates = links.map(|((worker, mut source, channel), (target, path))| {
-                source.push(0);
+                source.push(PortId::zero());
 
                 ((worker, source, channel), (target, path))
             });
@@ -150,7 +151,7 @@ where
                     (
                         worker,
                         Channel::ScopeCrossing {
-                            channel_id: channel_ids_along_path[0],
+                            channel_id: OperatorId::new(channel_ids_along_path[0]),
                             source_addr,
                             target_addr,
                         },
@@ -167,7 +168,7 @@ where
 
 fn subgraph_normal<S, D>(
     scope: &mut S,
-    channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
+    channels: &Collection<S, (WorkerId, RkyvChannelsEvent), D>,
     subgraphs: &ChannelAddrs<S, D>,
 ) -> Collection<S, (WorkerId, Channel), D>
 where
@@ -183,11 +184,11 @@ where
 
         channels
             .filter_map(|(worker, channel)| {
-                if channel.source.0 != 0 && channel.target.0 != 0 {
-                    let mut source_addr = OperatorAddr::from(&channel.scope_addr);
+                if channel.source.0 != PortId::zero() && channel.target.0 != PortId::zero() {
+                    let mut source_addr = channel.scope_addr.clone();
                     source_addr.push(channel.source.0);
 
-                    let mut target_addr = OperatorAddr::from(channel.scope_addr);
+                    let mut target_addr = channel.scope_addr;
                     target_addr.push(channel.target.0);
 
                     Some(((worker, source_addr), (channel.id, target_addr)))

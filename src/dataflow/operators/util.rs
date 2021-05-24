@@ -6,7 +6,7 @@ use differential_dataflow::{
     operators::Threshold,
     Collection, Data,
 };
-use std::{collections::HashMap, fmt::Debug, hash::Hash, mem};
+use std::{collections::HashMap, fmt::Debug, hash::Hash, mem, num::NonZeroUsize};
 use timely::dataflow::{
     operators::capture::{Event, EventPusher, Extract},
     Scope,
@@ -96,6 +96,45 @@ impl<T: Ord, D: Ord> Extract<T, D> for CrossbeamExtractor<Event<T, D>> {
         }
 
         result
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Fuel {
+    fuel: Option<usize>,
+    default: Option<usize>,
+}
+
+impl Fuel {
+    pub const fn limited(fuel: NonZeroUsize) -> Self {
+        Self {
+            fuel: Some(fuel.get()),
+            default: Some(fuel.get()),
+        }
+    }
+
+    pub const fn unlimited() -> Self {
+        Self {
+            fuel: None,
+            default: None,
+        }
+    }
+
+    pub fn exert(&mut self, effort: usize) -> bool {
+        if let Some(fuel) = self.fuel.as_mut() {
+            *fuel = fuel.saturating_sub(effort);
+            *fuel == 0
+        } else {
+            false
+        }
+    }
+
+    pub fn is_exhausted(&self) -> bool {
+        self.fuel.map_or(false, |fuel| fuel == 0)
+    }
+
+    pub fn reset(&mut self) {
+        self.fuel = self.default;
     }
 }
 
