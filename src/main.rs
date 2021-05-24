@@ -430,63 +430,65 @@ fn main() -> Result<()> {
         )
         .context("failed to write to report file")?;
 
-        let mut operators_by_arrangement_size: Vec<_> = operators_by_total_runtime
-            .into_iter()
-            .filter_map(|(operator, stats)| {
-                stats
-                    .arrangement_size
-                    .map(|arrange| (operator, stats, arrange))
-            })
-            .collect();
-        operators_by_arrangement_size
-            .sort_unstable_by_key(|(_, _, arrange)| Reverse(arrange.max_size));
+        if args.differential_enabled {
+            let mut operators_by_arrangement_size: Vec<_> = operators_by_total_runtime
+                .into_iter()
+                .filter_map(|(operator, stats)| {
+                    stats
+                        .arrangement_size
+                        .map(|arrange| (operator, stats, arrange))
+                })
+                .collect();
+            operators_by_arrangement_size
+                .sort_unstable_by_key(|(_, _, arrange)| Reverse(arrange.max_size));
 
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .set_content_arrangement(ContentArrangement::Dynamic)
-            .set_header(vec![
-                "Name",
-                "Id",
-                "Address",
-                "Total Runtime",
-                "Max Arrangement Size",
-                "Min Arrangement Size",
-                "Arrangement Batches",
-            ]);
+            let mut table = Table::new();
+            table
+                .load_preset(UTF8_FULL)
+                .set_content_arrangement(ContentArrangement::Dynamic)
+                .set_header(vec![
+                    "Name",
+                    "Id",
+                    "Address",
+                    "Total Runtime",
+                    "Max Arrangement Size",
+                    "Min Arrangement Size",
+                    "Arrangement Batches",
+                ]);
 
-        for (operator, stats, arrange, addr, name) in operators_by_arrangement_size
-            .iter()
-            .filter_map(|&(operator, ref stats, arrange)| {
-                addr_lookup
-                    .get(&(stats.worker, operator))
-                    .map(|addr| (operator, stats, arrange, addr))
-            })
-            .map(|(operator, stats, arrange, addr)| {
-                let name: Option<&str> = name_lookup
-                    .get(&(stats.worker, operator))
-                    .map(|name| &**name);
+            for (operator, stats, arrange, addr, name) in operators_by_arrangement_size
+                .iter()
+                .filter_map(|&(operator, ref stats, arrange)| {
+                    addr_lookup
+                        .get(&(stats.worker, operator))
+                        .map(|addr| (operator, stats, arrange, addr))
+                })
+                .map(|(operator, stats, arrange, addr)| {
+                    let name: Option<&str> = name_lookup
+                        .get(&(stats.worker, operator))
+                        .map(|name| &**name);
 
-                (operator, stats, arrange, addr, name.unwrap_or("N/A"))
-            })
-        {
-            table.add_row(vec![
-                Cell::new(name),
-                Cell::new(operator),
-                Cell::new(addr),
-                Cell::new(format!("{:#?}", stats.total)),
-                Cell::new(arrange.max_size),
-                Cell::new(arrange.min_size),
-                Cell::new(arrange.batches),
-            ]);
+                    (operator, stats, arrange, addr, name.unwrap_or("N/A"))
+                })
+            {
+                table.add_row(vec![
+                    Cell::new(name),
+                    Cell::new(operator),
+                    Cell::new(addr),
+                    Cell::new(format!("{:#?}", stats.total)),
+                    Cell::new(arrange.max_size),
+                    Cell::new(arrange.min_size),
+                    Cell::new(arrange.batches),
+                ]);
+            }
+
+            writeln!(
+                report_file,
+                "Operators Ranked by Arrangement Size\n{}\n",
+                table,
+            )
+            .context("failed to write to report file")?;
         }
-
-        writeln!(
-            report_file,
-            "Operators Ranked by Arrangement Size\n{}\n",
-            table,
-        )
-        .context("failed to write to report file")?;
     }
 
     let mut edge_events = data.edges;
