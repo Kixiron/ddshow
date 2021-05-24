@@ -2,14 +2,16 @@ use crate::{
     dataflow::{
         granulate,
         operators::{rkyv_capture::RkyvOperatesEvent, DiffDuration, JoinArranged, Max, Min},
-        types::WorkerId,
-        Channel, ChannelAddrs, Diff, DifferentialLogBundle, OperatorAddr, TimelyLogBundle,
+        send_recv::ChannelAddrs,
+        types::{OperatorId, WorkerId},
+        Channel, Diff, DifferentialLogBundle, OperatorAddr, TimelyLogBundle,
     },
     ui::{ProgramStats, WorkerStats},
 };
 use differential_dataflow::{
     difference::DiffPair,
-    operators::{arrange::ArrangeByKey, Count, Join, Reduce},
+    logging::DifferentialEvent,
+    operators::{arrange::ArrangeByKey, Count, CountTotal, Join, Reduce, ThresholdTotal},
     AsCollection, Collection, Data,
 };
 use std::{iter, time::Duration};
@@ -87,6 +89,39 @@ where
     #[allow(clippy::suspicious_map)]
     let total_channels = channels.map(|(worker, _)| worker).count();
 
+    let mut total_arrangements = if let Some(differential) = differential {
+        differential
+            .map(|(time, worker, event)| {
+                let operator = match event {
+                    DifferentialEvent::Batch(batch) => batch.operator,
+                    DifferentialEvent::Merge(merge) => merge.operator,
+                    DifferentialEvent::Drop(drop) => drop.operator,
+                    DifferentialEvent::MergeShortfall(merge) => merge.operator,
+                    DifferentialEvent::TraceShare(share) => share.operator,
+                };
+                let operator = OperatorId::new(operator);
+
+                (((worker, operator), ()), time, 1)
+            })
+            .as_collection()
+            .distinct_total()
+            .map(|((worker, _operator), ())| (worker, ()))
+            .count_total()
+            .map(|((worker, ()), arrangements)| (worker, arrangements))
+
+    // If we don't have access to differential events just make every worker have zero
+    // arrangements
+    } else {
+        total_channels.map(|(worker, _)| (worker, 0))
+    };
+
+    // Add back any workers that didn't contain any operators
+    total_arrangements = total_arrangements.concat(
+        &total_arrangements
+            .antijoin(&total_channels.map(|(worker, _)| worker))
+            .map(|(worker, _)| (worker, 0)),
+    );
+
     let total_events = combine_events(
         timely,
         |(time, worker, _)| (worker, time, 1isize),
@@ -129,13 +164,20 @@ where
         .join(&total_operators)
         .join(&total_subgraphs)
         .join(&total_channels)
+        .join(&total_arrangements)
         .join(&total_events)
         .join(&total_runtime)
         .map(
             |(
                 worker,
                 (
-                    (((((dataflow_addrs, dataflows), operators), subgraphs), channels), events),
+                    (
+                        (
+                            ((((dataflow_addrs, dataflows), operators), subgraphs), channels),
+                            arrangements,
+                        ),
+                        events,
+                    ),
                     runtime,
                 ),
             )| {
@@ -149,6 +191,7 @@ where
                         operators: operators as usize,
                         subgraphs: subgraphs as usize,
                         channels: channels as usize,
+                        arrangements: arrangements as usize,
                         events: events as usize,
                         runtime,
                         dataflow_addrs,
@@ -157,71 +200,83 @@ where
             },
         );
 
-    let program_stats = worker_stats
-        .explode(|(_, stats)| {
-            let diff = DiffPair::new(
-                1,
-                DiffPair::new(
-                    stats.dataflows as isize,
+    let program_stats =
+        worker_stats
+            .explode(|(_, stats)| {
+                let diff = DiffPair::new(
+                    1,
                     DiffPair::new(
-                        stats.operators as isize,
+                        stats.dataflows as isize,
                         DiffPair::new(
-                            stats.subgraphs as isize,
+                            stats.operators as isize,
                             DiffPair::new(
-                                stats.channels as isize,
+                                stats.subgraphs as isize,
                                 DiffPair::new(
-                                    stats.events as isize,
-                                    Max::new(DiffDuration::new(stats.runtime)),
+                                    stats.channels as isize,
+                                    DiffPair::new(
+                                        stats.arrangements as isize,
+                                        DiffPair::new(
+                                            stats.events as isize,
+                                            Max::new(DiffDuration::new(stats.runtime)),
+                                        ),
+                                    ),
                                 ),
                             ),
                         ),
                     ),
-                ),
-            );
+                );
 
-            iter::once(((), diff))
-        })
-        .count()
-        .map(
-            |(
-                (),
-                DiffPair {
-                    element1: workers,
-                    element2:
-                        DiffPair {
-                            element1: dataflows,
-                            element2:
-                                DiffPair {
-                                    element1: operators,
-                                    element2:
-                                        DiffPair {
-                                            element1: subgraphs,
-                                            element2:
-                                                DiffPair {
-                                                    element1: channels,
-                                                    element2:
-                                                        DiffPair {
-                                                            element1: events,
-                                                            element2:
-                                                                Max {
-                                                                    value: DiffDuration(runtime),
-                                                                },
-                                                        },
-                                                },
-                                        },
-                                },
-                        },
+                iter::once(((), diff))
+            })
+            .count()
+            .map(
+                |(
+                    (),
+                    DiffPair {
+                        element1: workers,
+                        element2:
+                            DiffPair {
+                                element1: dataflows,
+                                element2:
+                                    DiffPair {
+                                        element1: operators,
+                                        element2:
+                                            DiffPair {
+                                                element1: subgraphs,
+                                                element2:
+                                                    DiffPair {
+                                                        element1: channels,
+                                                        element2:
+                                                            DiffPair {
+                                                                element1: arrangements,
+                                                                element2:
+                                                                    DiffPair {
+                                                                        element1: events,
+                                                                        element2:
+                                                                            Max {
+                                                                                value:
+                                                                                    DiffDuration(
+                                                                                        runtime,
+                                                                                    ),
+                                                                            },
+                                                                    },
+                                                            },
+                                                    },
+                                            },
+                                    },
+                            },
+                    },
+                )| ProgramStats {
+                    workers: workers as usize,
+                    dataflows: dataflows as usize,
+                    operators: operators as usize,
+                    subgraphs: subgraphs as usize,
+                    channels: channels as usize,
+                    arrangements: arrangements as usize,
+                    events: events as usize,
+                    runtime,
                 },
-            )| ProgramStats {
-                workers: workers as usize,
-                dataflows: dataflows as usize,
-                operators: operators as usize,
-                subgraphs: subgraphs as usize,
-                channels: channels as usize,
-                events: events as usize,
-                runtime,
-            },
-        );
+            );
 
     (program_stats, worker_stats)
 }

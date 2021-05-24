@@ -1,11 +1,8 @@
-use crate::{dataflow::operators::util::Fuel, network::ReplaySource};
+use crate::dataflow::operators::util::Fuel;
 use abomonation::Abomonation;
-use anyhow::Result;
-use crossbeam_channel::Receiver;
 use std::{
     convert::identity,
     io::{self, Read, Write},
-    iter,
     marker::PhantomData,
     mem,
     sync::{
@@ -25,49 +22,6 @@ use timely::{
 };
 
 const DEFAULT_REACTIVATION_DELAY: Duration = Duration::from_millis(200);
-
-type EventReceivers<R, A> = Arc<[Receiver<ReplaySource<R, A>>]>;
-
-pub fn make_streams<R, A>(
-    num_workers: usize,
-    sources: ReplaySource<R, A>,
-) -> Result<EventReceivers<R, A>> {
-    let readers: Vec<_> = match sources {
-        ReplaySource::Rkyv(rkyv) => {
-            let mut readers = Vec::with_capacity(num_workers);
-            readers.extend(iter::repeat_with(Vec::new).take(num_workers));
-
-            for (idx, source) in rkyv.into_iter().enumerate() {
-                readers[idx % num_workers].push(source);
-            }
-
-            readers.into_iter().map(ReplaySource::Rkyv).collect()
-        }
-
-        ReplaySource::Abomonation(abomonation) => {
-            let mut readers = Vec::with_capacity(num_workers);
-            readers.extend(iter::repeat_with(Vec::new).take(num_workers));
-
-            for (idx, source) in abomonation.into_iter().enumerate() {
-                readers[idx % num_workers].push(source);
-            }
-
-            readers.into_iter().map(ReplaySource::Abomonation).collect()
-        }
-    };
-
-    let (senders, receivers): (Vec<_>, Vec<_>) = (0..num_workers)
-        .map(|_| crossbeam_channel::bounded(1))
-        .unzip();
-
-    for (sender, bundle) in senders.into_iter().zip(readers) {
-        sender
-            .send(bundle)
-            .map_err(|_| anyhow::anyhow!("failed to send events to worker"))?;
-    }
-
-    Ok(Arc::from(receivers))
-}
 
 /// Iterates over contained `Event<T, D>`.
 ///

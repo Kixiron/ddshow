@@ -1,0 +1,201 @@
+use crate::{
+    dataflow::{
+        operators::{rkyv_capture::RkyvOperatesEvent, CrossbeamExtractor, Fuel},
+        Channel, Diff, OperatorAddr, OperatorId, OperatorStats, Time, WorkerId,
+        WorkerTimelineEvent,
+    },
+    ui::{ProgramStats, WorkerStats},
+};
+use crossbeam_channel::{Receiver, Sender};
+use differential_dataflow::{
+    operators::arrange::{Arranged, TraceAgent},
+    trace::implementations::ord::OrdKeySpine,
+};
+use std::{collections::HashMap, convert::identity};
+use timely::dataflow::{operators::capture::Event, ScopeParent};
+
+pub(crate) type ChannelAddrs<S, D> = Arranged<
+    S,
+    TraceAgent<OrdKeySpine<(WorkerId, OperatorAddr), <S as ScopeParent>::Timestamp, D>>,
+>;
+type Bundled<D> = (D, Time, Diff);
+type ESender<D> = Sender<Event<Time, Bundled<D>>>;
+type EReceiver<D> = Receiver<Event<Time, Bundled<D>>>;
+type Extractor<D> = CrossbeamExtractor<Event<Time, Bundled<D>>>;
+
+const DEFAULT_EXTRACTOR_CAPACITY: usize = 1024;
+
+macro_rules! make_send_recv {
+    ($($name:ident : $ty:ty),* $(,)?) => {
+        #[derive(Clone, Debug)]
+        pub struct DataflowSenders {
+            $(pub $name: ESender<$ty>,)*
+        }
+
+        impl DataflowSenders {
+            #[allow(clippy::too_many_arguments)]
+            pub fn new(
+                $($name: ESender<$ty>,)*
+            ) -> Self {
+                Self {
+                    $($name,)*
+                }
+            }
+
+            pub fn create() -> (Self, DataflowReceivers) {
+                $(let $name = crossbeam_channel::unbounded();)*
+
+                let sender = {
+                    $(let ($name, _) = $name;)*
+
+                    Self::new($($name,)*)
+                };
+
+                let receiver =  {
+                    $(let (_, $name) = $name;)*
+
+                    DataflowReceivers::new($($name,)*)
+                };
+
+                (sender, receiver)
+            }
+        }
+
+        #[derive(Clone, Debug)]
+        pub struct DataflowReceivers {
+            $(pub $name: EReceiver<$ty>,)*
+        }
+
+        impl DataflowReceivers {
+            /// Create a new dataflow receiver from the given channels
+            #[allow(clippy::too_many_arguments)]
+            pub fn new(
+                $($name: EReceiver<$ty>,)*
+            ) -> Self {
+                Self {
+                    $($name,)*
+                }
+            }
+
+            /// Make a [`DataflowExtractor`] for the target dataflow
+            pub fn into_extractor(self) -> DataflowExtractor {
+                DataflowExtractor::new($(self.$name,)*)
+            }
+        }
+
+        #[derive(Clone, Debug)]
+        pub struct DataflowExtractor {
+            $(pub $name: (Extractor<$ty>, HashMap<$ty, Diff>),)*
+        }
+
+        impl DataflowExtractor {
+            #[allow(clippy::too_many_arguments)]
+            pub fn new(
+                $($name: EReceiver<$ty>,)*
+            ) -> Self {
+                Self {
+                    $($name: (
+                        CrossbeamExtractor::new($name),
+                        HashMap::with_capacity(DEFAULT_EXTRACTOR_CAPACITY),
+                    ),)*
+                }
+            }
+
+            /// Extract data from the current dataflow in a non-blocking manner
+            ///
+            /// Note that this unfairly prefers fields in the order of their declaration,
+            /// so the latter dataflows may have less to no data eagerly extracted from them
+            #[inline(never)]
+            pub fn extract_with_fuel(&mut self, fuel: &mut Fuel) {
+                $(
+                    if !fuel.is_exhausted() {
+                        let (extractor, sink) = &mut self.$name;
+
+                        extractor.extract_with_fuel(fuel, sink);
+                    }
+                )*
+            }
+
+            #[inline(never)]
+            pub fn extract_all(mut self) -> DataflowData {
+                let mut fuel = Fuel::unlimited();
+                let mut extractor_status = Vec::with_capacity(0 $(+ {
+                    #[allow(dead_code, non_upper_case_globals)]
+                    const $name: () = ();
+                    1
+                })*);
+
+                loop {
+                    $(
+                        extractor_status.push({
+                            let (extractor, sink) = &mut self.$name;
+
+                            extractor.extract_with_fuel(&mut fuel, sink)
+                        });
+                    )*
+
+                    if extractor_status.iter().copied().all(identity) {
+                        break;
+                    }
+
+                    extractor_status.clear();
+                }
+
+                $(
+                    let $name = self.$name.1
+                        .into_iter()
+                        .filter(|&(_, diff)| diff >= 1)
+                        .flat_map(|(data, diff)| (0..diff).map(move |_| data.clone()))
+                        .collect();
+                )*
+
+                DataflowData::new($($name,)*)
+            }
+        }
+
+        #[derive(Clone, Debug)]
+        pub struct DataflowData {
+            $(pub $name: Vec<$ty>,)*
+        }
+
+        impl DataflowData {
+            #[allow(clippy::too_many_arguments)]
+            pub fn new(
+                $($name: Vec<$ty>,)*
+            ) -> Self {
+                Self {
+                    $($name,)*
+                }
+            }
+        }
+    };
+}
+
+type NodeData = ((WorkerId, OperatorAddr), RkyvOperatesEvent);
+type EdgeData = (
+    WorkerId,
+    RkyvOperatesEvent,
+    Channel,
+    RkyvOperatesEvent,
+    // Option<ChannelMessageStats>,
+);
+type SubgraphData = ((WorkerId, OperatorAddr), RkyvOperatesEvent);
+type OperatorStatsData = ((WorkerId, OperatorId), OperatorStats);
+type AggOperatorStatsData = (OperatorId, OperatorStats);
+type TimelineEventData = WorkerTimelineEvent;
+type WorkerStatsData = Vec<(WorkerId, WorkerStats)>;
+type NameLookupData = ((WorkerId, OperatorId), String);
+type AddrLookupData = ((WorkerId, OperatorId), OperatorAddr);
+
+make_send_recv! {
+    nodes: NodeData,
+    edges: EdgeData,
+    subgraphs: SubgraphData,
+    operator_stats: OperatorStatsData,
+    aggregated_operator_stats: AggOperatorStatsData,
+    timeline_events: TimelineEventData,
+    program_stats: ProgramStats,
+    worker_stats: WorkerStatsData,
+    name_lookup: NameLookupData,
+    addr_lookup: AddrLookupData,
+}

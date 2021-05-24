@@ -27,7 +27,7 @@ pub struct Args {
 
     /// The address to listen for `timely` log messages on
     #[structopt(long = "address", default_value = "127.0.0.1:51317")]
-    pub address: SocketAddr,
+    pub timely_address: SocketAddr,
 
     /// Whether or not Differential Dataflow logs should be read from
     #[structopt(short = "d", long = "differential")]

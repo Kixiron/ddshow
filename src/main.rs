@@ -9,36 +9,32 @@ use crate::{
     colormap::{select_color, Color},
     dataflow::{
         operators::{
-            make_streams, rkyv_capture::RkyvOperatesEvent, CrossbeamExtractor, EventReader, Fuel,
-            InspectExt, ReplayWithShutdown, RkyvEventReader, RkyvTimelyEvent,
+            rkyv_capture::RkyvOperatesEvent, Fuel, InspectExt, ReplayWithShutdown, RkyvTimelyEvent,
         },
-        Channel, DataflowSenders, DifferentialLogBundle, OperatorAddr, OperatorId, OperatorStats,
-        WorkerId, WorkerTimelineEvent,
+        Channel, DataflowSenders, OperatorAddr, OperatorId, OperatorStats, WorkerId,
     },
-    network::{wait_for_connections, wait_for_input, ReplaySource},
+    network::{acquire_replay_sources, wait_for_input, ReplaySource},
     ui::{ActivationDuration, EdgeKind},
 };
 use anyhow::{Context, Result};
 use comfy_table::{presets::UTF8_FULL, Cell, ColumnConstraint, ContentArrangement, Table};
+use differential_dataflow::logging::DifferentialEvent;
 use std::{
     cmp::Reverse,
     collections::HashMap,
     env,
     fs::{self, File},
-    io::{BufReader, Write},
+    io::Write,
     net::TcpStream,
     num::NonZeroUsize,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use structopt::StructOpt;
-use timely::{
-    dataflow::operators::{capture::Extract, Map},
-    logging::TimelyEvent,
-};
+use timely::{dataflow::operators::Map, logging::TimelyEvent};
 use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
     EnvFilter,
@@ -55,102 +51,26 @@ fn main() -> Result<()> {
 
     let config = args.timely_config();
 
-    tracing::info!(
-        "started waiting for {} timely connections on {}",
+    // Connect to the timely sources
+    let timely_event_receivers = acquire_replay_sources(
+        args.timely_address,
         args.timely_connections,
-        args.address,
-    );
-    println!(
-        "Waiting for {} Timely connection{} on {}...",
-        args.timely_connections,
-        if args.timely_connections.get() == 1 {
-            ""
-        } else {
-            "s"
-        },
-        args.address,
-    );
-    let start_time = Instant::now();
+        args.workers,
+        args.replay_logs.as_deref(),
+        "timely.ddshow",
+        "Timely",
+    )?;
 
-    let timely_connections = if let Some(log_dir) = args.replay_logs.as_ref() {
-        let timely_file = File::open(log_dir.join("timely.ddshow"))
-            .context("failed to open timely log file within replay directory")?;
-
-        ReplaySource::Rkyv(vec![RkyvEventReader::new(BufReader::new(timely_file))])
-    } else {
-        wait_for_connections(args.address, args.timely_connections)?
-    };
-
-    let event_receivers = make_streams(args.workers.get(), timely_connections)?;
-
-    if args.replay_logs.is_none() {
-        let elapsed = start_time.elapsed();
-        println!(
-            "Connected to {} Timely trace{} in {:#?}",
-            args.timely_connections,
-            if args.timely_connections.get() == 1 {
-                ""
-            } else {
-                "s"
-            },
-            elapsed,
-        );
-    }
-
-    let differential_receivers = if args.differential_enabled {
-        tracing::info!(
-            "differential dataflow logging is enabled, started waiting for {} differential connections on {}",
-            args.timely_connections,
+    // Connect to the differential sources
+    let differential_event_receivers = if args.differential_enabled {
+        Some(acquire_replay_sources::<Duration, DifferentialEvent, _>(
             args.differential_address,
-        );
-
-        println!(
-            "Waiting for {} Differential connection{} on {}...",
             args.timely_connections,
-            if args.timely_connections.get() == 1 {
-                ""
-            } else {
-                "s"
-            },
-            args.differential_address,
-        );
-        let start_time = Instant::now();
-
-        type DifferentialReader = EventReader<Duration, DifferentialLogBundle<usize>, TcpStream>;
-        let differential_connections: ReplaySource<DifferentialReader, DifferentialReader> =
-            // TODO: Differential replays
-            if let Some(log_dir) = args.replay_logs.as_ref() {
-                // let differential_file = File::open(log_dir.join("differential.ddshow"))
-                //     .context("failed to open differential log file within replay directory")?;
-                //
-                // vec![
-                //     Box::new(RkyvEventReader::new(BufReader::new(differential_file)))
-                //         as Box<dyn EventIterator<_, _> + Send + 'static>,
-                // ]
-
-                if log_dir.join("differential.ddshow").exists() {
-                    tracing::warn!("differential file replays are unimplemented");
-                }
-
-                ReplaySource::Rkyv(Vec::new())
-            } else {
-                wait_for_connections(args.differential_address, args.timely_connections)?
-            };
-        let event_receivers = make_streams(args.workers.get(), differential_connections)?;
-
-        let elapsed = start_time.elapsed();
-        println!(
-            "Connected to {} Differential trace{} in {:#?}",
-            args.timely_connections,
-            if args.timely_connections.get() == 1 {
-                ""
-            } else {
-                "s"
-            },
-            elapsed,
-        );
-
-        Some(event_receivers)
+            args.workers,
+            args.replay_logs.as_deref(),
+            "differential.ddshow",
+            "Differential",
+        )?)
     } else {
         None
     };
@@ -162,16 +82,8 @@ fn main() -> Result<()> {
     let (replay_shutdown, moved_args, moved_workers_finished) =
         (running.clone(), args.clone(), workers_finished.clone());
 
-    let (node_sender, node_receiver) = crossbeam_channel::unbounded();
-    let (edge_sender, edge_receiver) = crossbeam_channel::unbounded();
-    let (subgraph_sender, subgraph_receiver) = crossbeam_channel::unbounded();
-    let (stats_sender, stats_receiver) = crossbeam_channel::unbounded();
-    let (agg_stats_sender, agg_stats_receiver) = crossbeam_channel::unbounded();
-    let (timeline_sender, timeline_receiver) = crossbeam_channel::unbounded();
-    let (program_stats_sender, program_stats_receiver) = crossbeam_channel::unbounded();
-    let (worker_stats_sender, worker_stats_receiver) = crossbeam_channel::unbounded();
-    let (name_lookup_sender, name_lookup_receiver) = crossbeam_channel::unbounded();
-    let (addr_lookup_sender, addr_lookup_receiver) = crossbeam_channel::unbounded();
+    // Create the *many* channels used for extracting data from the dataflow
+    let (senders, receivers) = DataflowSenders::create();
 
     tracing::info!("starting compute dataflow");
 
@@ -197,29 +109,16 @@ fn main() -> Result<()> {
         }
 
         // Distribute the tcp streams across workers, converting each of them into an event reader
-        let timely_traces = event_receivers[worker.index()]
+        let timely_traces = timely_event_receivers[worker.index()]
             .clone()
             .recv()
             .expect("failed to receive timely event traces");
 
-        let differential_traces = differential_receivers.as_ref().map(|recv| {
+        let differential_traces = differential_event_receivers.as_ref().map(|recv| {
             recv[worker.index()]
                 .recv()
                 .expect("failed to receive differential event traces")
         });
-
-        let senders = DataflowSenders::new(
-            node_sender.clone(),
-            edge_sender.clone(),
-            subgraph_sender.clone(),
-            stats_sender.clone(),
-            agg_stats_sender.clone(),
-            timeline_sender.clone(),
-            program_stats_sender.clone(),
-            worker_stats_sender.clone(),
-            name_lookup_sender.clone(),
-            addr_lookup_sender.clone(),
-        );
 
         let dataflow_id = worker.next_dataflow_index();
         let probe = worker.dataflow_named(dataflow_name, |scope| {
@@ -260,12 +159,15 @@ fn main() -> Result<()> {
 
             let differential_stream = differential_traces.map(|traces| {
                 match traces {
-                    ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
-                        "Differential Replay",
-                        scope,
-                        replay_shutdown.clone(),
-                        fuel,
-                    ),
+                    ReplaySource::Rkyv(_rkyv) => {
+                        // rkyv.replay_with_shutdown_into_named(
+                        //     "Differential Replay",
+                        //     scope,
+                        //     replay_shutdown.clone(),
+                        //     fuel,
+                        // )
+                        todo!("Differential disk replays are not yet implemented")
+                    }
 
                     ReplaySource::Abomonation(abomonation) => abomonation
                         .replay_with_shutdown_into_named(
@@ -284,7 +186,7 @@ fn main() -> Result<()> {
                 &*args,
                 &timely_stream,
                 differential_stream.as_ref(),
-                senders,
+                senders.clone(),
             )
         })?;
 
@@ -319,7 +221,7 @@ fn main() -> Result<()> {
     .map_err(|err| anyhow::anyhow!("failed to start up timely computation: {}", err))?;
 
     // Wait for the user's prompt
-    wait_for_input(&*running, &*workers_finished, worker_guards)?;
+    let data = wait_for_input(&*running, &*workers_finished, worker_guards, receivers)?;
 
     let mut report_file = if args.no_report_file {
         None
@@ -327,7 +229,7 @@ fn main() -> Result<()> {
         Some(File::create(&args.report_file).context("failed to create report file")?)
     };
 
-    let mut program_stats = CrossbeamExtractor::new(program_stats_receiver).extract_all();
+    let mut program_stats = data.program_stats;
     if let Some((report_file, stats)) = report_file
         .as_mut()
         .and_then(|file| program_stats.pop().map(|stats| (file, stats)))
@@ -336,13 +238,21 @@ fn main() -> Result<()> {
 
         table
             .load_preset(UTF8_FULL)
-            .set_content_arrangement(ContentArrangement::Dynamic)
             .set_header(vec!["Program Overview", ""])
             .add_row(vec![Cell::new("Workers"), Cell::new(stats.workers)])
             .add_row(vec![Cell::new("Dataflows"), Cell::new(stats.dataflows)])
             .add_row(vec![Cell::new("Operators"), Cell::new(stats.operators)])
             .add_row(vec![Cell::new("Subgraphs"), Cell::new(stats.subgraphs)])
-            .add_row(vec![Cell::new("Channels"), Cell::new(stats.channels)])
+            .add_row(vec![Cell::new("Channels"), Cell::new(stats.channels)]);
+
+        if args.differential_enabled {
+            table.add_row(vec![
+                Cell::new("Arrangements"),
+                Cell::new(stats.arrangements),
+            ]);
+        }
+
+        table
             .add_row(vec![Cell::new("Events"), Cell::new(stats.events)])
             .add_row(vec![
                 Cell::new("Total Runtime"),
@@ -352,36 +262,48 @@ fn main() -> Result<()> {
         writeln!(report_file, "{}\n", table).context("failed to write to report file")?;
     }
 
-    let mut worker_stats = CrossbeamExtractor::new(worker_stats_receiver).extract_all();
+    let mut worker_stats = data.worker_stats;
 
     if let Some(report_file) = report_file.as_mut() {
         let mut table = Table::new();
+
+        let mut headers = vec!["Worker", "Dataflows", "Operators", "Subgraphs", "Channels"];
+        if args.differential_enabled {
+            headers.push("Arrangements");
+        }
+        headers.extend(["Events", "Runtime"].iter());
+
         table
             .load_preset(UTF8_FULL)
-            .set_content_arrangement(ContentArrangement::Dynamic)
-            .set_header(vec![
-                "Worker",
-                "Dataflows",
-                "Operators",
-                "Subgraphs",
-                "Channels",
-                "Events",
-                "Runtime",
-            ]);
+            .set_constraints(
+                headers
+                    .iter()
+                    .map(|header| ColumnConstraint::MinWidth(header.len() as u16)),
+            )
+            .set_header(headers);
 
+        // Ensure that we received exactly one entry
         debug_assert_eq!(worker_stats.len(), 1);
         // Ensure the vector is sorted
         debug_assert!(worker_stats[0].windows(2).all(|x| x[0] <= x[1]));
+
         for (worker, stats) in worker_stats.remove(0) {
-            table.add_row(vec![
+            let mut row = vec![
                 Cell::new(format!("Worker {}", worker.into_inner())),
                 Cell::new(stats.dataflows),
                 Cell::new(stats.operators),
                 Cell::new(stats.subgraphs),
                 Cell::new(stats.channels),
+            ];
+            if args.differential_enabled {
+                row.push(Cell::new(stats.arrangements));
+            }
+            row.extend(vec![
                 Cell::new(stats.events),
                 Cell::new(format!("{:#?}", stats.runtime)),
             ]);
+
+            table.add_row(row);
         }
 
         writeln!(report_file, "Per-Worker Statistics\n{}\n", table)
@@ -391,11 +313,11 @@ fn main() -> Result<()> {
     // Extract the data from timely
     let mut subgraph_ids = Vec::new();
 
-    let mut node_events = CrossbeamExtractor::new(node_receiver).extract_all();
+    let mut node_events = data.nodes;
     node_events.sort_unstable_by_key(|(addr, _)| addr.clone());
     tracing::info!("finished extracting {} node events", node_events.len());
 
-    let mut subgraph_events = CrossbeamExtractor::new(subgraph_receiver).extract_all();
+    let mut subgraph_events = data.subgraphs;
     subgraph_events.sort_unstable_by_key(|(addr, _)| addr.clone());
     tracing::info!(
         "finished extracting {} subgraph events",
@@ -403,23 +325,17 @@ fn main() -> Result<()> {
     );
 
     let name_lookup: HashMap<(WorkerId, OperatorId), String> =
-        CrossbeamExtractor::new(name_lookup_receiver)
-            .extract_all()
-            .into_iter()
-            .collect();
+        data.name_lookup.into_iter().collect();
 
     let addr_lookup: HashMap<(WorkerId, OperatorId), OperatorAddr> =
-        CrossbeamExtractor::new(addr_lookup_receiver)
-            .extract_all()
-            .into_iter()
-            .collect();
+        data.addr_lookup.into_iter().collect();
 
     for &((worker, ref _addr), ref event) in subgraph_events.iter() {
         subgraph_ids.push((worker, event.id));
     }
 
     let (mut operator_stats, mut raw_timings) = (HashMap::new(), Vec::new());
-    let stats_events = CrossbeamExtractor::new(stats_receiver).extract_all();
+    let stats_events = data.operator_stats;
     tracing::info!("finished extracting {} stats events", stats_events.len());
 
     for (operator, stats) in stats_events.clone() {
@@ -432,14 +348,13 @@ fn main() -> Result<()> {
 
     if let Some(report_file) = report_file.as_mut() {
         // TODO: Sort within timely
-        let mut operators_by_total_runtime =
-            CrossbeamExtractor::new(agg_stats_receiver).extract_all();
+        let mut operators_by_total_runtime = data.aggregated_operator_stats;
         operators_by_total_runtime.sort_by_key(|(_operator, stats)| Reverse(stats.total));
 
         let mut table = Table::new();
         table.load_preset(UTF8_FULL);
 
-        let headers = vec![
+        let mut headers = vec![
             "Name",
             "Id",
             "Address",
@@ -448,10 +363,18 @@ fn main() -> Result<()> {
             "Average Activation Time",
             "Max Activation Time",
             "Min Activation Time",
-            "Max Arrangement Size",
-            "Min Arrangement Size",
-            "Arrangement Batches",
         ];
+        if args.differential_enabled {
+            headers.extend(
+                [
+                    "Max Arrangement Size",
+                    "Min Arrangement Size",
+                    "Arrangement Batches",
+                ]
+                .iter(),
+            );
+        }
+
         table
             .set_constraints(
                 headers
@@ -483,12 +406,7 @@ fn main() -> Result<()> {
                 )
             });
 
-            let (max_arrange, min_arrange, arrange_batches) = arrange
-                .as_ref()
-                .map(|(max, min, batches)| (&**max, &**min, &**batches))
-                .unwrap_or(("", "", ""));
-
-            table.add_row(vec![
+            let mut row = vec![
                 Cell::new(name),
                 Cell::new(operator),
                 Cell::new(addr),
@@ -497,10 +415,12 @@ fn main() -> Result<()> {
                 Cell::new(format!("{:#?}", stats.average)),
                 Cell::new(format!("{:#?}", stats.max)),
                 Cell::new(format!("{:#?}", stats.min)),
-                Cell::new(max_arrange),
-                Cell::new(min_arrange),
-                Cell::new(arrange_batches),
-            ]);
+            ];
+            if let Some((max, min, batches)) = arrange {
+                row.extend(vec![Cell::new(max), Cell::new(min), Cell::new(batches)]);
+            }
+
+            table.add_row(row);
         }
 
         writeln!(
@@ -569,7 +489,7 @@ fn main() -> Result<()> {
         .context("failed to write to report file")?;
     }
 
-    let mut edge_events = CrossbeamExtractor::new(edge_receiver).extract_all();
+    let mut edge_events = data.edges;
     edge_events.sort_unstable_by_key(|(worker, _, channel, _)| (*worker, channel.channel_id()));
     tracing::info!("finished extracting {} edge events", edge_events.len());
 
@@ -578,28 +498,9 @@ fn main() -> Result<()> {
         raw_timings.iter().min().copied().unwrap_or_default(),
     );
 
-    let mut timeline_events = HashMap::new();
-    for (_time, data) in CrossbeamExtractor::new(timeline_receiver).extract() {
-        for (event, start_time, diff) in data {
-            timeline_events.entry(event).or_insert((start_time, 0)).1 += diff;
-        }
-    }
-
-    let mut timeline_events: Vec<_> = timeline_events
-        .into_iter()
-        .filter_map(|(event, (start_time, diff))| {
-            if diff >= 1 {
-                Some(WorkerTimelineEvent {
-                    start_time: start_time.as_nanos() as u64,
-                    ..event
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-
+    let mut timeline_events = data.timeline_events;
     timeline_events.sort_unstable_by_key(|event| (event.worker, event.start_time));
+
     tracing::info!(
         "finished extracting {} timeline events",
         timeline_events.len(),

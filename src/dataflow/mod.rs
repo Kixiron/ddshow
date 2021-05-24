@@ -5,6 +5,7 @@ pub mod operators;
 mod program_stats;
 #[cfg(feature = "timely-next")]
 mod reachability;
+mod send_recv;
 mod subgraphs;
 mod summation;
 mod tests;
@@ -12,6 +13,7 @@ mod types;
 mod worker_timeline;
 
 pub use operator_stats::OperatorStats;
+pub use send_recv::{DataflowData, DataflowExtractor, DataflowReceivers, DataflowSenders};
 pub use types::{ChannelId, OperatesEvent, OperatorAddr, OperatorId, PortId, WorkerId};
 pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 
@@ -25,10 +27,10 @@ use crate::{
             CrossbeamPusher, FilterMap, JoinArranged, Multiply, RkyvChannelsEvent, RkyvEventWriter,
             SortBy,
         },
+        send_recv::ChannelAddrs,
         subgraphs::rewire_channels,
         worker_timeline::worker_timeline,
     },
-    ui::{ProgramStats, WorkerStats},
 };
 use abomonation_derive::Abomonation;
 use anyhow::{Context, Result};
@@ -39,10 +41,9 @@ use differential_dataflow::{
     lattice::Lattice,
     logging::DifferentialEvent,
     operators::{
-        arrange::{ArrangeByKey, ArrangeBySelf, Arranged, TraceAgent},
+        arrange::{ArrangeByKey, ArrangeBySelf},
         Consolidate, Join, Reduce, ThresholdTotal,
     },
-    trace::implementations::ord::OrdKeySpine,
     Collection, ExchangeData, Hashable,
 };
 #[cfg(feature = "timely-next")]
@@ -61,7 +62,7 @@ use timely::{
             probe::Handle as ProbeHandle,
             Exchange, Map, Probe,
         },
-        Scope, ScopeParent, Stream,
+        Scope, Stream,
     },
     order::TotalOrder,
 };
@@ -95,89 +96,14 @@ fn granulate(&time: &Duration) -> Duration {
     minted
 }
 
-pub type TimelyLogBundle<Id = WorkerId> = (Duration, Id, RkyvTimelyEvent);
-pub type DifferentialLogBundle<Id = WorkerId> = (Duration, Id, DifferentialEvent);
+pub type TimelyLogBundle<Id = WorkerId> = (Time, Id, RkyvTimelyEvent);
+pub type DifferentialLogBundle<Id = WorkerId> = (Time, Id, DifferentialEvent);
 
 #[cfg(feature = "timely-next")]
-type ReachabilityLogBundle = (Duration, WorkerId, TrackerEvent);
+type ReachabilityLogBundle = (Time, WorkerId, TrackerEvent);
+
 type Diff = isize;
-
-pub type NodeBundle = (
-    ((WorkerId, OperatorAddr), RkyvOperatesEvent),
-    Duration,
-    Diff,
-);
-pub type EdgeBundle = (
-    (
-        WorkerId,
-        RkyvOperatesEvent,
-        Channel,
-        RkyvOperatesEvent,
-        // Option<ChannelMessageStats>,
-    ),
-    Duration,
-    Diff,
-);
-pub type SubgraphBundle = (
-    ((WorkerId, OperatorAddr), RkyvOperatesEvent),
-    Duration,
-    Diff,
-);
-pub type StatsBundle = (((WorkerId, OperatorId), OperatorStats), Duration, Diff);
-pub type AggStatsBundle = ((OperatorId, OperatorStats), Duration, Diff);
-pub type TimelineBundle = (WorkerTimelineEvent, Duration, Diff);
-pub type ProgramStatsBundle = (ProgramStats, Duration, Diff);
-pub type WorkerStatsBundle = (Vec<(WorkerId, WorkerStats)>, Duration, Diff);
-pub type NameLookupBundle = (((WorkerId, OperatorId), String), Duration, Diff);
-pub type AddrLookupBundle = (((WorkerId, OperatorId), OperatorAddr), Duration, Diff);
-
-type ChannelAddrs<S, D> = Arranged<
-    S,
-    TraceAgent<OrdKeySpine<(WorkerId, OperatorAddr), <S as ScopeParent>::Timestamp, D>>,
->;
-
-#[derive(Clone)]
-pub struct DataflowSenders {
-    pub node_sender: Sender<Event<Duration, NodeBundle>>,
-    pub edge_sender: Sender<Event<Duration, EdgeBundle>>,
-    pub subgraph_sender: Sender<Event<Duration, SubgraphBundle>>,
-    pub stats_sender: Sender<Event<Duration, StatsBundle>>,
-    pub aggregated_stats_sender: Sender<Event<Duration, AggStatsBundle>>,
-    pub timeline_sender: Sender<Event<Duration, TimelineBundle>>,
-    pub program_stats: Sender<Event<Duration, ProgramStatsBundle>>,
-    pub worker_stats: Sender<Event<Duration, WorkerStatsBundle>>,
-    pub name_lookup: Sender<Event<Duration, NameLookupBundle>>,
-    pub addr_lookup: Sender<Event<Duration, AddrLookupBundle>>,
-}
-
-impl DataflowSenders {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        node_sender: Sender<Event<Duration, NodeBundle>>,
-        edge_sender: Sender<Event<Duration, EdgeBundle>>,
-        subgraph_sender: Sender<Event<Duration, SubgraphBundle>>,
-        stats_sender: Sender<Event<Duration, StatsBundle>>,
-        aggregated_stats_sender: Sender<Event<Duration, AggStatsBundle>>,
-        timeline_sender: Sender<Event<Duration, TimelineBundle>>,
-        program_stats: Sender<Event<Duration, ProgramStatsBundle>>,
-        worker_stats: Sender<Event<Duration, WorkerStatsBundle>>,
-        name_lookup: Sender<Event<Duration, NameLookupBundle>>,
-        addr_lookup: Sender<Event<Duration, AddrLookupBundle>>,
-    ) -> Self {
-        Self {
-            node_sender,
-            edge_sender,
-            subgraph_sender,
-            stats_sender,
-            aggregated_stats_sender,
-            timeline_sender,
-            program_stats,
-            worker_stats,
-            name_lookup,
-            addr_lookup,
-        }
-    }
-}
+type Time = Duration;
 
 pub fn dataflow<S>(
     scope: &mut S,
@@ -185,9 +111,9 @@ pub fn dataflow<S>(
     timely_stream: &Stream<S, TimelyLogBundle>,
     differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
     senders: DataflowSenders,
-) -> Result<ProbeHandle<Duration>>
+) -> Result<ProbeHandle<Time>>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
 {
     let mut probe = ProbeHandle::new();
 
@@ -359,21 +285,21 @@ where
     channel_sink(
         &addressed_operators.semijoin(&leaves),
         &mut probe,
-        senders.node_sender,
+        senders.nodes,
     );
     channel_sink(
         &addressed_operators.semijoin(&subgraphs),
         &mut probe,
-        senders.subgraph_sender,
+        senders.subgraphs,
     );
-    channel_sink(&edges, &mut probe, senders.edge_sender);
-    channel_sink(&operator_stats, &mut probe, senders.stats_sender);
+    channel_sink(&edges, &mut probe, senders.edges);
+    channel_sink(&operator_stats, &mut probe, senders.operator_stats);
     channel_sink(
         &cross_aggregated_operator_stats,
         &mut probe,
-        senders.aggregated_stats_sender,
+        senders.aggregated_operator_stats,
     );
-    channel_sink(&worker_timeline, &mut probe, senders.timeline_sender);
+    channel_sink(&worker_timeline, &mut probe, senders.timeline_events);
 
     // TODO: Save ddflow logs
     // If saving logs is enabled, write all log messages to the `save_logs` directory
@@ -408,7 +334,7 @@ fn operator_creations<S>(
     log_stream: &Stream<S, TimelyLogBundle>,
 ) -> Collection<S, (WorkerId, RkyvOperatesEvent), Diff>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
 {
     log_stream
         .flat_map(|(time, worker, event)| {
@@ -425,7 +351,7 @@ fn channel_creations<S>(
     log_stream: &Stream<S, TimelyLogBundle>,
 ) -> Collection<S, (WorkerId, RkyvChannelsEvent), Diff>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
 {
     log_stream
         .flat_map(|(time, worker, event)| {

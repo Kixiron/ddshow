@@ -1,19 +1,37 @@
-use crate::dataflow::operators::EventReader;
+use crate::dataflow::{
+    operators::{EventReader, Fuel, RkyvEventReader},
+    DataflowData, DataflowReceivers,
+};
 use abomonation::Abomonation;
 use anyhow::{Context, Result};
+use crossbeam_channel::Receiver;
 use std::{
+    fs::File,
     hint,
-    io::{self, Read, Write},
+    io::{self, stdout, BufReader, Read, Write},
+    iter,
     net::{SocketAddr, TcpListener, TcpStream},
     num::NonZeroUsize,
+    path::Path,
     sync::{
         atomic::{self, AtomicBool, AtomicUsize, Ordering},
         Arc, Barrier,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use timely::{communication::WorkerGuards, dataflow::operators::capture::Event};
+
+/// The read timeout to impose on tcp connections
+const TCP_READ_TIMEOUT: Option<Duration> = Some(Duration::from_millis(200));
+
+/// The fuel used to extract data from the dataflow within the
+/// main thread's spin loop
+// Safety: 1,000,000 isn't zero
+const IDLE_EXTRACTION_FUEL: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1_000_000) };
+
+type AcquiredStreams<T, D1, D2> =
+    Result<EventReceivers<RkyvEventReader<T, D1, BufReader<File>>, EventReader<T, D2, TcpStream>>>;
 
 #[derive(Debug)]
 pub enum ReplaySource<R, A> {
@@ -21,8 +39,115 @@ pub enum ReplaySource<R, A> {
     Abomonation(Vec<A>),
 }
 
-/// The read timeout to impose on tcp connections
-const TCP_READ_TIMEOUT: Option<Duration> = Some(Duration::from_millis(200));
+/// Connect to and prepare the replay sources
+#[tracing::instrument]
+pub fn acquire_replay_sources<T, D1, D2>(
+    address: SocketAddr,
+    connections: NonZeroUsize,
+    workers: NonZeroUsize,
+    log_dir: Option<&Path>,
+    file_name: &str,
+    target: &str,
+) -> AcquiredStreams<T, D1, D2>
+where
+    Event<T, D2>: Clone,
+    T: Abomonation + Send + 'static,
+    D2: Abomonation + Send + 'static,
+{
+    let start_time = Instant::now();
+    let plural = if connections.get() == 1 { "" } else { "s" };
+
+    if let Some(log_dir) = log_dir {
+        let replay_file = log_dir.join(file_name);
+
+        tracing::info!("loading {} replay from {}", target, replay_file.display(),);
+        print!(
+            "Loading {} replay from {}... ",
+            target,
+            replay_file.display(),
+        );
+    } else {
+        tracing::info!(
+            "started waiting for {} {} connections on {}",
+            connections,
+            target,
+            address,
+        );
+
+        print!(
+            "Waiting for {} {} connection{} on {}... ",
+            connections, target, plural, address,
+        );
+    }
+    stdout().flush().context("failed to flush stdout")?;
+
+    let replay_sources = if let Some(log_dir) = log_dir {
+        let timely_file = File::open(log_dir.join(file_name)).with_context(|| {
+            format!("failed to open {} log file within replay directory", target)
+        })?;
+
+        ReplaySource::Rkyv(vec![RkyvEventReader::new(BufReader::new(timely_file))])
+    } else {
+        wait_for_connections(address, connections)?
+    };
+
+    let event_receivers = make_streams(workers.get(), replay_sources)?;
+
+    let elapsed = start_time.elapsed();
+    if log_dir.is_none() {
+        println!(
+            "Connected to {} {} trace{} in {:#?}",
+            connections, target, plural, elapsed,
+        );
+    } else {
+        println!("done!");
+    }
+
+    Ok(event_receivers)
+}
+
+pub type EventReceivers<R, A> = Arc<[Receiver<ReplaySource<R, A>>]>;
+
+pub fn make_streams<R, A>(
+    num_workers: usize,
+    sources: ReplaySource<R, A>,
+) -> Result<EventReceivers<R, A>> {
+    let readers: Vec<_> = match sources {
+        ReplaySource::Rkyv(rkyv) => {
+            let mut readers = Vec::with_capacity(num_workers);
+            readers.extend(iter::repeat_with(Vec::new).take(num_workers));
+
+            for (idx, source) in rkyv.into_iter().enumerate() {
+                readers[idx % num_workers].push(source);
+            }
+
+            readers.into_iter().map(ReplaySource::Rkyv).collect()
+        }
+
+        ReplaySource::Abomonation(abomonation) => {
+            let mut readers = Vec::with_capacity(num_workers);
+            readers.extend(iter::repeat_with(Vec::new).take(num_workers));
+
+            for (idx, source) in abomonation.into_iter().enumerate() {
+                readers[idx % num_workers].push(source);
+            }
+
+            readers.into_iter().map(ReplaySource::Abomonation).collect()
+        }
+    };
+
+    let (senders, receivers): (Vec<_>, Vec<_>) = (0..num_workers)
+        .map(|_| crossbeam_channel::bounded(1))
+        .unzip();
+
+    for (sender, bundle) in senders.into_iter().zip(readers) {
+        sender
+            .send(bundle)
+            .map_err(|_| anyhow::anyhow!("failed to send events to worker"))?;
+    }
+
+    Ok(Arc::from(receivers))
+}
 
 /// Connect to the given address and collect `connections` streams, returning all of them
 /// in non-blocking mode
@@ -55,7 +180,14 @@ where
                 );
             };
 
+            tracing::info!(
+                socket = ?socket,
+                "connected to socket {}/{}",
+                i + 1,
+                connections,
+            );
             println!("Connected to socket {}/{}", i + 1, connections);
+
             Ok(EventReader::new(socket))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -71,7 +203,8 @@ pub fn wait_for_input(
     running: &AtomicBool,
     workers_finished: &AtomicUsize,
     worker_guards: WorkerGuards<Result<()>>,
-) -> Result<()> {
+    receivers: DataflowReceivers,
+) -> Result<DataflowData> {
     let (mut stdin, mut stdout) = (io::stdin(), io::stdout());
 
     let (send, recv) = crossbeam_channel::bounded(1);
@@ -96,25 +229,59 @@ pub fn wait_for_input(
     .context("failed to write termination message to stdout")?;
     stdout.flush().context("failed to flush stdout")?;
 
+    // Sync up with the user input thread
     barrier.wait();
+
+    let (mut fuel, mut extractor) = (
+        Fuel::limited(IDLE_EXTRACTION_FUEL),
+        receivers.into_extractor(),
+    );
     let num_threads = worker_guards.guards().len();
 
     loop {
         hint::spin_loop();
 
-        if workers_finished.load(Ordering::Acquire) == worker_guards.guards().len()
-            || !running.load(Ordering::Acquire)
-            || recv.recv_timeout(Duration::from_millis(500)).is_ok()
-        {
+        // If all workers finish their computations
+        if workers_finished.load(Ordering::Acquire) == num_threads {
             tracing::info!(
                 num_threads = num_threads,
-                workers_finished = workers_finished.load(Ordering::Acquire),
+                workers_finished = num_threads,
                 running = running.load(Ordering::Acquire),
-                "main thread got shutdown signal",
+                "main thread got shutdown signal, all workers finished",
             );
 
             break;
         }
+
+        // If an error is encountered and the dataflow shut down
+        if !running.load(Ordering::Acquire) {
+            tracing::info!(
+                num_threads = num_threads,
+                workers_finished = workers_finished.load(Ordering::Acquire),
+                running = false,
+                "main thread got shutdown signal, `running` was set to false",
+            );
+
+            break;
+        }
+
+        // If the user shuts down the dataflow
+        if recv.recv_timeout(Duration::from_millis(500)).is_ok() {
+            tracing::info!(
+                num_threads = num_threads,
+                workers_finished = workers_finished.load(Ordering::Acquire),
+                running = running.load(Ordering::Acquire),
+                "main thread got shutdown signal, received input from user",
+            );
+
+            break;
+        }
+
+        // After we've checked all of our exit conditions we can pull some
+        // data from out of the target dataflow
+        extractor.extract_with_fuel(&mut fuel);
+
+        fuel.reset();
     }
 
     // Terminate the replay
@@ -124,15 +291,19 @@ pub fn wait_for_input(
     write!(stdout, " done!\nProcessing data...").context("failed to write to stdout")?;
     stdout.flush().context("failed to flush stdout")?;
 
+    tracing::debug!("unparking all worker threads");
     for thread in worker_guards.guards() {
         thread.thread().unpark();
     }
 
     // Join all timely worker threads
+    tracing::debug!("joining all worker threads");
     for result in worker_guards.join() {
         result
             .map_err(|err| anyhow::anyhow!("failed to join timely worker threads: {}", err))??;
     }
 
-    Ok(())
+    let data = extractor.extract_all();
+
+    Ok(data)
 }

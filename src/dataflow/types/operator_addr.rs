@@ -1,3 +1,4 @@
+use crate::dataflow::types::PortId;
 use abomonation::Abomonation;
 use bytecheck::{CheckBytes, StructCheckError};
 use rkyv::{
@@ -15,8 +16,6 @@ use std::{
     ptr, slice,
 };
 use tinyvec::{ArrayVec, TinyVec};
-
-use crate::dataflow::PortId;
 
 // TODO: Change this to use `OperatorId` instead of `usize
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]

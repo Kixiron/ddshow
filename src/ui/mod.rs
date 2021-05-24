@@ -125,6 +125,7 @@ pub struct DDShowStats {
 //  - # operators
 //  - # subgraphs
 //  - # channels
+//  - # arrangements
 //  - # events
 //  - # missing nodes
 //  - # missing edges
@@ -152,6 +153,7 @@ pub struct ProgramStats {
     pub operators: usize,
     pub subgraphs: usize,
     pub channels: usize,
+    pub arrangements: usize,
     pub events: usize,
     pub runtime: Duration,
     // TODO: Missing nodes & edges
@@ -165,6 +167,7 @@ pub struct ProgramStats {
 //  - # subgraphs
 //  - # channels
 //  - # events
+//  - # arrangements
 //  - # missing nodes
 //  - # missing edges
 //  - list of dataflow addresses
@@ -191,6 +194,7 @@ pub struct WorkerStats {
     pub operators: usize,
     pub subgraphs: usize,
     pub channels: usize,
+    pub arrangements: usize,
     pub events: usize,
     pub runtime: Duration,
     pub dataflow_addrs: Vec<OperatorAddr>,

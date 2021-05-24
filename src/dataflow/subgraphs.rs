@@ -1,6 +1,7 @@
 use crate::dataflow::{
     operators::{JoinArranged, RkyvChannelsEvent},
-    Channel, ChannelAddrs, FilterMap, Multiply, OperatorAddr, OperatorId, PortId, WorkerId,
+    send_recv::ChannelAddrs,
+    Channel, FilterMap, Multiply, OperatorAddr, OperatorId, PortId, WorkerId,
 };
 use differential_dataflow::{
     difference::Abelian,
