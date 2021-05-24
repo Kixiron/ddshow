@@ -24,6 +24,7 @@ comfy-table = "2.1.0"
 crossbeam-channel = "0.5.0"
 abomonation_derive = "0.5.0"
 tracing-subscriber = "0.2.16"
+strum = { version = "0.20.0", features = ["derive"] }
 serde = { version = "1.0.123", features = ["derive"] }
 tinyvec = { version = "1.2.0", features = ["alloc", "serde"] }
 

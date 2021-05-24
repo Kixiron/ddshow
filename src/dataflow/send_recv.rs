@@ -11,7 +11,8 @@ use differential_dataflow::{
     operators::arrange::{Arranged, TraceAgent},
     trace::implementations::ord::OrdKeySpine,
 };
-use std::{collections::HashMap, convert::identity};
+use std::{collections::HashMap, convert::identity, iter::Cycle};
+use strum::{EnumIter, IntoEnumIterator};
 use timely::dataflow::{operators::capture::Event, ScopeParent};
 
 pub(crate) type ChannelAddrs<S, D> = Arranged<
@@ -83,9 +84,16 @@ macro_rules! make_send_recv {
             }
         }
 
-        #[derive(Clone, Debug)]
+        const NUM_VARIANTS: usize = 0 $(+ {
+            #[allow(dead_code, non_upper_case_globals)]
+            const $name: () = ();
+            1
+        })*;
+
+        #[derive(Clone)]
         pub struct DataflowExtractor {
             $(pub $name: (Extractor<$ty>, HashMap<$ty, Diff>),)*
+            step: Cycle<DataflowStepIter>,
         }
 
         impl DataflowExtractor {
@@ -98,32 +106,35 @@ macro_rules! make_send_recv {
                         CrossbeamExtractor::new($name),
                         HashMap::with_capacity(DEFAULT_EXTRACTOR_CAPACITY),
                     ),)*
+                    step: DataflowStep::iter().cycle(),
                 }
             }
 
             /// Extract data from the current dataflow in a non-blocking manner
-            ///
-            /// Note that this unfairly prefers fields in the order of their declaration,
-            /// so the latter dataflows may have less to no data eagerly extracted from them
             #[inline(never)]
             pub fn extract_with_fuel(&mut self, fuel: &mut Fuel) {
-                $(
-                    if !fuel.is_exhausted() {
-                        let (extractor, sink) = &mut self.$name;
-
-                        extractor.extract_with_fuel(fuel, sink);
+                for step in self.step.by_ref().take(NUM_VARIANTS) {
+                    if fuel.is_exhausted() {
+                        break;
                     }
-                )*
+
+                    match step {
+                        $(
+                            DataflowStep::$name => {
+                                let (extractor, sink) = &mut self.$name;
+
+                                extractor.extract_with_fuel(fuel, sink);
+                            },
+                        )*
+                    }
+                }
             }
 
+            // TODO: Does this need to guard against never-disconnected channels?
             #[inline(never)]
             pub fn extract_all(mut self) -> DataflowData {
                 let mut fuel = Fuel::unlimited();
-                let mut extractor_status = Vec::with_capacity(0 $(+ {
-                    #[allow(dead_code, non_upper_case_globals)]
-                    const $name: () = ();
-                    1
-                })*);
+                let mut extractor_status = Vec::with_capacity(NUM_VARIANTS);
 
                 loop {
                     $(
@@ -167,6 +178,12 @@ macro_rules! make_send_recv {
                     $($name,)*
                 }
             }
+        }
+
+        #[derive(Debug, Clone, Copy, EnumIter)]
+        #[allow(non_camel_case_types)]
+        enum DataflowStep {
+            $($name,)*
         }
     };
 }

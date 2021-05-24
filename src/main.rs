@@ -2,6 +2,7 @@ mod args;
 mod colormap;
 mod dataflow;
 mod network;
+mod report;
 mod ui;
 
 use crate::{
@@ -11,20 +12,16 @@ use crate::{
         operators::{
             rkyv_capture::RkyvOperatesEvent, Fuel, InspectExt, ReplayWithShutdown, RkyvTimelyEvent,
         },
-        Channel, DataflowSenders, OperatorAddr, OperatorId, OperatorStats, WorkerId,
+        Channel, DataflowSenders, OperatorStats, WorkerId,
     },
     network::{acquire_replay_sources, wait_for_input, ReplaySource},
     ui::{ActivationDuration, EdgeKind},
 };
 use anyhow::{Context, Result};
-use comfy_table::{presets::UTF8_FULL, Cell, ColumnConstraint, ContentArrangement, Table};
 use differential_dataflow::logging::DifferentialEvent;
 use std::{
-    cmp::Reverse,
     collections::HashMap,
-    env,
-    fs::{self, File},
-    io::Write,
+    env, fs,
     net::TcpStream,
     num::NonZeroUsize,
     sync::{
@@ -223,92 +220,8 @@ fn main() -> Result<()> {
     // Wait for the user's prompt
     let data = wait_for_input(&*running, &*workers_finished, worker_guards, receivers)?;
 
-    let mut report_file = if args.no_report_file {
-        None
-    } else {
-        Some(File::create(&args.report_file).context("failed to create report file")?)
-    };
-
-    let mut program_stats = data.program_stats;
-    if let Some((report_file, stats)) = report_file
-        .as_mut()
-        .and_then(|file| program_stats.pop().map(|stats| (file, stats)))
-    {
-        let mut table = Table::new();
-
-        table
-            .load_preset(UTF8_FULL)
-            .set_header(vec!["Program Overview", ""])
-            .add_row(vec![Cell::new("Workers"), Cell::new(stats.workers)])
-            .add_row(vec![Cell::new("Dataflows"), Cell::new(stats.dataflows)])
-            .add_row(vec![Cell::new("Operators"), Cell::new(stats.operators)])
-            .add_row(vec![Cell::new("Subgraphs"), Cell::new(stats.subgraphs)])
-            .add_row(vec![Cell::new("Channels"), Cell::new(stats.channels)]);
-
-        if args.differential_enabled {
-            table.add_row(vec![
-                Cell::new("Arrangements"),
-                Cell::new(stats.arrangements),
-            ]);
-        }
-
-        table
-            .add_row(vec![Cell::new("Events"), Cell::new(stats.events)])
-            .add_row(vec![
-                Cell::new("Total Runtime"),
-                Cell::new(format!("{:#?}", stats.runtime)),
-            ]);
-
-        writeln!(report_file, "{}\n", table).context("failed to write to report file")?;
-    }
-
-    let mut worker_stats = data.worker_stats;
-
-    if let Some(report_file) = report_file.as_mut() {
-        let mut table = Table::new();
-
-        let mut headers = vec!["Worker", "Dataflows", "Operators", "Subgraphs", "Channels"];
-        if args.differential_enabled {
-            headers.push("Arrangements");
-        }
-        headers.extend(["Events", "Runtime"].iter());
-
-        table
-            .load_preset(UTF8_FULL)
-            .set_constraints(
-                headers
-                    .iter()
-                    .map(|header| ColumnConstraint::MinWidth(header.len() as u16)),
-            )
-            .set_header(headers);
-
-        // Ensure that we received exactly one entry
-        debug_assert_eq!(worker_stats.len(), 1);
-        // Ensure the vector is sorted
-        debug_assert!(worker_stats[0].windows(2).all(|x| x[0] <= x[1]));
-
-        for (worker, stats) in worker_stats.remove(0) {
-            let mut row = vec![
-                Cell::new(format!("Worker {}", worker.into_inner())),
-                Cell::new(stats.dataflows),
-                Cell::new(stats.operators),
-                Cell::new(stats.subgraphs),
-                Cell::new(stats.channels),
-            ];
-            if args.differential_enabled {
-                row.push(Cell::new(stats.arrangements));
-            }
-            row.extend(vec![
-                Cell::new(stats.events),
-                Cell::new(format!("{:#?}", stats.runtime)),
-            ]);
-
-            table.add_row(row);
-        }
-
-        writeln!(report_file, "Per-Worker Statistics\n{}\n", table)
-            .context("failed to write to report file")?;
-    }
+    // Build & emit the textual report
+    report::build_report(&*args, &data)?;
 
     // Extract the data from timely
     let mut subgraph_ids = Vec::new();
@@ -324,12 +237,6 @@ fn main() -> Result<()> {
         subgraph_events.len(),
     );
 
-    let name_lookup: HashMap<(WorkerId, OperatorId), String> =
-        data.name_lookup.into_iter().collect();
-
-    let addr_lookup: HashMap<(WorkerId, OperatorId), OperatorAddr> =
-        data.addr_lookup.into_iter().collect();
-
     for &((worker, ref _addr), ref event) in subgraph_events.iter() {
         subgraph_ids.push((worker, event.id));
     }
@@ -344,151 +251,6 @@ fn main() -> Result<()> {
         }
 
         operator_stats.insert(operator, stats);
-    }
-
-    if let Some(report_file) = report_file.as_mut() {
-        // TODO: Sort within timely
-        let mut operators_by_total_runtime = data.aggregated_operator_stats;
-        operators_by_total_runtime.sort_by_key(|(_operator, stats)| Reverse(stats.total));
-
-        let mut table = Table::new();
-        table.load_preset(UTF8_FULL);
-
-        let mut headers = vec![
-            "Name",
-            "Id",
-            "Address",
-            "Total Runtime",
-            "Activations",
-            "Average Activation Time",
-            "Max Activation Time",
-            "Min Activation Time",
-        ];
-        if args.differential_enabled {
-            headers.extend(
-                [
-                    "Max Arrangement Size",
-                    "Min Arrangement Size",
-                    "Arrangement Batches",
-                ]
-                .iter(),
-            );
-        }
-
-        table
-            .set_constraints(
-                headers
-                    .iter()
-                    .map(|header| ColumnConstraint::MinWidth(header.len() as u16)),
-            )
-            .set_header(headers);
-
-        for (operator, stats, addr, name) in operators_by_total_runtime
-            .iter()
-            .filter_map(|&(operator, ref stats)| {
-                addr_lookup
-                    .get(&(stats.worker, operator))
-                    .map(|addr| (operator, stats, addr))
-            })
-            .map(|(operator, stats, addr)| {
-                let name: Option<&str> = name_lookup
-                    .get(&(stats.worker, operator))
-                    .map(|name| &**name);
-
-                (operator, stats, addr, name.unwrap_or("N/A"))
-            })
-        {
-            let arrange = stats.arrangement_size.as_ref().map(|arrange| {
-                (
-                    format!("{}", arrange.max_size),
-                    format!("{}", arrange.min_size),
-                    format!("{}", arrange.batches),
-                )
-            });
-
-            let mut row = vec![
-                Cell::new(name),
-                Cell::new(operator),
-                Cell::new(addr),
-                Cell::new(format!("{:#?}", stats.total)),
-                Cell::new(stats.activations),
-                Cell::new(format!("{:#?}", stats.average)),
-                Cell::new(format!("{:#?}", stats.max)),
-                Cell::new(format!("{:#?}", stats.min)),
-            ];
-            if let Some((max, min, batches)) = arrange {
-                row.extend(vec![Cell::new(max), Cell::new(min), Cell::new(batches)]);
-            }
-
-            table.add_row(row);
-        }
-
-        writeln!(
-            report_file,
-            "Operators Ranked by Total Runtime\n{}\n",
-            table,
-        )
-        .context("failed to write to report file")?;
-
-        if args.differential_enabled {
-            let mut operators_by_arrangement_size: Vec<_> = operators_by_total_runtime
-                .into_iter()
-                .filter_map(|(operator, stats)| {
-                    stats
-                        .arrangement_size
-                        .map(|arrange| (operator, stats, arrange))
-                })
-                .collect();
-            operators_by_arrangement_size
-                .sort_unstable_by_key(|(_, _, arrange)| Reverse(arrange.max_size));
-
-            let mut table = Table::new();
-            table
-                .load_preset(UTF8_FULL)
-                .set_content_arrangement(ContentArrangement::Dynamic)
-                .set_header(vec![
-                    "Name",
-                    "Id",
-                    "Address",
-                    "Total Runtime",
-                    "Max Arrangement Size",
-                    "Min Arrangement Size",
-                    "Arrangement Batches",
-                ]);
-
-            for (operator, stats, arrange, addr, name) in operators_by_arrangement_size
-                .iter()
-                .filter_map(|&(operator, ref stats, arrange)| {
-                    addr_lookup
-                        .get(&(stats.worker, operator))
-                        .map(|addr| (operator, stats, arrange, addr))
-                })
-                .map(|(operator, stats, arrange, addr)| {
-                    let name: Option<&str> = name_lookup
-                        .get(&(stats.worker, operator))
-                        .map(|name| &**name);
-
-                    (operator, stats, arrange, addr, name.unwrap_or("N/A"))
-                })
-            {
-                table.add_row(vec![
-                    Cell::new(name),
-                    Cell::new(operator),
-                    Cell::new(addr),
-                    Cell::new(format!("{:#?}", stats.total)),
-                    Cell::new(arrange.max_size),
-                    Cell::new(arrange.min_size),
-                    Cell::new(arrange.batches),
-                ]);
-            }
-
-            writeln!(
-                report_file,
-                "Operators Ranked by Arrangement Size\n{}\n",
-                table,
-            )
-            .context("failed to write to report file")?;
-        }
     }
 
     let mut edge_events = data.edges;

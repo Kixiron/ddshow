@@ -302,6 +302,9 @@ where
     channel_sink(&worker_timeline, &mut probe, senders.timeline_events);
 
     // TODO: Save ddflow logs
+    // TODO: Probably want to prefix things with the current system time to allow
+    //       "appending" logs by simply running ddshow at a later time and replaying
+    //       log files in order of timestamp
     // If saving logs is enabled, write all log messages to the `save_logs` directory
     if let Some(save_logs) = args.save_logs.as_ref() {
         fs::create_dir_all(&save_logs).context("failed to create `--save-logs` directory")?;

@@ -66,6 +66,7 @@ where
             target,
             replay_file.display(),
         );
+        stdout().flush().context("failed to flush stdout")?;
     } else {
         tracing::info!(
             "started waiting for {} {} connections on {}",
@@ -74,12 +75,11 @@ where
             address,
         );
 
-        print!(
-            "Waiting for {} {} connection{} on {}... ",
+        println!(
+            "Waiting for {} {} connection{} on {}...",
             connections, target, plural, address,
         );
     }
-    stdout().flush().context("failed to flush stdout")?;
 
     let replay_sources = if let Some(log_dir) = log_dir {
         let timely_file = File::open(log_dir.join(file_name)).with_context(|| {
