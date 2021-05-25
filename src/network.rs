@@ -281,6 +281,13 @@ pub fn wait_for_input(
         // data from out of the target dataflow
         extractor.extract_with_fuel(&mut fuel);
 
+        tracing::debug!(
+            used = ?fuel.used(),
+            remaining = ?fuel.remaining(),
+            "spent {} fuel within the main thread's wait loop",
+            fuel.used().unwrap_or(usize::MAX),
+        );
+
         fuel.reset();
     }
 

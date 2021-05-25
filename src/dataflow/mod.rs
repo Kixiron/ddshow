@@ -305,6 +305,8 @@ where
     // TODO: Probably want to prefix things with the current system time to allow
     //       "appending" logs by simply running ddshow at a later time and replaying
     //       log files in order of timestamp
+    // TODO: For pause/resume profiling/debugging we'll probably need a custom log
+    //       hook within timely, we can make it serve us rkyv events while we're at it
     // If saving logs is enabled, write all log messages to the `save_logs` directory
     if let Some(save_logs) = args.save_logs.as_ref() {
         fs::create_dir_all(&save_logs).context("failed to create `--save-logs` directory")?;

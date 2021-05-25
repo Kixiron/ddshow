@@ -203,6 +203,22 @@ impl Fuel {
     pub fn reset(&mut self) {
         self.fuel = self.default;
     }
+
+    pub const fn remaining(&self) -> Option<usize> {
+        if let (Some(base), Some(current)) = (self.default, self.fuel) {
+            Some(base - current)
+        } else {
+            None
+        }
+    }
+
+    pub const fn used(&self) -> Option<usize> {
+        if let (Some(base), Some(current)) = (self.default, self.fuel) {
+            Some(base - (base - current))
+        } else {
+            None
+        }
+    }
 }
 
 /*
