@@ -21,6 +21,11 @@ pub fn build_report(args: &Args, data: &DataflowData) -> Result<()> {
             .ok()
             .and_then(|path| path.parent().map(ToOwned::to_owned))
         {
+            tracing::debug!(
+                "creating parent directory for the report file: {}",
+                parent.display(),
+            );
+
             if let Err(err) = fs::create_dir_all(&parent) {
                 tracing::error!(
                     parent = %parent.display(),
@@ -31,6 +36,7 @@ pub fn build_report(args: &Args, data: &DataflowData) -> Result<()> {
         }
 
         // Create the report file
+        tracing::debug!("creating report file: {}", args.report_file.display());
         let mut file = File::create(&args.report_file).context("failed to create report file")?;
 
         let name_lookup = data.name_lookup.iter().cloned().collect();
@@ -42,13 +48,19 @@ pub fn build_report(args: &Args, data: &DataflowData) -> Result<()> {
 
         if args.differential_enabled {
             arrangement_stats(data, &mut file, &name_lookup, &addr_lookup)?;
+        } else {
+            tracing::debug!("differential logging is disabled, skipping arrangement stats table");
         }
+    } else {
+        tracing::debug!("report files are disabled, skipping generation");
     }
 
     Ok(())
 }
 
 fn program_overview(args: &Args, data: &DataflowData, file: &mut File) -> Result<()> {
+    tracing::debug!("generating program overview table");
+
     if let Some(stats) = data.program_stats.last() {
         let mut table = Table::new();
 
@@ -83,6 +95,8 @@ fn program_overview(args: &Args, data: &DataflowData, file: &mut File) -> Result
 }
 
 fn worker_stats(args: &Args, data: &DataflowData, file: &mut File) -> Result<()> {
+    tracing::debug!("generating worker stats table");
+
     let mut table = Table::new();
     let worker_stats = &data.worker_stats;
 
@@ -133,6 +147,8 @@ fn operator_stats(
     name_lookup: &HashMap<(WorkerId, OperatorId), String>,
     addr_lookup: &HashMap<(WorkerId, OperatorId), OperatorAddr>,
 ) -> Result<()> {
+    tracing::debug!("generating operator stats table");
+
     // TODO: Sort within timely
     let mut operators_by_total_runtime = data.aggregated_operator_stats.clone();
     operators_by_total_runtime.sort_by_key(|(_operator, stats)| Reverse(stats.total));
@@ -215,6 +231,8 @@ fn arrangement_stats(
     name_lookup: &HashMap<(WorkerId, OperatorId), String>,
     addr_lookup: &HashMap<(WorkerId, OperatorId), OperatorAddr>,
 ) -> Result<()> {
+    tracing::debug!("generating arrangement stats table");
+
     let mut operators_by_arrangement_size: Vec<_> = data
         .aggregated_operator_stats
         .iter()

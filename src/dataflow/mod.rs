@@ -277,7 +277,7 @@ where
     channel_sink(
         &worker_stats
             .map(|(worker, stats)| ((), (worker, stats)))
-            .sort_by(|&(worker, _)| worker)
+            .hierarchical_sort_by(|&(worker, _)| worker)
             .map(|((), sorted_stats)| sorted_stats),
         &mut probe,
         senders.worker_stats,
@@ -311,7 +311,7 @@ where
     if let Some(save_logs) = args.save_logs.as_ref() {
         fs::create_dir_all(&save_logs).context("failed to create `--save-logs` directory")?;
 
-        let file_name = if scope.index() == 0 {
+        let file = save_logs.join(if scope.index() == 0 {
             "timely.ddshow"
 
         // Make other workers pipe to a null output
@@ -319,11 +319,16 @@ where
             "nul"
         } else {
             "/dev/null"
-        };
+        });
+
+        tracing::debug!(
+            "installing file sink to {} on worker {}",
+            file.display(),
+            scope.index(),
+        );
 
         let timely_file = BufWriter::new(
-            File::create(save_logs.join(file_name))
-                .context("failed to create `--save-logs` timely file")?,
+            File::create(file).context("failed to create `--save-logs` timely file")?,
         );
 
         timely_stream

@@ -218,7 +218,13 @@ fn main() -> Result<()> {
     .map_err(|err| anyhow::anyhow!("failed to start up timely computation: {}", err))?;
 
     // Wait for the user's prompt
-    let data = wait_for_input(&*running, &*workers_finished, worker_guards, receivers)?;
+    let data = wait_for_input(
+        &*args,
+        &*running,
+        &*workers_finished,
+        worker_guards,
+        receivers,
+    )?;
 
     // Build & emit the textual report
     report::build_report(&*args, &data)?;
@@ -228,11 +234,11 @@ fn main() -> Result<()> {
 
     let mut node_events = data.nodes;
     node_events.sort_unstable_by_key(|(addr, _)| addr.clone());
-    tracing::info!("finished extracting {} node events", node_events.len());
+    tracing::debug!("finished extracting {} node events", node_events.len());
 
     let mut subgraph_events = data.subgraphs;
     subgraph_events.sort_unstable_by_key(|(addr, _)| addr.clone());
-    tracing::info!(
+    tracing::debug!(
         "finished extracting {} subgraph events",
         subgraph_events.len(),
     );
@@ -243,7 +249,7 @@ fn main() -> Result<()> {
 
     let (mut operator_stats, mut raw_timings) = (HashMap::new(), Vec::new());
     let stats_events = data.operator_stats;
-    tracing::info!("finished extracting {} stats events", stats_events.len());
+    tracing::debug!("finished extracting {} stats events", stats_events.len());
 
     for (operator, stats) in stats_events.clone() {
         if !subgraph_ids.contains(&operator) {
@@ -255,7 +261,7 @@ fn main() -> Result<()> {
 
     let mut edge_events = data.edges;
     edge_events.sort_unstable_by_key(|(worker, _, channel, _)| (*worker, channel.channel_id()));
-    tracing::info!("finished extracting {} edge events", edge_events.len());
+    tracing::debug!("finished extracting {} edge events", edge_events.len());
 
     let (max_time, min_time) = (
         raw_timings.iter().max().copied().unwrap_or_default(),
@@ -265,7 +271,7 @@ fn main() -> Result<()> {
     let mut timeline_events = data.timeline_events;
     timeline_events.sort_unstable_by_key(|event| (event.worker, event.start_time));
 
-    tracing::info!(
+    tracing::debug!(
         "finished extracting {} timeline events",
         timeline_events.len(),
     );

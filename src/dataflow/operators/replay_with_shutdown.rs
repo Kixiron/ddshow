@@ -223,6 +223,11 @@ where
 
         builder.build(move |progress| {
             if !started {
+                tracing::debug!(
+                    "acquired {} capabilities from within `.replay_with_shutdown_into_core()`",
+                    event_streams.len() - 1,
+                );
+
                 // The first thing we do is modify our capabilities to match the number of streams we manage.
                 // This should be a simple change of `self.event_streams.len() - 1`. We only do this once, as
                 // our very first action.
@@ -309,9 +314,18 @@ where
             // flush our outputs and release all outstanding capabilities so that
             // any downstream consumers know we're done
             } else {
+                let reason = if all_streams_finished {
+                    "all streams have finished"
+                } else {
+                    "is_running was set to false"
+                };
+
                 tracing::info!(
                     worker = worker_index,
-                    "received shutdown signal within event replay",
+                    is_running = is_running.load(Ordering::Acquire),
+                    all_streams_finished = all_streams_finished,
+                    "received shutdown signal within event replay: {}",
+                    reason,
                 );
 
                 // Flush the output stream

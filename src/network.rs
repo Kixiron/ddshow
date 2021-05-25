@@ -1,6 +1,9 @@
-use crate::dataflow::{
-    operators::{EventReader, Fuel, RkyvEventReader},
-    DataflowData, DataflowReceivers,
+use crate::{
+    args::Args,
+    dataflow::{
+        operators::{EventReader, Fuel, RkyvEventReader},
+        DataflowData, DataflowReceivers,
+    },
 };
 use abomonation::Abomonation;
 use anyhow::{Context, Result};
@@ -37,6 +40,22 @@ type AcquiredStreams<T, D1, D2> =
 pub enum ReplaySource<R, A> {
     Rkyv(Vec<R>),
     Abomonation(Vec<A>),
+}
+
+impl<R, A> ReplaySource<R, A> {
+    pub fn len(&self) -> usize {
+        match self {
+            ReplaySource::Rkyv(rkyv) => rkyv.len(),
+            ReplaySource::Abomonation(abomonation) => abomonation.len(),
+        }
+    }
+
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            ReplaySource::Rkyv(_) => "Rkyv",
+            ReplaySource::Abomonation(_) => "Abomonation",
+        }
+    }
 }
 
 /// Connect to and prepare the replay sources
@@ -108,6 +127,13 @@ where
 
 pub type EventReceivers<R, A> = Arc<[Receiver<ReplaySource<R, A>>]>;
 
+#[tracing::instrument(
+    skip(sources),
+    fields(
+        num_sources = sources.len(),
+        source_kind = sources.kind(),
+    ),
+)]
 pub fn make_streams<R, A>(
     num_workers: usize,
     sources: ReplaySource<R, A>,
@@ -140,10 +166,12 @@ pub fn make_streams<R, A>(
         .map(|_| crossbeam_channel::bounded(1))
         .unzip();
 
-    for (sender, bundle) in senders.into_iter().zip(readers) {
+    for (worker, (sender, bundle)) in senders.into_iter().zip(readers).enumerate() {
+        tracing::debug!("sending {} sources to worker {}", bundle.len(), worker + 1);
+
         sender
             .send(bundle)
-            .map_err(|_| anyhow::anyhow!("failed to send events to worker"))?;
+            .map_err(|_| anyhow::anyhow!("failed to send events to worker {}", worker + 1))?;
     }
 
     Ok(Arc::from(receivers))
@@ -151,6 +179,7 @@ pub fn make_streams<R, A>(
 
 /// Connect to the given address and collect `connections` streams, returning all of them
 /// in non-blocking mode
+#[tracing::instrument]
 pub fn wait_for_connections<T, D, R>(
     timely_addr: SocketAddr,
     connections: NonZeroUsize,
@@ -199,7 +228,12 @@ where
 /// workers to terminate
 // TODO: Add a "haven't received updates in `n` seconds" thingy to tell the user
 //       we're no longer getting data
+#[tracing::instrument(
+    skip(args, worker_guards, receivers),
+    fields(workers = worker_guards.guards().len()),
+)]
 pub fn wait_for_input(
+    args: &Args,
     running: &AtomicBool,
     workers_finished: &AtomicUsize,
     worker_guards: WorkerGuards<Result<()>>,
@@ -217,16 +251,21 @@ pub fn wait_for_input(
         // Wait for input
         let _ = stdin.read(&mut [0]);
 
-        tracing::info!("stdin thread got input from stdin");
+        tracing::debug!("stdin thread got input from stdin");
         send.send(()).unwrap();
     });
 
     // Write a prompt to the terminal for the user
-    write!(
-        stdout,
-        "Press enter to finish collecting trace data (this will crash the source computation if it's currently running and cause data to not be fully processed)...",
-    )
-    .context("failed to write termination message to stdout")?;
+    let message = if args.is_file_sourced() {
+        "Press enter to finish loading trace data (this will cause data to not be fully processed)..."
+    } else {
+        "Press enter to finish collecting trace data (this will crash the source computation \
+            if it's currently running and cause data to not be fully processed)..."
+    };
+    stdout
+        .write_all(message.as_bytes())
+        .context("failed to write termination message to stdout")?;
+
     stdout.flush().context("failed to flush stdout")?;
 
     // Sync up with the user input thread
@@ -310,6 +349,7 @@ pub fn wait_for_input(
             .map_err(|err| anyhow::anyhow!("failed to join timely worker threads: {}", err))??;
     }
 
+    tracing::debug!("extracting all remaining data from the dataflow");
     let data = extractor.extract_all();
 
     Ok(data)

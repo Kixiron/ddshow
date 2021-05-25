@@ -14,18 +14,19 @@ use timely::{CommunicationConfig, Config};
 // TODO: Number of workers
 // TODO: Save logs to file
 // TODO: Process logs from file
+// TODO: Progress logging
 #[derive(Debug, Clone, StructOpt)]
 #[structopt(rename_all = "kebab-case")]
 pub struct Args {
     /// The number of ddshow workers to run
-    #[structopt(short = "w", long = "workers", default_value = "1")]
+    #[structopt(short = "w", long, default_value = "1")]
     pub workers: NonZeroUsize,
 
     /// The number of timely workers running in the target computation
     #[structopt(short = "c", long = "connections", default_value = "1")]
     pub timely_connections: NonZeroUsize,
 
-    /// The address to listen for `timely` log messages on
+    /// The address to listen for timely dataflow log messages from
     #[structopt(long = "address", default_value = "127.0.0.1:51317")]
     pub timely_address: SocketAddr,
 
@@ -33,12 +34,14 @@ pub struct Args {
     #[structopt(short = "d", long = "differential")]
     pub differential_enabled: bool,
 
-    #[structopt(long = "differential-address", default_value = "127.0.0.1:51318")]
+    /// The address to listen for differential dataflow log messages from
+    // FIXME: `requires("differential")` makes clap panic
+    #[structopt(long, default_value = "127.0.0.1:51318")]
     pub differential_address: SocketAddr,
 
     /// The color palette to use for the generated graphs
     #[structopt(
-        long = "palette",
+        long,
         parse(try_from_str = gradient_from_str),
         possible_values = ACCEPTED_GRADIENTS,
         default_value = "inferno",
@@ -46,26 +49,32 @@ pub struct Args {
     pub palette: ThreadedGradient,
 
     /// The directory to generate artifacts in
-    #[structopt(long = "output-dir", default_value = "dataflow-graph")]
+    #[structopt(long, default_value = "dataflow-graph")]
     pub output_dir: PathBuf,
 
     /// The path to dump the json data to
     ///
     /// The format is currently unstable, so don't depend on it too hard
-    #[structopt(long = "dump-json")]
+    #[structopt(long)]
     pub dump_json: Option<PathBuf>,
 
     /// The folder to save the target process's logs to
-    #[structopt(long = "save-logs")]
+    #[structopt(long)]
     pub save_logs: Option<PathBuf>,
 
-    #[structopt(long = "replay-logs")]
+    /// The directory to replay a recorded set of logs from
+    #[structopt(
+        long,
+        conflicts_with_all(&["save-logs", "connections", "address", "differential"]),
+    )]
     pub replay_logs: Option<PathBuf>,
 
-    #[structopt(long = "report-file", default_value = "report.txt")]
+    /// The file to output a text report to
+    #[structopt(long, default_value = "report.txt")]
     pub report_file: PathBuf,
 
-    #[structopt(long = "no-report-file")]
+    /// Disables text report generation
+    #[structopt(long, conflicts_with("report-file"))]
     pub no_report_file: bool,
 }
 

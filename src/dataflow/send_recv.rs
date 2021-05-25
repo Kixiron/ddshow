@@ -153,11 +153,17 @@ macro_rules! make_send_recv {
                 }
 
                 $(
-                    let $name = self.$name.1
+                    let $name: Vec<_> = self.$name.1
                         .into_iter()
                         .filter(|&(_, diff)| diff >= 1)
                         .flat_map(|(data, diff)| (0..diff).map(move |_| data.clone()))
                         .collect();
+
+                    tracing::debug!(
+                        "extracted {} {} events",
+                        $name.len(),
+                        stringify!($name).split("_").collect::<Vec<_>>().join(" "),
+                    );
                 )*
 
                 DataflowData::new($($name,)*)
