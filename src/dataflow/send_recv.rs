@@ -4,7 +4,7 @@ use crate::{
         Channel, Diff, OperatorAddr, OperatorId, OperatorStats, Time, WorkerId,
         WorkerTimelineEvent,
     },
-    ui::{ProgramStats, WorkerStats},
+    ui::{DataflowStats, ProgramStats, WorkerStats},
 };
 use crossbeam_channel::{Receiver, Sender};
 use differential_dataflow::{
@@ -30,7 +30,7 @@ macro_rules! make_send_recv {
     ($($name:ident : $ty:ty),* $(,)?) => {
         #[derive(Clone, Debug)]
         pub struct DataflowSenders {
-            $(pub $name: ESender<$ty>,)*
+            $($name: (ESender<$ty>, bool),)*
         }
 
         impl DataflowSenders {
@@ -39,7 +39,7 @@ macro_rules! make_send_recv {
                 $($name: ESender<$ty>,)*
             ) -> Self {
                 Self {
-                    $($name,)*
+                    $($name: ($name, false),)*
                 }
             }
 
@@ -59,6 +59,26 @@ macro_rules! make_send_recv {
                 };
 
                 (sender, receiver)
+            }
+
+            $(
+                pub fn $name(&mut self) -> ESender<$ty> {
+                    tracing::debug!("sent to dataflow sender {}", stringify!($name));
+
+                    self.$name.1 = true;
+                    self.$name.0.clone()
+                }
+            )*
+        }
+
+        impl Drop for DataflowSenders {
+            #[inline(never)]
+            fn drop(&mut self) {
+                $(
+                    if cfg!(debug_assertions) && !self.$name.1 {
+                        tracing::warn!("never sent to dataflow sender `{}`", stringify!($name));
+                    }
+                )*
             }
         }
 
@@ -194,6 +214,7 @@ macro_rules! make_send_recv {
     };
 }
 
+type WorkerStatsData = Vec<(WorkerId, WorkerStats)>;
 type NodeData = ((WorkerId, OperatorAddr), RkyvOperatesEvent);
 type EdgeData = (
     WorkerId,
@@ -206,19 +227,19 @@ type SubgraphData = ((WorkerId, OperatorAddr), RkyvOperatesEvent);
 type OperatorStatsData = ((WorkerId, OperatorId), OperatorStats);
 type AggOperatorStatsData = (OperatorId, OperatorStats);
 type TimelineEventData = WorkerTimelineEvent;
-type WorkerStatsData = Vec<(WorkerId, WorkerStats)>;
 type NameLookupData = ((WorkerId, OperatorId), String);
 type AddrLookupData = ((WorkerId, OperatorId), OperatorAddr);
 
 make_send_recv! {
+    program_stats: ProgramStats,
+    worker_stats: WorkerStatsData,
     nodes: NodeData,
     edges: EdgeData,
     subgraphs: SubgraphData,
     operator_stats: OperatorStatsData,
     aggregated_operator_stats: AggOperatorStatsData,
+    dataflow_stats: DataflowStats,
     timeline_events: TimelineEventData,
-    program_stats: ProgramStats,
-    worker_stats: WorkerStatsData,
     name_lookup: NameLookupData,
     addr_lookup: AddrLookupData,
 }

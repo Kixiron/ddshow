@@ -1,6 +1,20 @@
 {
     "name": "ddshow-dashboard",
+    "description": "A web UI for DDShow profiling output",
     "version": "0.1.0",
+    "author": "Chase Wilson <contact@chasewilson.dev",
+    "license": "(MIT OR Apache-2.0)",
+    "homepage": "https://github.com/Kixiron/ddshow",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Kixiron/ddshow.git"
+    },
+    "funding": [
+        {
+            "type": "github",
+            "url": " https://github.com/sponsors/Kixiron"
+        }
+    ],
     "private": true,
     "dependencies": {
         "@fontsource/roboto": "^4.2.3",

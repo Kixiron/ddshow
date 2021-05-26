@@ -43,6 +43,10 @@ impl OperatorAddr {
         Self::new(tiny_vec)
     }
 
+    pub fn is_top_level(&self) -> bool {
+        self.len() == 1
+    }
+
     pub fn push(&mut self, segment: PortId) {
         self.addr.push(segment.into_inner());
     }

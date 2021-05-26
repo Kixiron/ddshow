@@ -72,7 +72,7 @@ where
                                                 time,
                                                 // Product::new(start_time, time),
                                                 1,
-                                            ))
+                                            ));
                                         }
                                     }
                                 }

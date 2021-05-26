@@ -15,6 +15,7 @@ use timely::{CommunicationConfig, Config};
 // TODO: Save logs to file
 // TODO: Process logs from file
 // TODO: Progress logging
+// TODO: Build info in help message
 #[derive(Debug, Clone, StructOpt)]
 #[structopt(rename_all = "kebab-case")]
 pub struct Args {

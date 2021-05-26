@@ -12,7 +12,12 @@ use std::{
     io::Write,
 };
 
-pub fn build_report(args: &Args, data: &DataflowData) -> Result<()> {
+pub fn build_report(
+    args: &Args,
+    data: &DataflowData,
+    name_lookup: &HashMap<(WorkerId, OperatorId), String>,
+    addr_lookup: &HashMap<(WorkerId, OperatorId), OperatorAddr>,
+) -> Result<()> {
     if !args.no_report_file {
         // Attempt to create the path up to the report file
         if let Some(parent) = args
@@ -38,9 +43,6 @@ pub fn build_report(args: &Args, data: &DataflowData) -> Result<()> {
         // Create the report file
         tracing::debug!("creating report file: {}", args.report_file.display());
         let mut file = File::create(&args.report_file).context("failed to create report file")?;
-
-        let name_lookup = data.name_lookup.iter().cloned().collect();
-        let addr_lookup = data.addr_lookup.iter().cloned().collect();
 
         program_overview(args, data, &mut file)?;
         worker_stats(args, data, &mut file)?;

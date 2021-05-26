@@ -31,6 +31,7 @@ use crate::{
         subgraphs::rewire_channels,
         worker_timeline::worker_timeline,
     },
+    ui::{DataflowStats, Lifespan},
 };
 use abomonation_derive::Abomonation;
 use anyhow::{Context, Result};
@@ -41,26 +42,30 @@ use differential_dataflow::{
     lattice::Lattice,
     logging::DifferentialEvent,
     operators::{
-        arrange::{ArrangeByKey, ArrangeBySelf},
+        arrange::{ArrangeByKey, ArrangeBySelf, Arranged, TraceAgent},
         Consolidate, Join, Reduce, ThresholdTotal,
     },
+    trace::TraceReader,
     Collection, ExchangeData, Hashable,
 };
 #[cfg(feature = "timely-next")]
 use reachability::TrackerEvent;
 use std::{
+    collections::HashMap,
     convert::TryFrom,
     fmt::Debug,
     fs::{self, File},
     io::BufWriter,
+    path::PathBuf,
     time::Duration,
 };
 use timely::{
     dataflow::{
+        channels::pact::Pipeline,
         operators::{
             capture::{Capture, Event},
             probe::Handle as ProbeHandle,
-            Exchange, Map, Probe,
+            Exchange, Map, Operator, Probe,
         },
         Scope, Stream,
     },
@@ -110,7 +115,7 @@ pub fn dataflow<S>(
     args: &Args,
     timely_stream: &Stream<S, TimelyLogBundle>,
     differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
-    senders: DataflowSenders,
+    mut senders: DataflowSenders,
 ) -> Result<ProbeHandle<Time>>
 where
     S: Scope<Timestamp = Time>,
@@ -254,6 +259,20 @@ where
     let addressed_operators =
         operators.map(|(worker, operator)| ((worker, operator.addr.clone()), operator));
 
+    let dataflow_ids = addressed_operators
+        .filter_map(|((worker, addr), event)| {
+            if addr.is_top_level() {
+                Some((worker, event.id))
+            } else {
+                None
+            }
+        })
+        .arrange_by_self();
+
+    let addr_lookup = operators
+        .map(|(worker, event)| ((worker, event.id), event.addr))
+        .arrange_by_key();
+
     let (program_stats, worker_stats) = program_stats::aggregate_worker_stats(
         &timely_stream,
         differential_stream,
@@ -262,44 +281,58 @@ where
         &subgraphs_arranged,
     );
 
+    let dataflow_stats = dataflow_stats(timely_stream, &dataflow_ids, &addr_lookup);
+
     channel_sink(
         &operator_names
             .as_collection(|&(worker, operator), name| ((worker, operator), name.to_owned())),
         &mut probe,
-        senders.name_lookup,
+        senders.name_lookup(),
+        false,
     );
     channel_sink(
-        &operators.map(|(worker, event)| ((worker, event.id), event.addr)),
+        &addr_lookup.as_collection(|&key, addr| (key, addr.clone())),
         &mut probe,
-        senders.addr_lookup,
+        senders.addr_lookup(),
+        false,
     );
-    channel_sink(&program_stats, &mut probe, senders.program_stats);
+    channel_sink(&program_stats, &mut probe, senders.program_stats(), true);
     channel_sink(
         &worker_stats
             .map(|(worker, stats)| ((), (worker, stats)))
             .hierarchical_sort_by(|&(worker, _)| worker)
             .map(|((), sorted_stats)| sorted_stats),
         &mut probe,
-        senders.worker_stats,
+        senders.worker_stats(),
+        true,
     );
     channel_sink(
         &addressed_operators.semijoin(&leaves),
         &mut probe,
-        senders.nodes,
+        senders.nodes(),
+        true,
     );
     channel_sink(
         &addressed_operators.semijoin(&subgraphs),
         &mut probe,
-        senders.subgraphs,
+        senders.subgraphs(),
+        true,
     );
-    channel_sink(&edges, &mut probe, senders.edges);
-    channel_sink(&operator_stats, &mut probe, senders.operator_stats);
+    channel_sink(&edges, &mut probe, senders.edges(), true);
+    channel_sink(&operator_stats, &mut probe, senders.operator_stats(), true);
     channel_sink(
         &cross_aggregated_operator_stats,
         &mut probe,
-        senders.aggregated_operator_stats,
+        senders.aggregated_operator_stats(),
+        true,
     );
-    channel_sink(&worker_timeline, &mut probe, senders.timeline_events);
+    channel_sink(
+        &worker_timeline,
+        &mut probe,
+        senders.timeline_events(),
+        true,
+    );
+    channel_sink(&dataflow_stats, &mut probe, senders.dataflow_stats(), true);
 
     // TODO: Save ddflow logs
     // TODO: Probably want to prefix things with the current system time to allow
@@ -311,15 +344,15 @@ where
     if let Some(save_logs) = args.save_logs.as_ref() {
         fs::create_dir_all(&save_logs).context("failed to create `--save-logs` directory")?;
 
-        let file = save_logs.join(if scope.index() == 0 {
-            "timely.ddshow"
+        let file = if scope.index() == 0 {
+            save_logs.join("timely.ddshow")
 
         // Make other workers pipe to a null output
         } else if cfg!(windows) {
-            "nul"
+            PathBuf::from("nul")
         } else {
-            "/dev/null"
-        });
+            PathBuf::from("/dev/null")
+        };
 
         tracing::debug!(
             "installing file sink to {} on worker {}",
@@ -338,6 +371,84 @@ where
     }
 
     Ok(probe)
+}
+
+fn dataflow_stats<S, Tr1, Tr2>(
+    timely_stream: &Stream<S, TimelyLogBundle>,
+    dataflow_ids: &Arranged<S, TraceAgent<Tr1>>,
+    addr_lookup: &Arranged<S, TraceAgent<Tr2>>,
+) -> Collection<S, DataflowStats, Diff>
+where
+    S: Scope<Timestamp = Duration>,
+    Tr1: TraceReader<Key = (WorkerId, OperatorId), Val = (), Time = S::Timestamp, R = Diff>
+        + 'static,
+    Tr2: TraceReader<Key = (WorkerId, OperatorId), Val = OperatorAddr, Time = S::Timestamp, R = Diff>
+        + 'static,
+{
+    let dataflows = addr_lookup.semijoin_arranged(dataflow_ids);
+    let lifespans = timely_stream
+        .unary(Pipeline, "Dataflow Lifespan", |_capability, _info| {
+            let mut lifespan_map = HashMap::new();
+            let mut buffer = Vec::new();
+
+            move |input, output| {
+                input.for_each(|capability, data| {
+                    let capability = capability.retain();
+                    data.swap(&mut buffer);
+
+                    for (time, worker, event) in buffer.drain(..) {
+                        match event {
+                            RkyvTimelyEvent::Operates(operates) => {
+                                lifespan_map
+                                    .insert((worker, operates.id), (time, capability.clone()));
+                            }
+
+                            RkyvTimelyEvent::Shutdown(shutdown) => {
+                                if let Some((stored_time, mut stored_capability)) =
+                                    lifespan_map.remove(&(worker, shutdown.id))
+                                {
+                                    stored_capability.downgrade(
+                                        &stored_capability.time().join(capability.time()),
+                                    );
+
+                                    output.session(&stored_capability).give((
+                                        ((worker, shutdown.id), Lifespan::new(stored_time, time)),
+                                        time,
+                                        1,
+                                    ));
+                                }
+                            }
+
+                            RkyvTimelyEvent::Channels(_)
+                            | RkyvTimelyEvent::PushProgress(_)
+                            | RkyvTimelyEvent::Messages(_)
+                            | RkyvTimelyEvent::Schedule(_)
+                            | RkyvTimelyEvent::Application(_)
+                            | RkyvTimelyEvent::GuardedMessage(_)
+                            | RkyvTimelyEvent::GuardedProgress(_)
+                            | RkyvTimelyEvent::CommChannels(_)
+                            | RkyvTimelyEvent::Input(_)
+                            | RkyvTimelyEvent::Park(_)
+                            | RkyvTimelyEvent::Text(_) => {}
+                        }
+                    }
+                });
+            }
+        })
+        .as_collection();
+
+    dataflows
+        .join(&lifespans)
+        .map(|((worker, id), (addr, lifespan))| DataflowStats {
+            id,
+            addr,
+            worker,
+            // FIXME: Count the nested operators/subgraphs/channels
+            operators: 0,
+            subgraphs: 0,
+            channels: 0,
+            lifespan,
+        })
 }
 
 fn operator_creations<S>(
@@ -374,19 +485,19 @@ where
         .as_collection()
 }
 
-type LeavesAndScopes<S, D> = (
-    Collection<S, (WorkerId, OperatorAddr), D>,
-    Collection<S, (WorkerId, OperatorAddr), D>,
+type LeavesAndScopes<S, R> = (
+    Collection<S, (WorkerId, OperatorAddr), R>,
+    Collection<S, (WorkerId, OperatorAddr), R>,
 );
 
-fn sift_leaves_and_scopes<S, D>(
+fn sift_leaves_and_scopes<S, R>(
     scope: &mut S,
-    operators: &Collection<S, (WorkerId, RkyvOperatesEvent), D>,
-) -> LeavesAndScopes<S, D>
+    operators: &Collection<S, (WorkerId, RkyvOperatesEvent), R>,
+) -> LeavesAndScopes<S, R>
 where
     S: Scope,
     S::Timestamp: Lattice + TotalOrder,
-    D: Semigroup + Monoid + Abelian + ExchangeData + Multiply<isize, Output = D>,
+    R: Semigroup + Monoid + Abelian + ExchangeData + Multiply<isize, Output = R>,
 {
     scope.region_named("Sift Leaves and Scopes", |region| {
         let operators = operators
@@ -409,12 +520,9 @@ where
             .leave_region();
 
         // Only retain subgraphs that are observed within the logs
-        let observed_subgraphs = operators
-            .semijoin(&potential_scopes)
-            .map(|(addr, ())| addr)
-            .leave_region();
+        let observed_subgraphs = operators.semijoin(&potential_scopes).map(|(addr, ())| addr);
 
-        (leaf_operators, observed_subgraphs)
+        (leaf_operators, observed_subgraphs.leave_region())
     })
 }
 
@@ -471,14 +579,20 @@ fn channel_sink<S, D, R>(
     collection: &Collection<S, D, R>,
     probe: &mut ProbeHandle<S::Timestamp>,
     channel: Sender<Event<S::Timestamp, (D, S::Timestamp, R)>>,
+    should_consolidate: bool,
 ) where
     S: Scope,
     S::Timestamp: Lattice,
     D: ExchangeData + Hashable,
     R: Semigroup + ExchangeData,
 {
+    let collection = if should_consolidate {
+        collection.consolidate()
+    } else {
+        collection.clone()
+    };
+
     collection
-        .consolidate()
         .inner
         .probe_with(probe)
         .capture_into(CrossbeamPusher::new(channel));

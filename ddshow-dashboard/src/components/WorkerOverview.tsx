@@ -15,6 +15,7 @@ import {
 import React from "react";
 import { Tooltip } from "@visx/tooltip";
 import Gantt from "./Gantt";
+import { Duration, OperatorAddr, WorkerStats, TimelineEvent } from "../App";
 
 const useStyles = makeStyles(theme =>
     createStyles({
@@ -58,30 +59,8 @@ type WorkerOverviewProps = {
 };
 
 type WorkerData = {
-    worker_id: number;
-    total_runtime: Duration;
-    total_dataflows: number;
-    total_nodes: number;
-    total_operators: number;
-    total_subgraphs: number;
-    total_channels: number;
-    total_events: number;
-    total_arrangements?: number;
-    dataflow_addrs: OperatorAddr[];
-    events: {
-        start: number;
-        end: number;
-        name: string;
-        group: string;
-    }[];
-};
-
-type OperatorAddr = OperatorId[];
-type OperatorId = number;
-
-type Duration = {
-    secs: number;
-    nanos: number;
+    stats: WorkerStats;
+    events: TimelineEvent[];
 };
 
 export default function WorkerOverview(props: WorkerOverviewProps) {
@@ -93,7 +72,7 @@ export default function WorkerOverview(props: WorkerOverviewProps) {
     let row_workers = workers.next();
     while (!row_workers.done) {
         const row_data = row_workers.value;
-        const row_key = row_data.map(worker => worker.worker_id).join("-");
+        const row_key = row_data.map(worker => worker.stats.id).join("-");
 
         const row = (
             <Grid
@@ -103,7 +82,8 @@ export default function WorkerOverview(props: WorkerOverviewProps) {
                 key={`worker-grid-row-${row_key}`}
             >
                 {row_data.map(worker => {
-                    const worker_key = `worker-grid-card-${worker.worker_id}`;
+                    const stats = worker.stats;
+                    const worker_key = `worker-grid-card-${stats.id}`;
 
                     return (
                         <Grid
@@ -122,6 +102,19 @@ export default function WorkerOverview(props: WorkerOverviewProps) {
         worker_cards.push(row);
         row_workers = workers.next();
     }
+
+    const gantt_events =
+        props.data.length >= 1
+            ? props.data[0].events.map(event => {
+                  return {
+                      start: event.start_time,
+                      end: event.start_time + event.duration,
+                      // FIXME: This is bad
+                      name: "Eeee",
+                      group: event.worker,
+                  };
+              })
+            : [];
 
     return (
         <Container maxWidth="lg" style={{ width: "100%", height: "100%" }}>
@@ -142,7 +135,7 @@ export default function WorkerOverview(props: WorkerOverviewProps) {
                     <Gantt
                         width={1000}
                         height={1000}
-                        data={props.data[0].events}
+                        data={gantt_events}
                         style={{
                             bar_color: classes.bar_color,
                             tooltip_color: classes.gantt_tooltip,
@@ -156,17 +149,18 @@ export default function WorkerOverview(props: WorkerOverviewProps) {
 
 function WorkerCard(props: { worker: WorkerData }) {
     const classes = useStyles();
+    const stats = props.worker.stats;
 
     let overview_data = [
-        { name: "Total Dataflows", value: props.worker.total_dataflows },
-        { name: "Total Operators", value: props.worker.total_operators },
-        { name: "Total Subgraphs", value: props.worker.total_subgraphs },
-        { name: "Total Channels", value: props.worker.total_channels },
+        { name: "Total Dataflows", value: stats.dataflows },
+        { name: "Total Operators", value: stats.operators },
+        { name: "Total Subgraphs", value: stats.subgraphs },
+        { name: "Total Channels", value: stats.channels },
     ];
-    if (props.worker.total_arrangements) {
+    if (stats.arrangements) {
         overview_data.push({
             name: "Total Arrangements",
-            value: props.worker.total_arrangements,
+            value: stats.arrangements,
         });
     }
 
@@ -177,13 +171,13 @@ function WorkerCard(props: { worker: WorkerData }) {
         >
             <CardContent style={{ width: "100%", height: "100%" }}>
                 <Typography gutterBottom variant="h5" component="h2">
-                    Worker {props.worker.worker_id}
+                    Worker {stats.id}
                 </Typography>
 
                 {/* TODO: Pretty print the duration */}
                 <Typography className={classes.pos} color="textSecondary">
-                    Ran for a total of {props.worker.total_runtime.secs} seconds
-                    and {props.worker.total_runtime.nanos} nanoseconds
+                    Ran for a total of {stats.runtime.secs} seconds and{" "}
+                    {stats.runtime.nanos} nanoseconds
                 </Typography>
 
                 <ParentSize
@@ -216,11 +210,12 @@ type BarChartProps = {
 
 function BarChart({ width, height, data: raw_data }: BarChartProps) {
     const data = raw_data.filter(data => data.value > 0);
-    const [tooltip_data, set_tooltip_data] = React.useState<{
-        data: { name: string; value: number };
-        top: number;
-        left: number;
-    } | null>(null);
+    const [tooltip_data, set_tooltip_data] =
+        React.useState<{
+            data: { name: string; value: number };
+            top: number;
+            left: number;
+        } | null>(null);
 
     const classes = useStyles();
     const margin = { top: 40, left: 50, right: 40, bottom: 100 };

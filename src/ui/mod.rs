@@ -9,11 +9,7 @@ use anyhow::{Context as _, Result};
 use bytecheck::CheckBytes;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
-use std::{
-    fs::{self, File},
-    io::BufWriter,
-    time::Duration,
-};
+use std::{fs, time::Duration};
 use tera::{Context, Tera};
 
 const GRAPH_HTML: &str = include_str!("graph.html");
@@ -59,16 +55,16 @@ pub fn render(
         timeline_events,
     };
 
-    // TODO: This shouldn't be here
-    if let Some(json_path) = args.dump_json.as_ref() {
-        tracing::info!(json_path = ?json_path, "dumping json to file");
-
-        let json_file = File::create(json_path)
-            .with_context(|| format!("failed to create json file at {}", json_path.display()))?;
-
-        serde_json::to_writer(BufWriter::new(json_file), &graph_data)
-            .context("failed to write json data to file")?;
-    }
+    // // TODO: This shouldn't be here
+    // if let Some(json_path) = args.dump_json.as_ref() {
+    //     tracing::info!(json_path = ?json_path, "dumping json to file");
+    //
+    //     let json_file = File::create(json_path)
+    //         .with_context(|| format!("failed to create json file at {}", json_path.display()))?;
+    //
+    //     serde_json::to_writer(BufWriter::new(json_file), &graph_data)
+    //         .context("failed to write json data to file")?;
+    // }
 
     let context =
         Context::from_serialize(graph_data).context("failed to render graph context as json")?;
@@ -113,6 +109,7 @@ pub struct DDShowStats {
     pub arrangements: Vec<ArrangementStats>,
     pub events: Vec<TimelineEvent>,
     pub differential_enabled: bool,
+    pub ddshow_version: String,
     // TODO: Lists of nodes, channels & arrangement ids (or addresses?) sorted
     //       by various metrics, e.g. runtime, size, # merges
     // TODO: Progress logging
@@ -232,6 +229,7 @@ pub struct DataflowStats {
     pub subgraphs: usize,
     pub channels: usize,
     pub lifespan: Lifespan,
+    // TODO: Arrangements within the current dataflow
 }
 
 // - Nodes
@@ -332,6 +330,10 @@ pub struct Lifespan {
 }
 
 impl Lifespan {
+    pub const fn new(birth: Duration, death: Duration) -> Self {
+        Self { birth, death }
+    }
+
     pub fn duration(&self) -> Duration {
         self.death - self.birth
     }

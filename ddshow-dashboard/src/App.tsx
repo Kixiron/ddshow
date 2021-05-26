@@ -77,49 +77,198 @@ const useStyles = makeStyles(theme => ({
     },
 }));
 
-type GraphData = {
-    nodes: Node[];
-    subgraphs: Subgraph[];
-    edges: Edge[];
-    timeline_events: TimelineEvent[];
+export type DDShowStats = {
+    program: ProgramStats;
+    workers: WorkerStats[];
+    dataflows: DataflowStats[];
+    nodes: NodeStats[];
+    channels: ChannelStats[];
+    arrangements: ArrangementStats[];
+    events: TimelineEvent[];
+    differential_enabled: boolean;
+    ddshow_version: string;
 };
-type Node = {
-    id: number;
-    worker: number;
-    addr: number[];
+
+function get_totals(
+    data: DDShowStats | null,
+): [number, number, number, number, number, number, number, number] {
+    const workers = total_workers(data);
+    const nodes = total_nodes(data);
+    const subgraphs = total_subgraphs(data);
+    const operators = total_operators(data);
+    const dataflows = total_dataflows(data);
+    const channels = total_channels(data);
+    const arrangements = total_arrangements(data);
+    const events = total_events(data);
+
+    return [
+        workers,
+        nodes,
+        subgraphs,
+        operators,
+        dataflows,
+        channels,
+        arrangements,
+        events,
+    ];
+}
+
+function partition_events_by_worker(
+    data: DDShowStats | null,
+): Map<WorkerId, TimelineEvent[]> {
+    let partitioned = new Map<WorkerId, TimelineEvent[]>();
+    if (!data) {
+        return partitioned;
+    }
+
+    for (const event of data.events) {
+        const entry = partitioned.get(event.worker);
+
+        if (entry) {
+            entry.push(event);
+        } else {
+            partitioned.set(event.worker, [event]);
+        }
+    }
+
+    return partitioned;
+}
+
+function total_workers(data: DDShowStats | null): number {
+    return data ? data.workers.length : 0;
+}
+
+function total_nodes(data: DDShowStats | null): number {
+    return data ? data.nodes.length : 0;
+}
+
+function total_subgraphs(data: DDShowStats | null): number {
+    return data
+        ? data.nodes.filter(node => node.kind === "Subgraph").length
+        : 0;
+}
+
+function total_operators(data: DDShowStats | null): number {
+    return data
+        ? data.nodes.filter(node => node.kind === "Operator").length
+        : 0;
+}
+
+function total_dataflows(data: DDShowStats | null): number {
+    return data ? data.dataflows.length : 0;
+}
+
+function total_channels(data: DDShowStats | null): number {
+    return data ? data.channels.length : 0;
+}
+
+function total_arrangements(data: DDShowStats | null): number {
+    return data ? data.arrangements.length : 0;
+}
+
+function total_events(data: DDShowStats | null): number {
+    return data ? data.events.length : 0;
+}
+
+export type ProgramStats = {
+    workers: number;
+    dataflows: number;
+    operators: number;
+    subgraphs: number;
+    channels: number;
+    arrangements: number;
+    events: number;
+    runtime: Duration;
+};
+
+export type WorkerStats = {
+    id: WorkerId;
+    dataflows: number;
+    operators: number;
+    subgraphs: number;
+    channels: number;
+    arrangements: number;
+    events: number;
+    runtime: Duration;
+    dataflow_addrs: OperatorAddr[];
+};
+
+export type DataflowStats = {
+    id: OperatorId;
+    addr: OperatorAddr[];
+    worker: WorkerId;
+    operators: number;
+    subgraphs: number;
+    channels: number;
+    lifespan: Lifespan;
+};
+
+export type NodeStats = {
+    id: OperatorId;
+    addr: OperatorAddr;
+    worker: WorkerId;
     name: string;
-    max_activation_time: string;
-    min_activation_time: string;
-    average_activation_time: string;
-    total_activation_time: string;
-    invocations: number;
-    fill_color: string;
-    text_color: string;
-    activation_durations: ActivationDuration[];
-    max_arrangement_size: number | null;
-    min_arrangement_size: number | null;
+    inputs: PortId[];
+    outputs: PortId[];
+    lifespan: Lifespan;
+    kind: NodeKind;
+    activations: AggregatedStats<Duration>;
 };
-type ActivationDuration = {};
-type Subgraph = {
-    id: number;
-    worker: number;
-    addr: number[];
-    name: string;
-    max_activation_time: string;
-    min_activation_time: string;
-    average_activation_time: string;
-    total_activation_time: string;
-    invocations: number;
-    fill_color: string;
-    text_color: string;
+
+export type NodeKind = "Operator" | "Subgraph" | "Dataflow";
+
+export type ChannelStats = {
+    id: ChannelId;
+    addr: ChannelAddr;
+    worker: WorkerId;
+    source_node: OperatorId;
+    dest_node: OperatorId;
+    kind: ChannelKind;
+    lifespan: Lifespan;
 };
-type Edge = {};
-type TimelineEvent = {
+
+export type ChannelKind = "Ingress" | "Egress" | "Normal";
+
+export type ArrangementStats = {
+    operator_addr: OperatorAddr;
+    size_stats: AggregatedStats<number>;
+    merge_stats: AggregatedStats<Duration>;
+    batch_stats: AggregatedStats<number>;
+    trace_shares: number;
+    lifespan: Lifespan;
+};
+
+export type TimelineEvent = {
     event_id: number;
     worker: number;
     start_time: number;
     duration: number;
     event: any;
+};
+
+export type WorkerId = number;
+export type OperatorId = number;
+export type OperatorAddr = number[];
+export type PortId = number;
+export type ChannelId = number;
+export type ChannelAddr = number[];
+
+export type Duration = {
+    secs: number;
+    nanos: number;
+};
+
+export type Lifespan = {
+    birth: Duration;
+    death: Duration;
+};
+
+export type AggregatedStats<T> = {
+    total: number;
+    max: T;
+    min: T;
+    average: T;
+    data_points: T;
 };
 
 function format_event(event: any): string {
@@ -153,36 +302,20 @@ export default function App() {
             }),
         [prefersDarkMode],
     );
-    const [data, set_data] = React.useState<GraphData | null>(null);
+    const [data, set_data] = React.useState<DDShowStats | null>(null);
 
-    let total_arrangements = undefined;
-    const total = data
-        ? data.nodes.filter(
-              node => node.min_arrangement_size || node.max_activation_time,
-          ).length
-        : 0;
-    if (total === 0) {
-        total_arrangements = undefined;
-    } else {
-        total_arrangements = total;
-    }
-
-    const total_workers = data
-        ? new Set(data.timeline_events.map(event => event.worker)).size
-        : 0;
-    const total_operators = data
-        ? data.subgraphs.length + data.nodes.length
-        : 0;
-    const dataflows = data
-        ? data.subgraphs
-              .filter(subgraph => subgraph.addr.length === 1)
-              .map(subgraph => subgraph.addr)
-        : [];
-    const total_dataflows = dataflows.length;
-    const total_channels = data ? data.edges.length : 0;
-    const total_events = data ? data.timeline_events.length : 0;
-    const total_subgraphs = data ? data.subgraphs.length : 0;
-    const total_nodes = total_operators + total_subgraphs;
+    const [
+        workers,
+        nodes,
+        subgraphs,
+        operators,
+        dataflows,
+        channels,
+        arrangements,
+        events,
+    ] = get_totals(data);
+    let worker_stats = data ? data.workers : [];
+    let worker_events = partition_events_by_worker(data);
 
     return (
         <ThemeProvider theme={theme}>
@@ -210,12 +343,12 @@ export default function App() {
                         {/* TODO: Display a message if there's no events/stats */}
                         <ProgramOverviewCards
                             kind="loaded"
-                            workers={total_workers}
-                            dataflows={total_dataflows}
-                            operators={total_operators}
-                            channels={total_channels}
-                            arrangements={total_arrangements}
-                            total_events={total_events}
+                            workers={workers}
+                            dataflows={dataflows}
+                            operators={operators}
+                            channels={channels}
+                            arrangements={arrangements}
+                            total_events={events}
                         />
 
                         <LoadStatusAlert />
@@ -223,36 +356,14 @@ export default function App() {
 
                     <Route path="/workers">
                         <WorkerOverview
-                            data={[
-                                {
-                                    worker_id: 0,
-                                    total_runtime: { secs: 1000, nanos: 5322 },
-                                    total_dataflows: total_dataflows,
-                                    total_nodes: total_nodes,
-                                    total_operators: total_operators,
-                                    total_subgraphs: total_subgraphs,
-                                    total_channels: total_channels,
-                                    total_events: total_events,
-                                    total_arrangements: total_arrangements,
-                                    dataflow_addrs: dataflows,
-                                    events: data
-                                        ? data.timeline_events
-                                              .filter(
-                                                  event => event.worker === 0,
-                                              )
-                                              .map(event => ({
-                                                  start: event.start_time,
-                                                  end:
-                                                      event.start_time +
-                                                      event.duration,
-                                                  name: format_event(
-                                                      event.event,
-                                                  ),
-                                                  group: event_id(event.event),
-                                              }))
-                                        : [],
-                                },
-                            ]}
+                            data={worker_stats.map(stats => {
+                                const events = worker_events.get(stats.id)!;
+
+                                return {
+                                    stats: stats,
+                                    events: events,
+                                };
+                            })}
                         />
                     </Route>
 

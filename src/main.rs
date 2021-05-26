@@ -12,18 +12,21 @@ use crate::{
         operators::{
             rkyv_capture::RkyvOperatesEvent, Fuel, InspectExt, ReplayWithShutdown, RkyvTimelyEvent,
         },
-        Channel, DataflowSenders, OperatorStats, WorkerId,
+        Channel, DataflowData, DataflowSenders, OperatorAddr, OperatorId, OperatorStats, WorkerId,
     },
     network::{acquire_replay_sources, wait_for_input, ReplaySource},
-    ui::{ActivationDuration, EdgeKind},
+    ui::{ActivationDuration, DDShowStats, EdgeKind, Lifespan, TimelineEvent},
 };
 use anyhow::{Context, Result};
 use differential_dataflow::logging::DifferentialEvent;
 use std::{
     collections::HashMap,
-    env, fs,
+    env,
+    fs::{self, File},
+    io::BufWriter,
     net::TcpStream,
     num::NonZeroUsize,
+    path::Path,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
@@ -36,6 +39,9 @@ use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
     EnvFilter,
 };
+
+/// The current version of DDShow
+pub static DDSHOW_VERSION: &str = env!("VERGEN_GIT_SEMVER");
 
 // TODO: Library-ify a lot of this
 // FIXME: Clean this up so much
@@ -225,9 +231,15 @@ fn main() -> Result<()> {
         worker_guards,
         receivers,
     )?;
+    let name_lookup: HashMap<_, _> = data.name_lookup.iter().cloned().collect();
+    let addr_lookup: HashMap<_, _> = data.addr_lookup.iter().cloned().collect();
 
     // Build & emit the textual report
-    report::build_report(&*args, &data)?;
+    report::build_report(&*args, &data, &name_lookup, &addr_lookup)?;
+
+    if let Some(file) = args.dump_json.as_ref() {
+        dump_program_json(&*args, file, &data, &name_lookup, &addr_lookup)?;
+    }
 
     // Extract the data from timely
     let mut subgraph_ids = Vec::new();
@@ -402,6 +414,52 @@ fn main() -> Result<()> {
             .join("graph.html")
             .display(),
     );
+
+    Ok(())
+}
+
+fn dump_program_json(
+    args: &Args,
+    file: &Path,
+    data: &DataflowData,
+    _name_lookup: &HashMap<(WorkerId, OperatorId), String>,
+    _addr_lookup: &HashMap<(WorkerId, OperatorId), OperatorAddr>,
+) -> Result<()> {
+    let file = BufWriter::new(File::create(file).context("failed to create json file")?);
+
+    let program = data.program_stats[0].clone();
+    let workers = data.worker_stats[0]
+        .iter()
+        .map(|(_, stats)| stats.clone())
+        .collect();
+    let dataflows = data.dataflow_stats.clone();
+    let events = data
+        .timeline_events
+        .iter()
+        .map(|event| TimelineEvent {
+            worker: event.worker,
+            event: (),
+            lifespan: Lifespan::new(
+                Duration::from_nanos(event.start_time),
+                Duration::from_nanos(event.start_time + event.duration),
+            ),
+        })
+        .collect();
+
+    let data = DDShowStats {
+        program,
+        workers,
+        dataflows,
+        // FIXME: Do these
+        nodes: Vec::new(),
+        channels: Vec::new(),
+        arrangements: Vec::new(),
+        events,
+        differential_enabled: args.differential_enabled,
+        ddshow_version: DDSHOW_VERSION.to_string(),
+    };
+
+    serde_json::to_writer(file, &data).context("failed to write json to file")?;
 
     Ok(())
 }
