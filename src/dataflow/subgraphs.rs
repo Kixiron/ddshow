@@ -1,7 +1,7 @@
 use crate::dataflow::{
     operators::{JoinArranged, RkyvChannelsEvent},
     send_recv::ChannelAddrs,
-    Channel, FilterMap, Multiply, OperatorAddr, OperatorId, PortId, WorkerId,
+    Channel, ChannelId, FilterMap, Multiply, OperatorAddr, PortId, WorkerId,
 };
 use differential_dataflow::{
     difference::Abelian,
@@ -152,7 +152,7 @@ where
                     (
                         worker,
                         Channel::ScopeCrossing {
-                            channel_id: OperatorId::new(channel_ids_along_path[0]),
+                            channel_id: ChannelId::new(channel_ids_along_path[0]),
                             source_addr,
                             target_addr,
                         },

@@ -384,7 +384,7 @@ impl From<OperatesEvent> for RkyvOperatesEvent {
 )]
 #[archive(strict, derive(CheckBytes))]
 pub struct RkyvChannelsEvent {
-    pub id: OperatorId,
+    pub id: ChannelId,
     pub scope_addr: OperatorAddr,
     pub source: (PortId, PortId),
     pub target: (PortId, PortId),
@@ -393,7 +393,7 @@ pub struct RkyvChannelsEvent {
 impl From<ChannelsEvent> for RkyvChannelsEvent {
     fn from(event: ChannelsEvent) -> Self {
         Self {
-            id: OperatorId::new(event.id),
+            id: ChannelId::new(event.id),
             scope_addr: OperatorAddr::from(event.scope_addr),
             source: (PortId::new(event.source.0), PortId::new(event.source.1)),
             target: (PortId::new(event.target.0), PortId::new(event.target.1)),

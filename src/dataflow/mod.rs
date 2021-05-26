@@ -43,7 +43,7 @@ use differential_dataflow::{
     logging::DifferentialEvent,
     operators::{
         arrange::{ArrangeByKey, ArrangeBySelf, Arranged, TraceAgent},
-        Consolidate, Join, Reduce, ThresholdTotal,
+        Consolidate, CountTotal, Join, JoinCore, Reduce, ThresholdTotal,
     },
     trace::TraceReader,
     Collection, ExchangeData, Hashable,
@@ -56,6 +56,7 @@ use std::{
     fmt::Debug,
     fs::{self, File},
     io::BufWriter,
+    iter,
     path::PathBuf,
     time::Duration,
 };
@@ -242,12 +243,27 @@ where
             aggregated.push((aggregate, 1))
         });
 
+    let addr_lookup = operators
+        .map(|(worker, event)| ((worker, event.id), event.addr))
+        .arrange_by_key();
+    let id_lookup = operators
+        .map(|(worker, event)| ((worker, event.addr), event.id))
+        .arrange_by_key();
+
     // TODO: Turn these into collections of `(WorkerId, OperatorId)` and arrange them
     let (leaves, subgraphs) = sift_leaves_and_scopes(scope, &operators);
     let (leaves_arranged, subgraphs_arranged) =
         (leaves.arrange_by_self(), subgraphs.arrange_by_self());
+    let subgraph_ids = subgraphs_arranged
+        .join_core(&id_lookup, |&(worker, _), &(), &id| {
+            iter::once((worker, id))
+        })
+        .arrange_by_self();
 
     let channel_events = channel_creations(&timely_stream);
+    let channel_scopes = channel_events
+        .map(|(worker, event)| ((worker, event.id), event.scope_addr))
+        .arrange_by_key();
     let channels = rewire_channels(scope, &channel_events, &subgraphs_arranged);
 
     let edges = attach_operators(scope, &operators, &channels, &leaves_arranged);
@@ -269,10 +285,6 @@ where
         })
         .arrange_by_self();
 
-    let addr_lookup = operators
-        .map(|(worker, event)| ((worker, event.id), event.addr))
-        .arrange_by_key();
-
     let (program_stats, worker_stats) = program_stats::aggregate_worker_stats(
         &timely_stream,
         differential_stream,
@@ -281,7 +293,13 @@ where
         &subgraphs_arranged,
     );
 
-    let dataflow_stats = dataflow_stats(timely_stream, &dataflow_ids, &addr_lookup);
+    let dataflow_stats = dataflow_stats(
+        timely_stream,
+        &dataflow_ids,
+        &addr_lookup,
+        &subgraph_ids,
+        &channel_scopes,
+    );
 
     channel_sink(
         &operator_names
@@ -373,10 +391,12 @@ where
     Ok(probe)
 }
 
-fn dataflow_stats<S, Tr1, Tr2>(
+fn dataflow_stats<S, Tr1, Tr2, Tr3, Tr4>(
     timely_stream: &Stream<S, TimelyLogBundle>,
     dataflow_ids: &Arranged<S, TraceAgent<Tr1>>,
     addr_lookup: &Arranged<S, TraceAgent<Tr2>>,
+    subgraph_ids: &Arranged<S, TraceAgent<Tr3>>,
+    channel_scopes: &Arranged<S, TraceAgent<Tr4>>,
 ) -> Collection<S, DataflowStats, Diff>
 where
     S: Scope<Timestamp = Duration>,
@@ -384,8 +404,13 @@ where
         + 'static,
     Tr2: TraceReader<Key = (WorkerId, OperatorId), Val = OperatorAddr, Time = S::Timestamp, R = Diff>
         + 'static,
+    Tr3: TraceReader<Key = (WorkerId, OperatorId), Val = (), Time = S::Timestamp, R = Diff>
+        + 'static,
+    Tr4: TraceReader<Key = (WorkerId, ChannelId), Val = OperatorAddr, Time = S::Timestamp, R = Diff>
+        + 'static,
 {
-    let dataflows = addr_lookup.semijoin_arranged(dataflow_ids);
+    // Collect all operator creation & drop times and make lifespans from the
+    // times they occur
     let lifespans = timely_stream
         .unary(Pipeline, "Dataflow Lifespan", |_capability, _info| {
             let mut lifespan_map = HashMap::new();
@@ -437,18 +462,78 @@ where
         })
         .as_collection();
 
+    let subgraph_addrs = subgraph_ids.join_core(&addr_lookup, |&(worker, id), &(), addr| {
+        iter::once(((worker, addr.clone()), id))
+    });
+
+    // Addresses consist of sequences of parent operator ids like `[0, 1, 2]` where `[0, 1]` is a child of `[0]`
+    // Therefore, to get all children of a given subgraph we can simply find all operators where the subgraph's
+    // address (`[0]`) is contained within another operator's address (`[0, 1]` or `[0, 1, 2, 3, 4]`)
+    let operator_parents = addr_lookup.flat_map_ref(|&(worker, operator), addr| {
+        let mut parents = Vec::with_capacity(addr.len());
+        parents
+            .extend((1..addr.len()).map(|i| ((worker, OperatorAddr::from(&addr[..i])), operator)));
+
+        parents
+    });
+
+    // Join all subgraphs against their children
+    let subgraph_children = subgraph_addrs.join_map(
+        &operator_parents,
+        |&(worker, _), &subgraph_id, &operator_id| ((worker, operator_id), subgraph_id),
+    );
+    let subgraph_children_arranged = subgraph_children.arrange_by_key();
+
+    // Get the number of operators underneath each subgraph
+    let subgraph_operators = subgraph_children
+        .map(|((worker, _), subgraph)| ((worker, subgraph), ()))
+        .count_total()
+        .map(|(((worker, subgraph), ()), operators)| ((worker, subgraph), operators as usize));
+
+    // Get the number of subgraphs underneath each subgraph
+    let subgraph_subgraphs = subgraph_children_arranged
+        .semijoin_arranged(&subgraph_ids)
+        .map(|((worker, _), subgraph)| ((worker, subgraph), ()))
+        .count_total()
+        .map(|(((worker, subgraph), ()), subgraphs)| ((worker, subgraph), subgraphs as usize));
+
+    // Get all parents of channels
+    let channel_parents = channel_scopes.flat_map_ref(|&(worker, channel), addr| {
+        let mut parents = Vec::with_capacity(addr.len());
+        parents
+            .extend((1..addr.len()).map(|i| ((worker, OperatorAddr::from(&addr[..i])), channel)));
+
+        parents
+    });
+
+    let subgraph_channels = subgraph_addrs
+        .join_map(&channel_parents, |&(worker, _), &subgraph_id, _| {
+            ((worker, subgraph_id), ())
+        })
+        .count_total()
+        .map(|(((worker, subgraph), ()), channels)| ((worker, subgraph), channels as usize));
+
+    // Find the addresses of all dataflows
+    let dataflows = addr_lookup.semijoin_arranged(dataflow_ids);
+
     dataflows
         .join(&lifespans)
-        .map(|((worker, id), (addr, lifespan))| DataflowStats {
-            id,
-            addr,
-            worker,
-            // FIXME: Count the nested operators/subgraphs/channels
-            operators: 0,
-            subgraphs: 0,
-            channels: 0,
-            lifespan,
-        })
+        .join(&subgraph_operators)
+        .join(&subgraph_subgraphs)
+        .join(&subgraph_channels)
+        .map(
+            |((worker, id), ((((addr, lifespan), operators), subgraphs), channels))| {
+                DataflowStats {
+                    id,
+                    addr,
+                    worker,
+                    operators,
+                    subgraphs,
+                    channels,
+                    lifespan,
+                }
+            },
+        )
 }
 
 fn operator_creations<S>(
@@ -606,20 +691,20 @@ fn channel_sink<S, D, R>(
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
 pub enum Channel {
     ScopeCrossing {
-        channel_id: OperatorId,
+        channel_id: ChannelId,
         source_addr: OperatorAddr,
         target_addr: OperatorAddr,
     },
 
     Normal {
-        channel_id: OperatorId,
+        channel_id: ChannelId,
         source_addr: OperatorAddr,
         target_addr: OperatorAddr,
     },
 }
 
 impl Channel {
-    pub const fn channel_id(&self) -> OperatorId {
+    pub const fn channel_id(&self) -> ChannelId {
         match *self {
             Self::ScopeCrossing { channel_id, .. } | Self::Normal { channel_id, .. } => channel_id,
         }
