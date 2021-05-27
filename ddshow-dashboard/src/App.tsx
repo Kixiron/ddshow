@@ -135,39 +135,35 @@ function partition_events_by_worker(
 }
 
 function total_workers(data: DDShowStats | null): number {
-    return data ? data.workers.length : 0;
+    return data ? data.program.workers : 0;
 }
 
 function total_nodes(data: DDShowStats | null): number {
-    return data ? data.nodes.length : 0;
+    return data ? data.program.operators + data.program.subgraphs : 0;
 }
 
 function total_subgraphs(data: DDShowStats | null): number {
-    return data
-        ? data.nodes.filter(node => node.kind === "Subgraph").length
-        : 0;
+    return data ? data.program.subgraphs : 0;
 }
 
 function total_operators(data: DDShowStats | null): number {
-    return data
-        ? data.nodes.filter(node => node.kind === "Operator").length
-        : 0;
+    return data ? data.program.operators : 0;
 }
 
 function total_dataflows(data: DDShowStats | null): number {
-    return data ? data.dataflows.length : 0;
+    return data ? data.program.dataflows : 0;
 }
 
 function total_channels(data: DDShowStats | null): number {
-    return data ? data.channels.length : 0;
+    return data ? data.program.channels : 0;
 }
 
 function total_arrangements(data: DDShowStats | null): number {
-    return data ? data.arrangements.length : 0;
+    return data ? data.program.arrangements : 0;
 }
 
 function total_events(data: DDShowStats | null): number {
-    return data ? data.events.length : 0;
+    return data ? data.program.events : 0;
 }
 
 export type ProgramStats = {

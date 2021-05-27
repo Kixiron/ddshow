@@ -48,7 +48,7 @@ default-features = false
 features = ["build", "cargo", "git", "rustc"]
 
 [profile.dev]
-debug = 0
+debug = 2
 lto = false
 opt-level = 0
 incremental = true
