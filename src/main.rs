@@ -45,6 +45,8 @@ pub static DDSHOW_VERSION: &str = env!("VERGEN_GIT_SEMVER");
 
 // TODO: Library-ify a lot of this
 // FIXME: Clean this up so much
+// TODO: Set the panic hook to shut down the computation
+//       so that panics don't stick things
 fn main() -> Result<()> {
     init_logging();
 

@@ -1,101 +1,354 @@
-use crate::dataflow::{
-    differential::ArrangementStats,
-    operators::{rkyv_capture::RkyvStartStop, RkyvTimelyEvent},
-    summation::{summation, Summation},
-    Diff, OperatorId, TimelyLogBundle, WorkerId,
+use crate::{
+    dataflow::{
+        differential::ArrangementStats,
+        granulate,
+        operators::{
+            rkyv_capture::{RkyvOperatesEvent, RkyvStartStop},
+            RkyvChannelsEvent, RkyvTimelyEvent,
+        },
+        summation::{summation, Summation},
+        ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelyLogBundle,
+        WorkerId,
+    },
+    ui::Lifespan,
 };
 use abomonation_derive::Abomonation;
 use differential_dataflow::{
     collection::AsCollection,
     lattice::Lattice,
-    operators::{Join, Reduce},
+    operators::{
+        arrange::{Arrange, ArrangeByKey},
+        Join, Reduce,
+    },
     Collection,
 };
 use std::{collections::HashMap, time::Duration};
 use timely::dataflow::{
-    channels::pact::Pipeline,
-    operators::{Enter, Map, Operator},
-    Scope, Stream,
+    channels::pact::Exchange, operators::generic::builder_rc::OperatorBuilder, Scope, Stream,
 };
+
+type TimelyCollections<S> = (
+    // Operator lifespans
+    Collection<S, ((WorkerId, OperatorId), Lifespan), Diff>,
+    // Operator activation times `(start, duration)`
+    Collection<S, ((WorkerId, OperatorId), (Duration, Duration)), Diff>,
+    // Operator creation times
+    Collection<S, ((WorkerId, OperatorId), Duration), Diff>,
+    // Channel creation times
+    Collection<S, ((WorkerId, ChannelId), Duration), Diff>,
+    // Raw channel events
+    // TODO: Remove the need for this
+    Collection<S, (WorkerId, RkyvChannelsEvent), Diff>,
+    // Raw operator events
+    // TODO: Remove the need for this
+    Collection<S, (WorkerId, RkyvOperatesEvent), Diff>,
+    // Operator names
+    ArrangedVal<S, (WorkerId, OperatorId), String>,
+    // Operator ids to addresses
+    ArrangedVal<S, (WorkerId, OperatorId), OperatorAddr>,
+    // Operator addresses to ids
+    ArrangedVal<S, (WorkerId, OperatorAddr), OperatorId>,
+    // Operator addresses
+    ArrangedKey<S, (WorkerId, OperatorAddr)>,
+    // Channel scope addresses
+    ArrangedVal<S, (WorkerId, ChannelId), OperatorAddr>,
+    // Dataflow operator ids
+    ArrangedKey<S, (WorkerId, OperatorId)>,
+);
+
+// TODO: These could all emit `Present` difference types since there's no retractions here
+pub fn extract_timely_info<S>(
+    scope: &mut S,
+    timely_stream: &Stream<S, TimelyLogBundle>,
+) -> TimelyCollections<S>
+where
+    S: Scope<Timestamp = Duration>,
+{
+    let mut builder = OperatorBuilder::new("Extract Operator Info".to_owned(), scope.clone());
+    builder.set_notify(false);
+
+    let mut timely_stream = builder.new_input(
+        timely_stream,
+        // Distribute events across all workers
+        Exchange::new(|&(_, id, _): &(_, WorkerId, _)| id.into_inner() as u64),
+    );
+
+    let (mut lifespan_out, lifespan_stream) = builder.new_output();
+    let (mut activation_duration_out, activation_duration_stream) = builder.new_output();
+    let (mut operator_creation_out, operator_creation_stream) = builder.new_output();
+    let (mut channel_creation_out, channel_creation_stream) = builder.new_output();
+    let (mut raw_channels_out, raw_channels_stream) = builder.new_output();
+    let (mut raw_operators_out, raw_operators_stream) = builder.new_output();
+    let (mut operator_names_out, operator_names_stream) = builder.new_output();
+    let (mut operator_ids_out, operator_ids_stream) = builder.new_output();
+    let (mut operator_addrs_out, operator_addrs_stream) = builder.new_output();
+    let (mut operator_addrs_by_self_out, operator_addrs_by_self_stream) = builder.new_output();
+    let (mut channel_scope_addrs_out, channel_scope_addrs_stream) = builder.new_output();
+    let (mut dataflow_ids_out, dataflow_ids_stream) = builder.new_output();
+
+    builder.build_reschedule(move |_capabilities| {
+        move |_frontiers| {
+            let mut buffer = Vec::new();
+            let (mut lifespan_map, mut activation_map) = (HashMap::new(), HashMap::new());
+            let mut dangling_queue = Vec::new();
+
+            let mut lifespan_handle = lifespan_out.activate();
+            let mut activation_duration_handle = activation_duration_out.activate();
+            let mut operator_creation_handle = operator_creation_out.activate();
+            let mut channel_creation_handle = channel_creation_out.activate();
+            let mut raw_channels_handle = raw_channels_out.activate();
+            let mut raw_operators_handle = raw_operators_out.activate();
+            let mut operator_names_handle = operator_names_out.activate();
+            let mut operator_ids_handle = operator_ids_out.activate();
+            let mut operator_addrs_handle = operator_addrs_out.activate();
+            let mut operator_addrs_by_self_handle = operator_addrs_by_self_out.activate();
+            let mut channel_scope_addrs_handle = channel_scope_addrs_out.activate();
+            let mut dataflow_ids_handle = dataflow_ids_out.activate();
+
+            timely_stream.for_each(|capability, data| {
+                let capability = capability.retain();
+                data.swap(&mut buffer);
+
+                tracing::debug!(target: "extract_timely_info", capability = ?capability, "for_each");
+
+                let total = buffer.len();
+                for (i, (time, worker, event)) in buffer.drain(..).enumerate() {
+                    tracing::debug!(
+                        target: "extract_timely_info",
+                        time = ?time,
+                        event = ?event,
+                        capability = ?capability,
+                        total = total,
+                        current = i,
+                        "buffer.drain(..)",
+                    );
+
+                    match event {
+                        RkyvTimelyEvent::Operates(operates) => {
+                            lifespan_map.insert((worker, operates.id), (time, capability.clone()));
+
+                            // Emit raw operator events
+                            raw_operators_handle
+                                .session(&capability.delayed(&time))
+                                .give(((worker, operates.clone()), time, 1));
+
+                            tracing::debug!(
+                                target: "extract_timely_info",
+                                time = ?time,
+                                operates = ?operates,
+                                capability = ?capability,
+                                total = total,
+                                current = i,
+                                "Operates",
+                            );
+
+                            // Emit operator creation times
+                            operator_creation_handle.session(&capability).give((
+                                ((worker, operates.id), time),
+                                time,
+                                1,
+                            ));
+
+                            // Emit operator names
+                            operator_names_handle.session(&capability).give((
+                                ((worker, operates.id), operates.name),
+                                time,
+                                1,
+                            ));
+
+                            // Emit dataflow ids
+                            if operates.addr.is_top_level() {
+                                dataflow_ids_handle.session(&capability).give((
+                                    ((worker, operates.id), ()),
+                                    time,
+                                    1,
+                                ));
+                            }
+
+                            // Emit operator ids
+                            operator_ids_handle.session(&capability).give((
+                                ((worker, operates.id), operates.addr.clone()),
+                                time,
+                                1,
+                            ));
+
+                            // Emit operator addresses
+                            operator_addrs_handle.session(&capability).give((
+                                ((worker, operates.addr.clone()), operates.id),
+                                time,
+                                1,
+                            ));
+                            operator_addrs_by_self_handle.session(&capability).give((
+                                ((worker, operates.addr), ()),
+                                time,
+                                1,
+                            ));
+                        }
+
+                        RkyvTimelyEvent::Shutdown(shutdown) => {
+                            if let Some((start_time, mut stored_capability)) =
+                                lifespan_map.remove(&(worker, shutdown.id))
+                            {
+                                stored_capability
+                                    .downgrade(&stored_capability.time().join(capability.time()));
+
+                                lifespan_handle.session(&stored_capability).give((
+                                    ((worker, shutdown.id), Lifespan::new(start_time, time)),
+                                    *stored_capability.time(),
+                                    1,
+                                ));
+                            }
+
+                            // Push to the dangling activations queue
+                            dangling_queue.push((worker, shutdown.id));
+                        }
+
+                        RkyvTimelyEvent::Schedule(schedule) => {
+                            let operator = schedule.id;
+
+                            match schedule.start_stop {
+                                RkyvStartStop::Start => {
+                                    activation_map
+                                        .insert((worker, operator), (time, capability.clone()));
+                                }
+
+                                RkyvStartStop::Stop => {
+                                    if let Some((start_time, mut stored_capability)) =
+                                        activation_map.remove(&(worker, operator))
+                                    {
+                                        let duration = time - start_time;
+                                        stored_capability.downgrade(
+                                            &stored_capability.time().join(capability.time()),
+                                        );
+
+                                        activation_duration_handle
+                                            .session(&stored_capability)
+                                            .give((
+                                                ((worker, operator), (start_time, duration)),
+                                                *stored_capability.time(),
+                                                1,
+                                            ));
+                                    }
+                                }
+                            }
+                        }
+
+                        RkyvTimelyEvent::Channels(channel) => {
+                            // Emit raw channels
+                            raw_channels_handle.session(&capability).give((
+                                (worker, channel.clone()),
+                                time,
+                                1,
+                            ));
+
+                            // Emit channel creation times
+                            channel_creation_handle.session(&capability).give((
+                                ((worker, channel.id), time),
+                                time,
+                                1,
+                            ));
+
+                            // Emit channel scope addresses
+                            channel_scope_addrs_handle.session(&capability).give((
+                                ((worker, channel.id), channel.scope_addr),
+                                time,
+                                1,
+                            ));
+                        }
+
+                        RkyvTimelyEvent::PushProgress(_)
+                        | RkyvTimelyEvent::Messages(_)
+                        | RkyvTimelyEvent::Application(_)
+                        | RkyvTimelyEvent::GuardedMessage(_)
+                        | RkyvTimelyEvent::GuardedProgress(_)
+                        | RkyvTimelyEvent::CommChannels(_)
+                        | RkyvTimelyEvent::Input(_)
+                        | RkyvTimelyEvent::Park(_)
+                        | RkyvTimelyEvent::Text(_) => {}
+                    }
+                }
+            });
+
+            // Drain the dangling queue
+            for (worker, operator) in dangling_queue.drain(..) {
+                activation_map.remove(&(worker, operator));
+            }
+
+            // Return our reactivation status, we want to be reactivated if we have any pending data
+            !activation_map.is_empty() && !lifespan_map.is_empty() && !dangling_queue.is_empty()
+        }
+    });
+
+    // TODO: Granulate the times within the operator
+    let operator_names = operator_names_stream
+        .as_collection()
+        .delay(granulate)
+        .arrange_by_key();
+    let operator_ids = operator_ids_stream
+        .as_collection()
+        .delay(granulate)
+        .arrange_by_key();
+    let operator_addrs = operator_addrs_stream
+        .as_collection()
+        .delay(granulate)
+        .arrange_by_key();
+    let operator_addrs_by_self = operator_addrs_by_self_stream
+        .as_collection()
+        .delay(granulate)
+        .arrange();
+    let channel_scope_addrs = channel_scope_addrs_stream
+        .as_collection()
+        .delay(granulate)
+        .arrange_by_key();
+    let dataflow_ids = dataflow_ids_stream
+        .as_collection()
+        .delay(granulate)
+        .arrange();
+
+    // Granulate all streams and turn them into collections
+    (
+        lifespan_stream.as_collection().delay(granulate),
+        activation_duration_stream.as_collection().delay(granulate),
+        operator_creation_stream.as_collection().delay(granulate),
+        channel_creation_stream.as_collection().delay(granulate),
+        // Note: This isn't granulated since I have no idea what depends
+        //       on the timestamp being the event time
+        raw_channels_stream.as_collection(),
+        // Note: This isn't granulated since I have no idea what depends
+        //       on the timestamp being the event time
+        raw_operators_stream.as_collection(),
+        operator_names,
+        operator_ids,
+        operator_addrs,
+        operator_addrs_by_self,
+        channel_scope_addrs,
+        dataflow_ids,
+    )
+}
+
+type ActivationTimes<S> = Collection<S, ((WorkerId, OperatorId), (Duration, Duration)), Diff>;
 
 pub fn operator_stats<S>(
     scope: &mut S,
-    log_stream: &Stream<S, TimelyLogBundle>,
+    activation_times: &ActivationTimes<S>,
 ) -> Collection<S, ((WorkerId, OperatorId), OperatorStats), Diff>
 where
     S: Scope<Timestamp = Duration>,
 {
-    scope.region_named("Collect Operator Execution Durations", |region| {
-        let log_stream = log_stream.enter(region);
+    scope.region_named("Build Operator Stats", |region| {
+        let activation_times = activation_times.enter(region);
 
-        let scheduling_events = log_stream.flat_map(|(time, worker, event)| {
-            if let RkyvTimelyEvent::Schedule(event) = event {
-                Some(((worker, event), time, 1))
-            } else {
-                None
-            }
+        let aggregated_durations = activation_times.reduce(|_id, durations, output| {
+            let durations: Vec<_> = durations
+                .iter()
+                .flat_map(|&(&duration, diff)| (0..diff).map(move |_| duration))
+                .collect();
+
+            output.push((durations, 1));
         });
 
-        let execution_durations = scheduling_events
-            .unary(
-                Pipeline,
-                "Associate Start/Stop Events",
-                |_capability, _info| {
-                    let mut buffer = Vec::new();
-                    let mut schedule_map = HashMap::new();
-
-                    move |input, output| {
-                        input.for_each(|capability, data| {
-                            let capability = capability.retain();
-                            data.swap(&mut buffer);
-
-                            for ((worker, event), time, _diff) in buffer.drain(..) {
-                                let operator = event.id;
-
-                                match event.start_stop {
-                                    RkyvStartStop::Start => {
-                                        schedule_map
-                                            .insert((worker, operator), (time, capability.clone()));
-                                    }
-
-                                    RkyvStartStop::Stop => {
-                                        if let Some((start_time, mut stored_capability)) =
-                                            schedule_map.remove(&(worker, operator))
-                                        {
-                                            let duration = time - start_time;
-                                            stored_capability.downgrade(
-                                                &stored_capability.time().join(capability.time()),
-                                            );
-
-                                            output.session(&stored_capability).give((
-                                                ((worker, operator), duration),
-                                                time,
-                                                // Product::new(start_time, time),
-                                                1,
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    }
-                },
-            )
-            .as_collection();
-
-        let aggregated_durations = execution_durations
-            .inner
-            .map(|((operator, duration), time, diff)| ((operator, (duration, time)), time, diff))
-            .as_collection()
-            .reduce(|_id, durations, output| {
-                let durations: Vec<_> = durations
-                    .iter()
-                    .flat_map(|&(&duration, diff)| (0..diff).map(move |_| duration))
-                    .collect();
-                output.push((durations, 1));
-            });
-
-        let execution_statistics = summation(&execution_durations);
+        let execution_statistics =
+            summation(&activation_times.map(|(operator, (_start, duration))| (operator, duration)));
 
         aggregated_durations
             .join_map(
@@ -137,6 +390,7 @@ pub struct OperatorStats {
     pub average: Duration,
     pub total: Duration,
     pub activations: usize,
+    /// Operator activation times `(start, duration)`
     pub activation_durations: Vec<(Duration, Duration)>,
     pub arrangement_size: Option<ArrangementStats>,
     // pub messages_sent: usize,
