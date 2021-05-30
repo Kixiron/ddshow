@@ -1,9 +1,7 @@
-use crate::{
-    args::Args,
-    dataflow::{DataflowData, OperatorAddr, OperatorId, WorkerId},
-};
+use crate::{args::Args, dataflow::DataflowData};
 use anyhow::{Context, Result};
 use comfy_table::{presets::UTF8_FULL, Cell, ColumnConstraint, Table as InnerTable, ToRow};
+use ddshow_types::{OperatorAddr, OperatorId, WorkerId};
 use std::{
     cmp::Reverse,
     collections::HashMap,

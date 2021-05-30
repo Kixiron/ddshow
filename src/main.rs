@@ -9,15 +9,17 @@ use crate::{
     args::Args,
     colormap::{select_color, Color},
     dataflow::{
-        operators::{
-            rkyv_capture::RkyvOperatesEvent, Fuel, InspectExt, ReplayWithShutdown, RkyvTimelyEvent,
-        },
-        Channel, DataflowData, DataflowSenders, OperatorAddr, OperatorId, OperatorStats, WorkerId,
+        operators::{Fuel, InspectExt, ReplayWithShutdown},
+        Channel, DataflowData, DataflowSenders, OperatorStats,
     },
     network::{acquire_replay_sources, wait_for_input, ReplaySource},
     ui::{ActivationDuration, DDShowStats, EdgeKind, Lifespan, TimelineEvent},
 };
 use anyhow::{Context, Result};
+use ddshow_types::{
+    timely_logging::{OperatesEvent, TimelyEvent},
+    OperatorAddr, OperatorId, WorkerId,
+};
 use differential_dataflow::logging::DifferentialEvent;
 use std::{
     collections::HashMap,
@@ -34,7 +36,7 @@ use std::{
     time::Duration,
 };
 use structopt::StructOpt;
-use timely::{dataflow::operators::Map, logging::TimelyEvent};
+use timely::{dataflow::operators::Map, logging::TimelyEvent as RawTimelyEvent};
 use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
     EnvFilter,
@@ -156,8 +158,8 @@ fn main() -> Result<()> {
                         replay_shutdown.clone(),
                         fuel.clone(),
                     )
-                    .map(|(time, worker, event): (Duration, usize, TimelyEvent)| {
-                        (time, WorkerId::new(worker), RkyvTimelyEvent::from(event))
+                    .map(|(time, worker, event): (Duration, usize, RawTimelyEvent)| {
+                        (time, WorkerId::new(worker), TimelyEvent::from(event))
                     }),
             }
             .debug_inspect(|x| tracing::trace!("timely event: {:?}", x));
@@ -292,7 +294,7 @@ fn main() -> Result<()> {
 
     let html_nodes: Vec<_> = node_events
         .into_iter()
-        .filter_map(|((worker, addr), RkyvOperatesEvent { id, name, .. })| {
+        .filter_map(|((worker, addr), OperatesEvent { id, name, .. })| {
             let &OperatorStats {
                 max,
                 min,
@@ -334,7 +336,7 @@ fn main() -> Result<()> {
 
     let html_subgraphs: Vec<_> = subgraph_events
         .into_iter()
-        .filter_map(|((worker, addr), RkyvOperatesEvent { id, name, .. })| {
+        .filter_map(|((worker, addr), OperatesEvent { id, name, .. })| {
             let OperatorStats {
                 max,
                 min,
@@ -369,9 +371,9 @@ fn main() -> Result<()> {
         .map(
             |(
                 worker,
-                RkyvOperatesEvent { addr: src, .. },
+                OperatesEvent { addr: src, .. },
                 channel,
-                RkyvOperatesEvent { addr: dest, .. },
+                OperatesEvent { addr: dest, .. },
             )| {
                 ui::Edge {
                     src,
@@ -410,7 +412,7 @@ fn main() -> Result<()> {
     }
 
     println!(
-        "Wrote output graph to file://{}",
+        "Wrote output graph to file:///{}",
         fs::canonicalize(&args.output_dir)
             .context("failed to get path of output dir")?
             .join("graph.html")

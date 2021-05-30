@@ -1,7 +1,8 @@
 use crate::dataflow::{
-    operators::{JoinArranged, RkyvChannelsEvent},
-    send_recv::ChannelAddrs,
-    Channel, ChannelId, FilterMap, Multiply, OperatorAddr, PortId, WorkerId,
+    operators::JoinArranged, send_recv::ChannelAddrs, Channel, FilterMap, Multiply,
+};
+use ddshow_types::{
+    timely_logging::ChannelsEvent, ChannelId, OperatorAddr, OperatorId, PortId, WorkerId,
 };
 use differential_dataflow::{
     difference::Abelian,
@@ -13,7 +14,7 @@ use timely::dataflow::Scope;
 
 pub fn rewire_channels<S, D>(
     scope: &mut S,
-    channels: &Collection<S, (WorkerId, RkyvChannelsEvent), D>,
+    channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
     subgraphs: &ChannelAddrs<S, D>,
 ) -> Collection<S, (WorkerId, Channel), D>
 where
@@ -39,7 +40,7 @@ where
 
 fn subgraph_crosses<S, D>(
     scope: &mut S,
-    channels: &Collection<S, (WorkerId, RkyvChannelsEvent), D>,
+    channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
     subgraphs: &ChannelAddrs<S, D>,
 ) -> Collection<S, (WorkerId, Channel), D>
 where
@@ -64,7 +65,7 @@ where
                 (worker, source, channel.source.1),
                 (
                     (target, channel.target.1),
-                    OperatorAddr::from_elem(channel.id.into_inner()),
+                    OperatorAddr::from_elem(OperatorId::new(channel.id.into_inner())),
                 ),
             )
         });
@@ -152,7 +153,7 @@ where
                     (
                         worker,
                         Channel::ScopeCrossing {
-                            channel_id: ChannelId::new(channel_ids_along_path[0]),
+                            channel_id: ChannelId::new(channel_ids_along_path[0].into_inner()),
                             source_addr,
                             target_addr,
                         },
@@ -169,7 +170,7 @@ where
 
 fn subgraph_normal<S, D>(
     scope: &mut S,
-    channels: &Collection<S, (WorkerId, RkyvChannelsEvent), D>,
+    channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
     subgraphs: &ChannelAddrs<S, D>,
 ) -> Collection<S, (WorkerId, Channel), D>
 where

@@ -2,10 +2,6 @@ use crate::{
     dataflow::{
         differential::ArrangementStats,
         granulate,
-        operators::{
-            rkyv_capture::{RkyvOperatesEvent, RkyvStartStop},
-            RkyvChannelsEvent, RkyvTimelyEvent,
-        },
         summation::{summation, Summation},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelyLogBundle,
         WorkerId,
@@ -13,6 +9,7 @@ use crate::{
     ui::Lifespan,
 };
 use abomonation_derive::Abomonation;
+use ddshow_types::timely_logging::{ChannelsEvent, OperatesEvent, StartStop, TimelyEvent};
 use differential_dataflow::{
     collection::AsCollection,
     lattice::Lattice,
@@ -38,10 +35,10 @@ type TimelyCollections<S> = (
     Collection<S, ((WorkerId, ChannelId), Duration), Diff>,
     // Raw channel events
     // TODO: Remove the need for this
-    Collection<S, (WorkerId, RkyvChannelsEvent), Diff>,
+    Collection<S, (WorkerId, ChannelsEvent), Diff>,
     // Raw operator events
     // TODO: Remove the need for this
-    Collection<S, (WorkerId, RkyvOperatesEvent), Diff>,
+    Collection<S, (WorkerId, OperatesEvent), Diff>,
     // Operator names
     ArrangedVal<S, (WorkerId, OperatorId), String>,
     // Operator ids to addresses
@@ -68,11 +65,19 @@ where
     builder.set_notify(false);
 
     let mut timely_stream = builder.new_input(
+        // TODO: We may be able to get away with only granulating the input stream
+        //       as long as we make sure no downstream consumers depend on either
+        //       the timestamp of the timely stream or the differential collection
+        //       for diagnostic data
         timely_stream,
-        // Distribute events across all workers
+        // Distribute events across all workers based on the worker they originated from
+        // This should be done by default when the number of ddshow workers is the same
+        // as the number of timely ones, but this ensures that it happens for disk replay
+        // and unbalanced numbers of workers to ensure work is fairly divided
         Exchange::new(|&(_, id, _): &(_, WorkerId, _)| id.into_inner() as u64),
     );
 
+    // Create all of the outputs
     let (mut lifespan_out, lifespan_stream) = builder.new_output();
     let (mut activation_duration_out, activation_duration_stream) = builder.new_output();
     let (mut operator_creation_out, operator_creation_stream) = builder.new_output();
@@ -90,8 +95,8 @@ where
         move |_frontiers| {
             let mut buffer = Vec::new();
             let (mut lifespan_map, mut activation_map) = (HashMap::new(), HashMap::new());
-            let mut dangling_queue = Vec::new();
 
+            // Activate all the outputs
             let mut lifespan_handle = lifespan_out.activate();
             let mut activation_duration_handle = activation_duration_out.activate();
             let mut operator_creation_handle = operator_creation_out.activate();
@@ -106,51 +111,43 @@ where
             let mut dataflow_ids_handle = dataflow_ids_out.activate();
 
             timely_stream.for_each(|capability, data| {
-                let capability = capability.retain();
                 data.swap(&mut buffer);
 
-                tracing::debug!(target: "extract_timely_info", capability = ?capability, "for_each");
-
-                let total = buffer.len();
-                for (i, (time, worker, event)) in buffer.drain(..).enumerate() {
-                    tracing::debug!(
-                        target: "extract_timely_info",
-                        time = ?time,
-                        event = ?event,
-                        capability = ?capability,
-                        total = total,
-                        current = i,
-                        "buffer.drain(..)",
-                    );
+                for (time, worker, event) in buffer.drain(..) {
+                    // Get capabilities for every individual output
+                    let session_time = capability.time().join(&time);
+                    let lifespan_cap = capability.delayed_for_output(&session_time, 0);
+                    let activation_duration_cap = capability.delayed_for_output(&session_time, 1);
+                    let operator_creation_cap = capability.delayed_for_output(&session_time, 2);
+                    let channel_creation_cap = capability.delayed_for_output(&session_time, 3);
+                    let raw_channels_cap = capability.delayed_for_output(&session_time, 4);
+                    let raw_operators_cap = capability.delayed_for_output(&session_time, 5);
+                    let operator_names_cap = capability.delayed_for_output(&session_time, 6);
+                    let operator_ids_cap = capability.delayed_for_output(&session_time, 7);
+                    let operator_addrs_cap = capability.delayed_for_output(&session_time, 8);
+                    let operator_addrs_by_self_cap =
+                        capability.delayed_for_output(&session_time, 9);
+                    let channel_scope_addrs_cap = capability.delayed_for_output(&session_time, 10);
+                    let dataflow_ids_cap = capability.delayed_for_output(&session_time, 11);
 
                     match event {
-                        RkyvTimelyEvent::Operates(operates) => {
-                            lifespan_map.insert((worker, operates.id), (time, capability.clone()));
+                        TimelyEvent::Operates(operates) => {
+                            lifespan_map.insert((worker, operates.id), time);
 
                             // Emit raw operator events
-                            raw_operators_handle
-                                .session(&capability.delayed(&time))
-                                .give(((worker, operates.clone()), time, 1));
-
-                            tracing::debug!(
-                                target: "extract_timely_info",
-                                time = ?time,
-                                operates = ?operates,
-                                capability = ?capability,
-                                total = total,
-                                current = i,
-                                "Operates",
-                            );
-
-                            // Emit operator creation times
-                            operator_creation_handle.session(&capability).give((
-                                ((worker, operates.id), time),
+                            raw_operators_handle.session(&raw_operators_cap).give((
+                                (worker, operates.clone()),
                                 time,
                                 1,
                             ));
 
+                            // Emit operator creation times
+                            operator_creation_handle
+                                .session(&operator_creation_cap)
+                                .give((((worker, operates.id), time), time, 1));
+
                             // Emit operator names
-                            operator_names_handle.session(&capability).give((
+                            operator_names_handle.session(&operator_names_cap).give((
                                 ((worker, operates.id), operates.name),
                                 time,
                                 1,
@@ -158,7 +155,7 @@ where
 
                             // Emit dataflow ids
                             if operates.addr.is_top_level() {
-                                dataflow_ids_handle.session(&capability).give((
+                                dataflow_ids_handle.session(&dataflow_ids_cap).give((
                                     ((worker, operates.id), ()),
                                     time,
                                     1,
@@ -166,66 +163,54 @@ where
                             }
 
                             // Emit operator ids
-                            operator_ids_handle.session(&capability).give((
+                            operator_ids_handle.session(&operator_ids_cap).give((
                                 ((worker, operates.id), operates.addr.clone()),
                                 time,
                                 1,
                             ));
 
                             // Emit operator addresses
-                            operator_addrs_handle.session(&capability).give((
+                            operator_addrs_handle.session(&operator_addrs_cap).give((
                                 ((worker, operates.addr.clone()), operates.id),
                                 time,
                                 1,
                             ));
-                            operator_addrs_by_self_handle.session(&capability).give((
-                                ((worker, operates.addr), ()),
-                                time,
-                                1,
-                            ));
+                            operator_addrs_by_self_handle
+                                .session(&operator_addrs_by_self_cap)
+                                .give((((worker, operates.addr), ()), time, 1));
                         }
 
-                        RkyvTimelyEvent::Shutdown(shutdown) => {
-                            if let Some((start_time, mut stored_capability)) =
-                                lifespan_map.remove(&(worker, shutdown.id))
-                            {
-                                stored_capability
-                                    .downgrade(&stored_capability.time().join(capability.time()));
-
-                                lifespan_handle.session(&stored_capability).give((
+                        TimelyEvent::Shutdown(shutdown) => {
+                            if let Some(start_time) = lifespan_map.remove(&(worker, shutdown.id)) {
+                                lifespan_handle.session(&lifespan_cap).give((
                                     ((worker, shutdown.id), Lifespan::new(start_time, time)),
-                                    *stored_capability.time(),
+                                    time,
                                     1,
                                 ));
                             }
 
-                            // Push to the dangling activations queue
-                            dangling_queue.push((worker, shutdown.id));
+                            // Remove any dangling activations
+                            activation_map.remove(&(worker, shutdown.id));
                         }
 
-                        RkyvTimelyEvent::Schedule(schedule) => {
+                        TimelyEvent::Schedule(schedule) => {
                             let operator = schedule.id;
 
                             match schedule.start_stop {
-                                RkyvStartStop::Start => {
-                                    activation_map
-                                        .insert((worker, operator), (time, capability.clone()));
+                                StartStop::Start => {
+                                    activation_map.insert((worker, operator), time);
                                 }
 
-                                RkyvStartStop::Stop => {
-                                    if let Some((start_time, mut stored_capability)) =
+                                StartStop::Stop => {
+                                    if let Some(start_time) =
                                         activation_map.remove(&(worker, operator))
                                     {
                                         let duration = time - start_time;
-                                        stored_capability.downgrade(
-                                            &stored_capability.time().join(capability.time()),
-                                        );
-
                                         activation_duration_handle
-                                            .session(&stored_capability)
+                                            .session(&activation_duration_cap)
                                             .give((
                                                 ((worker, operator), (start_time, duration)),
-                                                *stored_capability.time(),
+                                                time,
                                                 1,
                                             ));
                                     }
@@ -233,49 +218,43 @@ where
                             }
                         }
 
-                        RkyvTimelyEvent::Channels(channel) => {
+                        TimelyEvent::Channels(channel) => {
                             // Emit raw channels
-                            raw_channels_handle.session(&capability).give((
+                            raw_channels_handle.session(&raw_channels_cap).give((
                                 (worker, channel.clone()),
                                 time,
                                 1,
                             ));
 
                             // Emit channel creation times
-                            channel_creation_handle.session(&capability).give((
-                                ((worker, channel.id), time),
-                                time,
-                                1,
-                            ));
+                            channel_creation_handle
+                                .session(&channel_creation_cap)
+                                .give((((worker, channel.id), time), time, 1));
 
                             // Emit channel scope addresses
-                            channel_scope_addrs_handle.session(&capability).give((
-                                ((worker, channel.id), channel.scope_addr),
-                                time,
-                                1,
-                            ));
+                            channel_scope_addrs_handle
+                                .session(&channel_scope_addrs_cap)
+                                .give((((worker, channel.id), channel.scope_addr), time, 1));
                         }
 
-                        RkyvTimelyEvent::PushProgress(_)
-                        | RkyvTimelyEvent::Messages(_)
-                        | RkyvTimelyEvent::Application(_)
-                        | RkyvTimelyEvent::GuardedMessage(_)
-                        | RkyvTimelyEvent::GuardedProgress(_)
-                        | RkyvTimelyEvent::CommChannels(_)
-                        | RkyvTimelyEvent::Input(_)
-                        | RkyvTimelyEvent::Park(_)
-                        | RkyvTimelyEvent::Text(_) => {}
+                        TimelyEvent::PushProgress(_)
+                        | TimelyEvent::Messages(_)
+                        | TimelyEvent::Application(_)
+                        | TimelyEvent::GuardedMessage(_)
+                        | TimelyEvent::GuardedProgress(_)
+                        | TimelyEvent::CommChannels(_)
+                        | TimelyEvent::Input(_)
+                        | TimelyEvent::Park(_)
+                        | TimelyEvent::Text(_) => {}
                     }
                 }
             });
 
-            // Drain the dangling queue
-            for (worker, operator) in dangling_queue.drain(..) {
-                activation_map.remove(&(worker, operator));
-            }
+            // FIXME: If every data source has completed, cut off any outstanding events to keep
+            //        us from getting stuck in an infinite loop
 
             // Return our reactivation status, we want to be reactivated if we have any pending data
-            !activation_map.is_empty() && !lifespan_map.is_empty() && !dangling_queue.is_empty()
+            !activation_map.is_empty() && !lifespan_map.is_empty()
         }
     });
 
@@ -311,10 +290,10 @@ where
         activation_duration_stream.as_collection().delay(granulate),
         operator_creation_stream.as_collection().delay(granulate),
         channel_creation_stream.as_collection().delay(granulate),
-        // Note: This isn't granulated since I have no idea what depends
+        // FIXME: This isn't granulated since I have no idea what depends
         //       on the timestamp being the event time
         raw_channels_stream.as_collection(),
-        // Note: This isn't granulated since I have no idea what depends
+        // FIXME: This isn't granulated since I have no idea what depends
         //       on the timestamp being the event time
         raw_operators_stream.as_collection(),
         operator_names,

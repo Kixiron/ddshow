@@ -9,12 +9,10 @@ mod send_recv;
 mod subgraphs;
 mod summation;
 mod tests;
-mod types;
 mod worker_timeline;
 
 pub use operator_stats::OperatorStats;
 pub use send_recv::{DataflowData, DataflowExtractor, DataflowReceivers, DataflowSenders};
-pub use types::{ChannelId, OperatesEvent, OperatorAddr, OperatorId, PortId, WorkerId};
 pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 
 use crate::{
@@ -22,10 +20,7 @@ use crate::{
     dataflow::{
         differential::{arrangement_stats, ArrangementStats},
         operator_stats::{extract_timely_info, operator_stats},
-        operators::{
-            rkyv_capture::{RkyvOperatesEvent, RkyvTimelyEvent},
-            CrossbeamPusher, FilterMap, JoinArranged, Multiply, RkyvEventWriter, SortBy,
-        },
+        operators::{CrossbeamPusher, FilterMap, JoinArranged, Multiply, RkyvEventWriter, SortBy},
         send_recv::ChannelAddrs,
         subgraphs::rewire_channels,
         worker_timeline::worker_timeline,
@@ -35,6 +30,10 @@ use crate::{
 use abomonation_derive::Abomonation;
 use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
+use ddshow_types::{
+    timely_logging::{OperatesEvent, TimelyEvent},
+    ChannelId, OperatorAddr, OperatorId, WorkerId,
+};
 use differential_dataflow::{
     difference::Semigroup,
     lattice::Lattice,
@@ -107,7 +106,7 @@ fn granulate(&time: &Duration) -> Duration {
     minted
 }
 
-pub type TimelyLogBundle<Id = WorkerId> = (Time, Id, RkyvTimelyEvent);
+pub type TimelyLogBundle<Id = WorkerId> = (Time, Id, TimelyEvent);
 pub type DifferentialLogBundle<Id = WorkerId> = (Time, Id, DifferentialEvent);
 
 #[cfg(feature = "timely-next")]
@@ -513,10 +512,10 @@ where
 
 fn attach_operators<S, D>(
     scope: &mut S,
-    operators: &Collection<S, (WorkerId, RkyvOperatesEvent), D>,
+    operators: &Collection<S, (WorkerId, OperatesEvent), D>,
     channels: &Collection<S, (WorkerId, Channel), D>,
     leaves: &ChannelAddrs<S, D>,
-) -> Collection<S, (WorkerId, RkyvOperatesEvent, Channel, RkyvOperatesEvent), D>
+) -> Collection<S, (WorkerId, OperatesEvent, Channel, OperatesEvent), D>
 where
     S: Scope,
     S::Timestamp: Lattice,

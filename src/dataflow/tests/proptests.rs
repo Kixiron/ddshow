@@ -1,5 +1,5 @@
 use crate::dataflow::{
-    operators::{ActivateCapabilitySet, RkyvTimelyEvent},
+    operators::ActivateCapabilitySet,
     tests::{
         init_test_logging,
         proptest_utils::{gen_event_pair, EventPair, Expected},
@@ -8,8 +8,9 @@ use crate::dataflow::{
         collect_differential_events, collect_timely_events, worker_timeline, EventData,
         WorkerTimelineEvent,
     },
-    Diff, WorkerId,
+    Diff,
 };
+use ddshow_types::{timely_logging::TimelyEvent, WorkerId};
 use differential_dataflow::{
     logging::DifferentialEvent,
     operators::{arrange::ArrangeByKey, Consolidate},
@@ -55,12 +56,12 @@ proptest! {
 
     #[test]
     fn timely_events(pair in gen_event_pair(true)) {
-        events_inner::<RkyvTimelyEvent, _>(pair, |events| collect_timely_events(events))?;
+        events_inner::<TimelyEvent, _>(pair, |events| collect_timely_events(events))?;
     }
 
     #[test]
     fn timely_events_stress(pairs in propvec(gen_event_pair(true), 1..500)) {
-        events_stress_inner::<RkyvTimelyEvent, _>(pairs, |events| collect_timely_events(events))?;
+        events_stress_inner::<TimelyEvent, _>(pairs, |events| collect_timely_events(events))?;
     }
 
     #[test]
@@ -79,7 +80,7 @@ type EventStreamOut<'a> = Stream<Child<'a, Worker<Thread>, Duration>, (EventData
 
 fn timeline_events_inner(
     mut name_rng: TestRng,
-    timely: Vec<EventPair<RkyvTimelyEvent>>,
+    timely: Vec<EventPair<TimelyEvent>>,
     differential: Vec<EventPair<DifferentialEvent>>,
 ) -> Result<(), TestCaseError> {
     init_test_logging();

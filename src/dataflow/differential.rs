@@ -1,8 +1,9 @@
 use crate::dataflow::{
     operators::{Max, Min},
-    Diff, DifferentialLogBundle, FilterMap, OperatorId, WorkerId,
+    Diff, DifferentialLogBundle, FilterMap,
 };
 use abomonation_derive::Abomonation;
+use ddshow_types::{OperatorId, WorkerId};
 #[cfg(not(feature = "timely-next"))]
 use differential_dataflow::difference::DiffPair;
 use differential_dataflow::{
