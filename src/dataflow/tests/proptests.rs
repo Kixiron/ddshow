@@ -1,12 +1,12 @@
 use crate::dataflow::{
+    operator_stats::extract_timely_info,
     operators::ActivateCapabilitySet,
     tests::{
-        init_test_logging,
+        collect_timely_events, init_test_logging,
         proptest_utils::{gen_event_pair, EventPair, Expected},
     },
     worker_timeline::{
-        collect_differential_events, collect_timely_events, worker_timeline, EventData,
-        WorkerTimelineEvent,
+        collect_differential_events, worker_timeline, EventData, WorkerTimelineEvent,
     },
     Diff,
 };
@@ -99,7 +99,7 @@ fn timeline_events_inner(
         let name = operator_names
             .entry((event.worker, event.partial_event.operator_id().unwrap()))
             .or_insert_with(|| {
-                let len = name_rng.gen::<u8>() as usize;
+                let len = name_rng.gen_range(1..=10);
                 (&mut name_rng)
                     .sample_iter(Alphanumeric)
                     .take(len)
@@ -131,7 +131,7 @@ fn timeline_events_inner(
         let name = operator_names
             .entry((event.worker, event.partial_event.operator_id().unwrap()))
             .or_insert_with(|| {
-                let len = name_rng.gen::<u8>() as usize;
+                let len = name_rng.gen_range(1..=10);
                 (&mut name_rng)
                     .sample_iter(Alphanumeric)
                     .take(len)
@@ -174,11 +174,14 @@ fn timeline_events_inner(
             let (operator_input, operator_stream) = scope.new_unordered_input();
             let operator_names = operator_stream.as_collection().arrange_by_key();
 
+            let (_, _, _, _, _, _, _, _, _, _, _, _, timely_events) =
+                extract_timely_info(scope, &timely_stream);
+
             let partial_events = worker_timeline(
                 scope,
-                &timely_stream,
                 Some(&differential_stream),
                 &operator_names,
+                &timely_events,
             );
 
             partial_events

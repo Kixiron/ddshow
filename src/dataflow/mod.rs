@@ -142,6 +142,7 @@ where
         operator_addrs_by_self,
         channel_scopes,
         dataflow_ids,
+        timely_events,
     ) = extract_timely_info(scope, timely_stream);
 
     let operator_stats = operator_stats(scope, &operator_activations);
@@ -263,7 +264,7 @@ where
 
     // TODO: Make `extract_timely_info()` get the relevant event information
     let worker_timeline =
-        worker_timeline(scope, &timely_stream, differential_stream, &operator_names);
+        worker_timeline(scope, differential_stream, &operator_names, &timely_events);
 
     // TODO: Arrange this
     let addressed_operators =

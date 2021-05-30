@@ -1,6 +1,6 @@
 use crate::dataflow::{
     operators::{FilterSplit, Multiply, Split},
-    Diff, DifferentialLogBundle, TimelyLogBundle,
+    Diff, DifferentialLogBundle,
 };
 use abomonation_derive::Abomonation;
 use ddshow_types::{
@@ -30,11 +30,11 @@ use timely::dataflow::{
     Scope, Stream,
 };
 
-pub fn worker_timeline<S, Trace>(
+pub(super) fn worker_timeline<S, Trace>(
     scope: &mut S,
-    timely_stream: &Stream<S, TimelyLogBundle>,
     differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
     operator_names: &Arranged<S, Trace>,
+    timely_events: &Stream<S, (EventData, Duration, Diff)>,
 ) -> Collection<S, WorkerTimelineEvent, Diff>
 where
     S: Scope<Timestamp = Duration>,
@@ -43,12 +43,10 @@ where
         + 'static,
 {
     scope.region_named("Collect Worker Timelines", |region| {
-        let (timely_stream, differential_stream) = (
-            timely_stream.enter(region),
+        let (differential_stream, timely_events) = (
             differential_stream.map(|stream| stream.enter(region)),
+            timely_events.enter(region),
         );
-
-        let timely_events = collect_timely_events(&timely_stream);
 
         // TODO: Emit trace drops & shares to a separate stream so that we can make markers
         //       with `timeline.setCustomTime()`
@@ -108,50 +106,15 @@ where
 }
 
 type TimelineStreamEvent = (EventData, Duration, Diff);
-type TimelineEventStream<S> = Stream<S, TimelineStreamEvent>;
+pub(super) type TimelineEventStream<S> = Stream<S, TimelineStreamEvent>;
 type EventMap = HashMap<(WorkerId, EventKind), Vec<(Duration, Capability<Duration>)>>;
 type EventOutput<'a> =
     OutputHandle<'a, Duration, TimelineStreamEvent, Tee<Duration, TimelineStreamEvent>>;
 
-pub(super) fn collect_timely_events<'a, 'b, S>(
-    event_stream: &'b Stream<S, TimelyLogBundle>,
-) -> TimelineEventStream<S>
-where
-    S: Scope<Timestamp = Duration> + 'a,
-{
-    event_stream.unary(
-        Pipeline,
-        "Gather Timely Event Durations",
-        |_capability, _info| {
-            let mut buffer = Vec::new();
-            let (mut event_map, mut map_buffer, mut stack_buffer) =
-                (HashMap::new(), HashMap::new(), Vec::new());
-
-            move |input, output| {
-                input.for_each(|capability, data| {
-                    let capability = capability.retain();
-                    data.swap(&mut buffer);
-
-                    for (time, worker, event) in buffer.drain(..) {
-                        let mut event_processor = EventProcessor::new(
-                            &mut event_map,
-                            &mut map_buffer,
-                            &mut stack_buffer,
-                            output,
-                            &capability,
-                            worker,
-                            time,
-                        );
-
-                        process_timely_event(&mut event_processor, event);
-                    }
-                });
-            }
-        },
-    )
-}
-
-fn process_timely_event(event_processor: &mut EventProcessor<'_, '_>, event: TimelyEvent) {
+pub(super) fn process_timely_event(
+    event_processor: &mut EventProcessor<'_, '_>,
+    event: TimelyEvent,
+) {
     match event {
         TimelyEvent::Schedule(schedule) => {
             let event_kind = EventKind::activation(schedule.id);
@@ -280,7 +243,7 @@ fn process_differential_event(
     }
 }
 
-struct EventProcessor<'a, 'b> {
+pub(super) struct EventProcessor<'a, 'b> {
     event_map: &'a mut EventMap,
     map_buffer: &'a mut EventMap,
     stack_buffer: &'a mut Vec<Vec<(Duration, Capability<Duration>)>>,
@@ -291,7 +254,7 @@ struct EventProcessor<'a, 'b> {
 }
 
 impl<'a, 'b> EventProcessor<'a, 'b> {
-    fn new(
+    pub(super) fn new(
         event_map: &'a mut EventMap,
         map_buffer: &'a mut EventMap,
         stack_buffer: &'a mut Vec<Vec<(Duration, Capability<Duration>)>>,
