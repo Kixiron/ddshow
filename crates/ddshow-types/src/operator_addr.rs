@@ -1,42 +1,51 @@
-use crate::dataflow::types::PortId;
-use abomonation::Abomonation;
-use bytecheck::{CheckBytes, StructCheckError};
-use rkyv::{
+use crate::ids::{OperatorId, PortId};
+#[cfg(feature = "rkyv")]
+use _rkyv::{
     Archive, Archived, Deserialize as RkyvDeserialize, Fallible, Resolver,
     Serialize as RkyvSerialize,
 };
-use serde::{Deserialize, Serialize};
+#[cfg(feature = "serde")]
+use _serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
+#[cfg(feature = "enable_abomonation")]
+use abomonation::Abomonation;
+#[cfg(feature = "rkyv")]
+use bytecheck::{CheckBytes, StructCheckError};
+#[cfg(feature = "enable_abomonation")]
+use std::io;
 use std::{
     convert::TryFrom,
     fmt::{self, Debug, Display},
-    io,
-    iter::IntoIterator,
-    mem::MaybeUninit,
+    iter::{FromIterator, IntoIterator},
+    mem::{ManuallyDrop, MaybeUninit},
     ops::Deref,
     ptr, slice,
 };
 use tinyvec::{ArrayVec, TinyVec};
 
-// TODO: Change this to use `OperatorId` instead of `usize
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
-#[serde(transparent)]
+// TODO: Change this to use `OperatorId` instead of `usize`
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
+#[cfg_attr(feature = "serde", serde(crate = "_serde", transparent))]
 #[repr(transparent)]
 pub struct OperatorAddr {
-    addr: TinyVec<[usize; 8]>,
+    addr: TinyVec<[OperatorId; 8]>,
 }
 
 impl OperatorAddr {
-    pub const fn new(addr: TinyVec<[usize; 8]>) -> Self {
+    pub const fn new(addr: TinyVec<[OperatorId; 8]>) -> Self {
         Self { addr }
     }
 
-    pub fn from_elem(segment: usize) -> Self {
-        Self::new(TinyVec::Inline(ArrayVec::from([
-            segment, 0, 0, 0, 0, 0, 0, 0,
-        ])))
+    pub fn from_elem(segment: OperatorId) -> Self {
+        let zero = OperatorId::new(0);
+
+        Self::new(TinyVec::Inline(ArrayVec::from_array_len(
+            [segment, zero, zero, zero, zero, zero, zero, zero],
+            1,
+        )))
     }
 
-    pub fn from_slice(addr: &[usize]) -> Self {
+    pub fn from_slice(addr: &[OperatorId]) -> Self {
         let tiny_vec =
             ArrayVec::try_from(addr).map_or_else(|_| TinyVec::Heap(addr.to_vec()), TinyVec::Inline);
 
@@ -48,36 +57,55 @@ impl OperatorAddr {
     }
 
     pub fn push(&mut self, segment: PortId) {
-        self.addr.push(segment.into_inner());
+        self.addr.push(OperatorId::new(segment.into_inner()));
     }
 
-    pub fn pop(&mut self) -> Option<usize> {
+    pub fn pop(&mut self) -> Option<OperatorId> {
         self.addr.pop()
     }
 
-    pub fn as_slice(&self) -> &[usize] {
+    pub fn as_slice(&self) -> &[OperatorId] {
         self.addr.as_slice()
     }
 
-    pub fn iter(&self) -> slice::Iter<'_, usize> {
+    pub fn iter(&self) -> slice::Iter<'_, OperatorId> {
         self.as_slice().iter()
     }
 }
 
-impl From<&[usize]> for OperatorAddr {
-    fn from(addr: &[usize]) -> Self {
+impl From<&[OperatorId]> for OperatorAddr {
+    fn from(addr: &[OperatorId]) -> Self {
         Self::from_slice(addr)
     }
 }
 
-impl From<&Vec<usize>> for OperatorAddr {
-    fn from(addr: &Vec<usize>) -> Self {
+impl From<&Vec<OperatorId>> for OperatorAddr {
+    fn from(addr: &Vec<OperatorId>) -> Self {
         Self::from_slice(addr)
+    }
+}
+
+impl From<Vec<OperatorId>> for OperatorAddr {
+    fn from(addr: Vec<OperatorId>) -> Self {
+        let tiny_vec = ArrayVec::try_from(addr.as_slice())
+            .map_or_else(|_| TinyVec::Heap(addr), TinyVec::Inline);
+
+        Self::new(tiny_vec)
     }
 }
 
 impl From<Vec<usize>> for OperatorAddr {
     fn from(addr: Vec<usize>) -> Self {
+        // FIXME: Use `Vec::into_raw_parts()` once that's stable
+        // FIXME: Use `Vec::into_raw_parts_with_alloc()` once that's stable
+        let addr: Vec<OperatorId> = {
+            let mut addr = ManuallyDrop::new(addr);
+            let (ptr, len, cap) = (addr.as_mut_ptr().cast(), addr.len(), addr.capacity());
+
+            // Safety: `OperatorId` is a transparent wrapper around `usize`
+            unsafe { Vec::from_raw_parts(ptr, len, cap) }
+        };
+
         let tiny_vec = ArrayVec::try_from(addr.as_slice())
             .map_or_else(|_| TinyVec::Heap(addr), TinyVec::Inline);
 
@@ -86,28 +114,44 @@ impl From<Vec<usize>> for OperatorAddr {
 }
 
 impl Deref for OperatorAddr {
-    type Target = [usize];
+    type Target = [OperatorId];
 
     fn deref(&self) -> &Self::Target {
         &self.addr
     }
 }
 
-impl Extend<usize> for OperatorAddr {
+impl Extend<OperatorId> for OperatorAddr {
     fn extend<T>(&mut self, segments: T)
     where
-        T: IntoIterator<Item = usize>,
+        T: IntoIterator<Item = OperatorId>,
     {
         self.addr.extend(segments);
     }
 }
 
-impl<'a> Extend<&'a usize> for OperatorAddr {
+impl<'a> Extend<&'a OperatorId> for OperatorAddr {
     fn extend<T>(&mut self, segments: T)
     where
-        T: IntoIterator<Item = &'a usize>,
+        T: IntoIterator<Item = &'a OperatorId>,
     {
         self.addr.extend(segments.into_iter().copied());
+    }
+}
+
+impl FromIterator<OperatorId> for OperatorAddr {
+    fn from_iter<T: IntoIterator<Item = OperatorId>>(iter: T) -> Self {
+        Self {
+            addr: <TinyVec<[OperatorId; 8]>>::from_iter(iter),
+        }
+    }
+}
+
+impl<'a> FromIterator<&'a OperatorId> for OperatorAddr {
+    fn from_iter<T: IntoIterator<Item = &'a OperatorId>>(iter: T) -> Self {
+        Self {
+            addr: iter.into_iter().copied().collect(),
+        }
     }
 }
 
@@ -123,6 +167,7 @@ impl Display for OperatorAddr {
     }
 }
 
+#[cfg(feature = "enable_abomonation")]
 impl Abomonation for OperatorAddr {
     unsafe fn entomb<W: io::Write>(&self, write: &mut W) -> io::Result<()> {
         match &self.addr {
@@ -147,18 +192,20 @@ impl Abomonation for OperatorAddr {
     }
 }
 
+#[cfg(feature = "rkyv")]
 #[repr(C)]
 pub struct ArchivedOperatorAddr
 where
-    Vec<usize>: Archive,
+    Vec<OperatorId>: Archive,
 {
-    addr: Archived<Vec<usize>>,
+    addr: Archived<Vec<OperatorId>>,
 }
 
+#[cfg(feature = "rkyv")]
 impl<C: ?Sized> CheckBytes<C> for ArchivedOperatorAddr
 where
-    Vec<usize>: Archive,
-    Archived<Vec<usize>>: CheckBytes<C>,
+    Vec<OperatorId>: Archive,
+    Archived<Vec<OperatorId>>: CheckBytes<C>,
 {
     type Error = StructCheckError;
 
@@ -167,7 +214,7 @@ where
         context: &mut C,
     ) -> Result<&'a Self, Self::Error> {
         let bytes = value.cast::<u8>();
-        <Archived<Vec<usize>> as CheckBytes<C>>::check_bytes(
+        <Archived<Vec<OperatorId>> as CheckBytes<C>>::check_bytes(
             bytes
                 .add({
                     let uninit = MaybeUninit::<ArchivedOperatorAddr>::uninit();
@@ -194,50 +241,35 @@ where
     }
 }
 
+#[cfg(feature = "rkyv")]
 pub struct OperatorAddrResolver
 where
-    Vec<usize>: Archive,
+    Vec<OperatorId>: Archive,
 {
-    addr: Resolver<Vec<usize>>,
+    addr: Resolver<Vec<OperatorId>>,
 }
 
+#[cfg(feature = "rkyv")]
 impl Archive for OperatorAddr
 where
-    Vec<usize>: Archive,
+    Vec<OperatorId>: Archive,
 {
     type Archived = ArchivedOperatorAddr;
     type Resolver = OperatorAddrResolver;
 
-    fn resolve(&self, pos: usize, resolver: Self::Resolver) -> Self::Archived {
-        Self::Archived {
-            addr: self.addr.to_vec().resolve(
-                pos + {
-                    let uninit = MaybeUninit::<ArchivedOperatorAddr>::uninit();
-                    let base_ptr: *const ArchivedOperatorAddr = uninit.as_ptr();
-
-                    let field_ptr = {
-                        #[allow(clippy::unneeded_field_pattern)]
-                        let ArchivedOperatorAddr { addr: _, .. };
-                        let base = base_ptr;
-
-                        unsafe {
-                            {
-                                ptr::addr_of!(*(base as *const ArchivedOperatorAddr))
-                            }
-                        }
-                    };
-
-                    (field_ptr as usize) - (base_ptr as usize)
-                },
-                resolver.addr,
-            ),
-        }
+    fn resolve(&self, pos: usize, resolver: Self::Resolver, out: &mut MaybeUninit<Self::Archived>) {
+        self.addr.to_vec().resolve(
+            pos + _rkyv::offset_of!(Self::Archived, addr),
+            resolver.addr,
+            _rkyv::project_struct!(out: Self::Archived => addr: Archived<Vec<OperatorId>>),
+        );
     }
 }
 
+#[cfg(feature = "rkyv")]
 impl<S: Fallible + ?Sized> RkyvSerialize<S> for OperatorAddr
 where
-    Vec<usize>: RkyvSerialize<S>,
+    Vec<OperatorId>: RkyvSerialize<S>,
 {
     #[inline]
     fn serialize(&self, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
@@ -247,10 +279,11 @@ where
     }
 }
 
+#[cfg(feature = "rkyv")]
 impl<D: Fallible + ?Sized> RkyvDeserialize<OperatorAddr, D> for Archived<OperatorAddr>
 where
-    Vec<usize>: Archive,
-    Archived<Vec<usize>>: RkyvDeserialize<Vec<usize>, D>,
+    Vec<OperatorId>: Archive,
+    Archived<Vec<OperatorId>>: RkyvDeserialize<Vec<OperatorId>, D>,
 {
     #[inline]
     fn deserialize(&self, deserializer: &mut D) -> Result<OperatorAddr, D::Error> {

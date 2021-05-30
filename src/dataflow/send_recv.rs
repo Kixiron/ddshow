@@ -1,12 +1,12 @@
 use crate::{
     dataflow::{
-        operators::{rkyv_capture::RkyvOperatesEvent, CrossbeamExtractor, Fuel},
-        Channel, Diff, OperatorAddr, OperatorId, OperatorStats, Time, WorkerId,
-        WorkerTimelineEvent,
+        operators::{CrossbeamExtractor, Fuel},
+        Channel, Diff, OperatorStats, Time, WorkerTimelineEvent,
     },
     ui::{DataflowStats, ProgramStats, WorkerStats},
 };
 use crossbeam_channel::{Receiver, Sender};
+use ddshow_types::{timely_logging::OperatesEvent, OperatorAddr, OperatorId, WorkerId};
 use differential_dataflow::{
     operators::arrange::{Arranged, TraceAgent},
     trace::implementations::ord::OrdKeySpine,
@@ -215,15 +215,15 @@ macro_rules! make_send_recv {
 }
 
 type WorkerStatsData = Vec<(WorkerId, WorkerStats)>;
-type NodeData = ((WorkerId, OperatorAddr), RkyvOperatesEvent);
+type NodeData = ((WorkerId, OperatorAddr), OperatesEvent);
 type EdgeData = (
     WorkerId,
-    RkyvOperatesEvent,
+    OperatesEvent,
     Channel,
-    RkyvOperatesEvent,
+    OperatesEvent,
     // Option<ChannelMessageStats>,
 );
-type SubgraphData = ((WorkerId, OperatorAddr), RkyvOperatesEvent);
+type SubgraphData = ((WorkerId, OperatorAddr), OperatesEvent);
 type OperatorStatsData = ((WorkerId, OperatorId), OperatorStats);
 type AggOperatorStatsData = (OperatorId, OperatorStats);
 type TimelineEventData = WorkerTimelineEvent;

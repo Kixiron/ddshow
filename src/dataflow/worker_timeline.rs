@@ -1,11 +1,12 @@
 use crate::dataflow::{
-    operators::{
-        rkyv_capture::{RkyvParkEvent, RkyvStartStop},
-        FilterSplit, Multiply, RkyvTimelyEvent, Split,
-    },
-    Diff, DifferentialLogBundle, OperatorId, TimelyLogBundle, WorkerId,
+    operators::{FilterSplit, Multiply, Split},
+    Diff, DifferentialLogBundle, TimelyLogBundle,
 };
 use abomonation_derive::Abomonation;
+use ddshow_types::{
+    timely_logging::{ParkEvent, StartStop, TimelyEvent},
+    OperatorId, WorkerId,
+};
 use differential_dataflow::{
     algorithms::identifiers::Identifiers,
     difference::Abelian,
@@ -150,49 +151,49 @@ where
     )
 }
 
-fn process_timely_event(event_processor: &mut EventProcessor<'_, '_>, event: RkyvTimelyEvent) {
+fn process_timely_event(event_processor: &mut EventProcessor<'_, '_>, event: TimelyEvent) {
     match event {
-        RkyvTimelyEvent::Schedule(schedule) => {
+        TimelyEvent::Schedule(schedule) => {
             let event_kind = EventKind::activation(schedule.id);
             let partial_event = PartialTimelineEvent::activation(schedule.id);
 
             event_processor.start_stop(event_kind, partial_event, schedule.start_stop);
         }
 
-        RkyvTimelyEvent::Application(app) => {
+        TimelyEvent::Application(app) => {
             let event_kind = EventKind::application(app.id);
             let partial_event = PartialTimelineEvent::Application;
 
             event_processor.is_start(event_kind, partial_event, app.is_start);
         }
 
-        RkyvTimelyEvent::GuardedMessage(message) => {
+        TimelyEvent::GuardedMessage(message) => {
             let event_kind = EventKind::Message;
             let partial_event = PartialTimelineEvent::Message;
 
             event_processor.is_start(event_kind, partial_event, message.is_start);
         }
 
-        RkyvTimelyEvent::GuardedProgress(progress) => {
+        TimelyEvent::GuardedProgress(progress) => {
             let event_kind = EventKind::Progress;
             let partial_event = PartialTimelineEvent::Progress;
 
             event_processor.is_start(event_kind, partial_event, progress.is_start);
         }
 
-        RkyvTimelyEvent::Input(input) => {
+        TimelyEvent::Input(input) => {
             let event_kind = EventKind::Input;
             let partial_event = PartialTimelineEvent::Input;
 
             event_processor.start_stop(event_kind, partial_event, input.start_stop);
         }
 
-        RkyvTimelyEvent::Park(park) => {
+        TimelyEvent::Park(park) => {
             let event_kind = EventKind::Park;
 
             match park {
-                RkyvParkEvent::Park(_) => event_processor.insert(event_kind),
-                RkyvParkEvent::Unpark => {
+                ParkEvent::Park(_) => event_processor.insert(event_kind),
+                ParkEvent::Unpark => {
                     event_processor.remove(event_kind, PartialTimelineEvent::Parked);
                 }
             }
@@ -200,14 +201,14 @@ fn process_timely_event(event_processor: &mut EventProcessor<'_, '_>, event: Rky
 
         // When an operator shuts down, release all capabilities associated with it.
         // This works to counteract dataflow stalling
-        RkyvTimelyEvent::Shutdown(shutdown) => event_processor.remove_referencing(shutdown.id),
+        TimelyEvent::Shutdown(shutdown) => event_processor.remove_referencing(shutdown.id),
 
-        RkyvTimelyEvent::Operates(_)
-        | RkyvTimelyEvent::Channels(_)
-        | RkyvTimelyEvent::PushProgress(_)
-        | RkyvTimelyEvent::Messages(_)
-        | RkyvTimelyEvent::CommChannels(_)
-        | RkyvTimelyEvent::Text(_) => {}
+        TimelyEvent::Operates(_)
+        | TimelyEvent::Channels(_)
+        | TimelyEvent::PushProgress(_)
+        | TimelyEvent::Messages(_)
+        | TimelyEvent::CommChannels(_)
+        | TimelyEvent::Text(_) => {}
     }
 }
 
@@ -380,11 +381,11 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
         &mut self,
         event_kind: EventKind,
         partial_event: PartialTimelineEvent,
-        start_stop: RkyvStartStop,
+        start_stop: StartStop,
     ) {
         match start_stop {
-            RkyvStartStop::Start => self.insert(event_kind),
-            RkyvStartStop::Stop => self.remove(event_kind, partial_event),
+            StartStop::Start => self.insert(event_kind),
+            StartStop::Stop => self.remove(event_kind, partial_event),
         }
     }
 
@@ -398,9 +399,9 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
             event_kind,
             partial_event,
             if is_start {
-                RkyvStartStop::Start
+                StartStop::Start
             } else {
-                RkyvStartStop::Stop
+                StartStop::Stop
             },
         )
     }

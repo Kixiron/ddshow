@@ -3,14 +3,11 @@
 mod proptest_utils;
 mod proptests;
 
-use crate::dataflow::{
-    operators::{
-        rkyv_capture::{RkyvScheduleEvent, RkyvStartStop},
-        RkyvTimelyEvent,
-    },
-    worker_timeline::{
-        collect_differential_events, collect_timely_events, EventData, PartialTimelineEvent,
-    },
+use crate::dataflow::worker_timeline::{
+    collect_differential_events, collect_timely_events, EventData, PartialTimelineEvent,
+};
+use ddshow_types::{
+    timely_logging::{ScheduleEvent, StartStop, TimelyEvent},
     OperatorId, WorkerId,
 };
 use differential_dataflow::logging::{DifferentialEvent, MergeEvent, MergeShortfall};
@@ -62,9 +59,9 @@ fn timely_event_association() {
         input.send((
             Duration::from_nanos(1000),
             WorkerId::new(0),
-            RkyvTimelyEvent::Schedule(RkyvScheduleEvent {
+            TimelyEvent::Schedule(ScheduleEvent {
                 id: OperatorId::new(0),
-                start_stop: RkyvStartStop::Start,
+                start_stop: StartStop::Start,
             }),
         ));
 
@@ -72,9 +69,9 @@ fn timely_event_association() {
         input.send((
             Duration::from_nanos(10_000),
             WorkerId::new(0),
-            RkyvTimelyEvent::Schedule(RkyvScheduleEvent {
+            TimelyEvent::Schedule(ScheduleEvent {
                 id: OperatorId::new(0),
-                start_stop: RkyvStartStop::Stop,
+                start_stop: StartStop::Stop,
             }),
         ));
 

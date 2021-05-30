@@ -1,10 +1,11 @@
 use crate::dataflow::{
-    operators::{
-        rkyv_capture::{RkyvScheduleEvent, RkyvShutdownEvent, RkyvStartStop},
-        ActivateCapabilitySet, RkyvTimelyEvent,
-    },
+    operators::ActivateCapabilitySet,
     worker_timeline::{EventData, PartialTimelineEvent},
-    Diff, OperatorId, WorkerId,
+    Diff,
+};
+use ddshow_types::{
+    timely_logging::{ScheduleEvent, ShutdownEvent, StartStop, TimelyEvent},
+    OperatorId, WorkerId,
 };
 use differential_dataflow::logging::{DifferentialEvent, DropEvent, MergeEvent, MergeShortfall};
 use proptest::{
@@ -95,25 +96,25 @@ pub(super) trait Expected {
     fn expected(&self) -> ExpectedEvent;
 }
 
-impl Expected for EventPair<RkyvTimelyEvent> {
+impl Expected for EventPair<TimelyEvent> {
     fn expected(&self) -> ExpectedEvent {
         let event = match &self.start.event {
-            RkyvTimelyEvent::Schedule(schedule) => PartialTimelineEvent::OperatorActivation {
+            TimelyEvent::Schedule(schedule) => PartialTimelineEvent::OperatorActivation {
                 operator_id: schedule.id,
             },
 
-            RkyvTimelyEvent::Operates(_)
-            | RkyvTimelyEvent::Channels(_)
-            | RkyvTimelyEvent::PushProgress(_)
-            | RkyvTimelyEvent::Messages(_)
-            | RkyvTimelyEvent::Shutdown(_)
-            | RkyvTimelyEvent::Application(_)
-            | RkyvTimelyEvent::GuardedMessage(_)
-            | RkyvTimelyEvent::GuardedProgress(_)
-            | RkyvTimelyEvent::CommChannels(_)
-            | RkyvTimelyEvent::Input(_)
-            | RkyvTimelyEvent::Park(_)
-            | RkyvTimelyEvent::Text(_) => unreachable!(),
+            TimelyEvent::Operates(_)
+            | TimelyEvent::Channels(_)
+            | TimelyEvent::PushProgress(_)
+            | TimelyEvent::Messages(_)
+            | TimelyEvent::Shutdown(_)
+            | TimelyEvent::Application(_)
+            | TimelyEvent::GuardedMessage(_)
+            | TimelyEvent::GuardedProgress(_)
+            | TimelyEvent::CommChannels(_)
+            | TimelyEvent::Input(_)
+            | TimelyEvent::Park(_)
+            | TimelyEvent::Text(_) => unreachable!(),
         };
 
         self.build_expected(event)
@@ -227,11 +228,11 @@ pub trait EventInner: Sized {
     ) -> BoxedStrategy<Self>;
 }
 
-impl EventInner for RkyvTimelyEvent {
+impl EventInner for TimelyEvent {
     fn starting_event(operator_id: OperatorId, _rng: &mut TestRng) -> BoxedStrategy<Self> {
-        Just(RkyvTimelyEvent::Schedule(RkyvScheduleEvent {
+        Just(TimelyEvent::Schedule(ScheduleEvent {
             id: operator_id,
-            start_stop: RkyvStartStop::Start,
+            start_stop: StartStop::Start,
         }))
         .boxed()
     }
@@ -243,19 +244,17 @@ impl EventInner for RkyvTimelyEvent {
     ) -> BoxedStrategy<Self> {
         if allow_stops {
             prop_oneof![
-                Just(RkyvTimelyEvent::Schedule(RkyvScheduleEvent {
+                Just(TimelyEvent::Schedule(ScheduleEvent {
                     id: operator_id,
-                    start_stop: RkyvStartStop::Stop,
+                    start_stop: StartStop::Stop,
                 })),
-                Just(RkyvTimelyEvent::Shutdown(RkyvShutdownEvent {
-                    id: operator_id
-                }))
+                Just(TimelyEvent::Shutdown(ShutdownEvent { id: operator_id }))
             ]
             .boxed()
         } else {
-            Just(RkyvTimelyEvent::Schedule(RkyvScheduleEvent {
+            Just(TimelyEvent::Schedule(ScheduleEvent {
                 id: operator_id,
-                start_stop: RkyvStartStop::Stop,
+                start_stop: StartStop::Stop,
             }))
             .boxed()
         }

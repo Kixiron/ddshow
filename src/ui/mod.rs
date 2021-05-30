@@ -1,12 +1,10 @@
 #![allow(clippy::unused_unit)]
 
-use crate::{
-    args::Args,
-    dataflow::{ChannelId, OperatorAddr, OperatorId, PortId, WorkerId, WorkerTimelineEvent},
-};
+use crate::{args::Args, dataflow::WorkerTimelineEvent};
 use abomonation_derive::Abomonation;
 use anyhow::{Context as _, Result};
 use bytecheck::CheckBytes;
+use ddshow_types::{ChannelId, OperatorAddr, OperatorId, PortId, WorkerId};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use std::{fs, time::Duration};
