@@ -3,6 +3,7 @@ use crate::{
         differential::ArrangementStats,
         granulate,
         summation::{summation, Summation},
+        worker_timeline::{process_timely_event, EventProcessor, TimelineEventStream},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelyLogBundle,
         WorkerId,
     },
@@ -51,10 +52,12 @@ type TimelyCollections<S> = (
     ArrangedVal<S, (WorkerId, ChannelId), OperatorAddr>,
     // Dataflow operator ids
     ArrangedKey<S, (WorkerId, OperatorId)>,
+    // Timely event data
+    TimelineEventStream<S>,
 );
 
 // TODO: These could all emit `Present` difference types since there's no retractions here
-pub fn extract_timely_info<S>(
+pub(super) fn extract_timely_info<S>(
     scope: &mut S,
     timely_stream: &Stream<S, TimelyLogBundle>,
 ) -> TimelyCollections<S>
@@ -90,11 +93,24 @@ where
     let (mut operator_addrs_by_self_out, operator_addrs_by_self_stream) = builder.new_output();
     let (mut channel_scope_addrs_out, channel_scope_addrs_stream) = builder.new_output();
     let (mut dataflow_ids_out, dataflow_ids_stream) = builder.new_output();
+    let (mut worker_events_out, worker_events_stream) = builder.new_output();
 
     builder.build_reschedule(move |_capabilities| {
         move |_frontiers| {
             let mut buffer = Vec::new();
-            let (mut lifespan_map, mut activation_map) = (HashMap::new(), HashMap::new());
+            let (
+                mut lifespan_map,
+                mut activation_map,
+                mut event_map,
+                mut map_buffer,
+                mut stack_buffer,
+            ) = (
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                Vec::new(),
+            );
 
             // Activate all the outputs
             let mut lifespan_handle = lifespan_out.activate();
@@ -109,13 +125,16 @@ where
             let mut operator_addrs_by_self_handle = operator_addrs_by_self_out.activate();
             let mut channel_scope_addrs_handle = channel_scope_addrs_out.activate();
             let mut dataflow_ids_handle = dataflow_ids_out.activate();
+            let mut worker_events_handle = worker_events_out.activate();
 
             timely_stream.for_each(|capability, data| {
                 data.swap(&mut buffer);
 
                 for (time, worker, event) in buffer.drain(..) {
-                    // Get capabilities for every individual output
+                    // Get the timestamp for the current event
                     let session_time = capability.time().join(&time);
+
+                    // Get capabilities for every individual output
                     let lifespan_cap = capability.delayed_for_output(&session_time, 0);
                     let activation_duration_cap = capability.delayed_for_output(&session_time, 1);
                     let operator_creation_cap = capability.delayed_for_output(&session_time, 2);
@@ -129,6 +148,21 @@ where
                         capability.delayed_for_output(&session_time, 9);
                     let channel_scope_addrs_cap = capability.delayed_for_output(&session_time, 10);
                     let dataflow_ids_cap = capability.delayed_for_output(&session_time, 11);
+                    // Note: This has a different timestamp than the other capabilities,
+                    //       this is because of the machinery within `EventProcessor`
+                    let worker_events_cap = capability.delayed_for_output(capability.time(), 12);
+
+                    let mut event_processor = EventProcessor::new(
+                        &mut event_map,
+                        &mut map_buffer,
+                        &mut stack_buffer,
+                        &mut worker_events_handle,
+                        &worker_events_cap,
+                        worker,
+                        time,
+                    );
+
+                    process_timely_event(&mut event_processor, event.clone());
 
                     match event {
                         TimelyEvent::Operates(operates) => {
@@ -137,19 +171,19 @@ where
                             // Emit raw operator events
                             raw_operators_handle.session(&raw_operators_cap).give((
                                 (worker, operates.clone()),
-                                time,
+                                session_time,
                                 1,
                             ));
 
                             // Emit operator creation times
                             operator_creation_handle
                                 .session(&operator_creation_cap)
-                                .give((((worker, operates.id), time), time, 1));
+                                .give((((worker, operates.id), time), session_time, 1));
 
                             // Emit operator names
                             operator_names_handle.session(&operator_names_cap).give((
                                 ((worker, operates.id), operates.name),
-                                time,
+                                session_time,
                                 1,
                             ));
 
@@ -157,7 +191,7 @@ where
                             if operates.addr.is_top_level() {
                                 dataflow_ids_handle.session(&dataflow_ids_cap).give((
                                     ((worker, operates.id), ()),
-                                    time,
+                                    session_time,
                                     1,
                                 ));
                             }
@@ -165,26 +199,26 @@ where
                             // Emit operator ids
                             operator_ids_handle.session(&operator_ids_cap).give((
                                 ((worker, operates.id), operates.addr.clone()),
-                                time,
+                                session_time,
                                 1,
                             ));
 
                             // Emit operator addresses
                             operator_addrs_handle.session(&operator_addrs_cap).give((
                                 ((worker, operates.addr.clone()), operates.id),
-                                time,
+                                session_time,
                                 1,
                             ));
                             operator_addrs_by_self_handle
                                 .session(&operator_addrs_by_self_cap)
-                                .give((((worker, operates.addr), ()), time, 1));
+                                .give((((worker, operates.addr), ()), session_time, 1));
                         }
 
                         TimelyEvent::Shutdown(shutdown) => {
                             if let Some(start_time) = lifespan_map.remove(&(worker, shutdown.id)) {
                                 lifespan_handle.session(&lifespan_cap).give((
                                     ((worker, shutdown.id), Lifespan::new(start_time, time)),
-                                    time,
+                                    session_time,
                                     1,
                                 ));
                             }
@@ -210,7 +244,7 @@ where
                                             .session(&activation_duration_cap)
                                             .give((
                                                 ((worker, operator), (start_time, duration)),
-                                                time,
+                                                session_time,
                                                 1,
                                             ));
                                     }
@@ -222,19 +256,23 @@ where
                             // Emit raw channels
                             raw_channels_handle.session(&raw_channels_cap).give((
                                 (worker, channel.clone()),
-                                time,
+                                session_time,
                                 1,
                             ));
 
                             // Emit channel creation times
                             channel_creation_handle
                                 .session(&channel_creation_cap)
-                                .give((((worker, channel.id), time), time, 1));
+                                .give((((worker, channel.id), time), session_time, 1));
 
                             // Emit channel scope addresses
                             channel_scope_addrs_handle
                                 .session(&channel_scope_addrs_cap)
-                                .give((((worker, channel.id), channel.scope_addr), time, 1));
+                                .give((
+                                    ((worker, channel.id), channel.scope_addr),
+                                    session_time,
+                                    1,
+                                ));
                         }
 
                         TimelyEvent::PushProgress(_)
@@ -302,6 +340,8 @@ where
         operator_addrs_by_self,
         channel_scope_addrs,
         dataflow_ids,
+        // Note: Don't granulate this
+        worker_events_stream,
     )
 }
 

@@ -3,8 +3,12 @@
 mod proptest_utils;
 mod proptests;
 
-use crate::dataflow::worker_timeline::{
-    collect_differential_events, collect_timely_events, EventData, PartialTimelineEvent,
+use crate::dataflow::{
+    worker_timeline::{
+        collect_differential_events, process_timely_event, EventData, EventProcessor,
+        PartialTimelineEvent, TimelineEventStream,
+    },
+    TimelyLogBundle,
 };
 use ddshow_types::{
     timely_logging::{ScheduleEvent, StartStop, TimelyEvent},
@@ -12,32 +16,18 @@ use ddshow_types::{
 };
 use differential_dataflow::logging::{DifferentialEvent, MergeEvent, MergeShortfall};
 use std::{
+    collections::HashMap,
     sync::{mpsc, Arc, Mutex},
     time::Duration,
 };
-use timely::dataflow::operators::{capture::Extract, Capture, Input, Probe};
+use timely::dataflow::{
+    channels::pact::Pipeline,
+    operators::{capture::Extract, Capture, Input, Operator, Probe},
+    Scope, Stream,
+};
 use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
 };
-
-pub fn init_test_logging() {
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .pretty()
-        .with_test_writer()
-        .with_timer(Uptime::default())
-        .with_thread_names(true)
-        .with_ansi(true);
-
-    if tracing_subscriber::registry()
-        .with(fmt_layer)
-        .try_init()
-        .is_ok()
-    {
-        tracing::info!("initialized logging");
-    } else {
-        tracing::info!("logging was already initialized");
-    }
-}
 
 #[test]
 fn timely_event_association() {
@@ -196,4 +186,61 @@ fn differential_event_association() {
         ),
     ];
     assert_eq!(data, expected);
+}
+
+pub(crate) fn init_test_logging() {
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .pretty()
+        .with_test_writer()
+        .with_timer(Uptime::default())
+        .with_thread_names(true)
+        .with_ansi(true);
+
+    if tracing_subscriber::registry()
+        .with(fmt_layer)
+        .try_init()
+        .is_ok()
+    {
+        tracing::info!("initialized logging");
+    } else {
+        tracing::info!("logging was already initialized");
+    }
+}
+
+fn collect_timely_events<'a, 'b, S>(
+    event_stream: &'b Stream<S, TimelyLogBundle>,
+) -> TimelineEventStream<S>
+where
+    S: Scope<Timestamp = Duration> + 'a,
+{
+    event_stream.unary(
+        Pipeline,
+        "Gather Timely Event Durations",
+        |_capability, _info| {
+            let mut buffer = Vec::new();
+            let (mut event_map, mut map_buffer, mut stack_buffer) =
+                (HashMap::new(), HashMap::new(), Vec::new());
+
+            move |input, output| {
+                input.for_each(|capability, data| {
+                    let capability = capability.retain();
+                    data.swap(&mut buffer);
+
+                    for (time, worker, event) in buffer.drain(..) {
+                        let mut event_processor = EventProcessor::new(
+                            &mut event_map,
+                            &mut map_buffer,
+                            &mut stack_buffer,
+                            output,
+                            &capability,
+                            worker,
+                            time,
+                        );
+
+                        process_timely_event(&mut event_processor, event);
+                    }
+                });
+            }
+        },
+    )
 }
