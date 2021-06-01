@@ -1,18 +1,16 @@
 use differential_dataflow::{input::Input, operators::Iterate, AsCollection};
 use std::{env, net::TcpStream};
-use timely::dataflow::operators::{Map, Probe};
+use timely::{
+    communication::Allocate,
+    dataflow::operators::{Map, Probe},
+    worker::Worker,
+};
 
 type Time = usize;
 
 fn main() {
     timely::execute_from_args(env::args(), |worker| {
-        if let Ok(addr) = env::var("DIFFERENTIAL_LOG_ADDR") {
-            if let Ok(stream) = TcpStream::connect(&addr) {
-                differential_dataflow::logging::enable(worker, stream);
-            } else {
-                panic!("Could not connect to differential log address: {:?}", addr);
-            }
-        }
+        set_loggers(worker);
 
         let (mut input, probe) = worker.dataflow::<Time, _, _>(|scope| {
             let (input, collection) = scope.new_collection();
@@ -44,4 +42,28 @@ fn main() {
         worker.step_or_park_while(None, || probe.less_than(input.time()));
     })
     .unwrap();
+}
+
+fn set_loggers<A: Allocate>(worker: &mut Worker<A>) {
+    if let Ok(dir) = env::var("TIMELY_DISK_LOG") {
+        if !dir.is_empty() {
+            ddshow_sink::save_timely_logs_to_disk(worker, &dir).unwrap();
+        }
+    }
+
+    if let Ok(dir) = env::var("DIFFERENTIAL_DISK_LOG") {
+        if !dir.is_empty() {
+            ddshow_sink::save_differential_logs_to_disk(worker, &dir).unwrap();
+        }
+    }
+
+    if let Ok(addr) = env::var("DIFFERENTIAL_LOG_ADDR") {
+        if !addr.is_empty() {
+            if let Ok(stream) = TcpStream::connect(&addr) {
+                differential_dataflow::logging::enable(worker, stream);
+            } else {
+                panic!("Could not connect to differential log address: {:?}", addr);
+            }
+        }
+    }
 }

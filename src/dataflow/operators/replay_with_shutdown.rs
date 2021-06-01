@@ -1,4 +1,4 @@
-use crate::dataflow::operators::util::Fuel;
+use crate::dataflow::{constants::DEFAULT_REACTIVATION_DELAY, operators::util::Fuel};
 use abomonation::Abomonation;
 use std::{
     convert::identity,
@@ -20,8 +20,6 @@ use timely::{
     progress::{frontier::MutableAntichain, Timestamp},
     Data,
 };
-
-const DEFAULT_REACTIVATION_DELAY: Duration = Duration::from_millis(200);
 
 /// Iterates over contained `Event<T, D>`.
 ///

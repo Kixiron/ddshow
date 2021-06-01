@@ -3,12 +3,10 @@ use crate::dataflow::{
     Diff, DifferentialLogBundle, FilterMap,
 };
 use abomonation_derive::Abomonation;
-use ddshow_types::{OperatorId, WorkerId};
+use ddshow_types::{differential_logging::DifferentialEvent, OperatorId, WorkerId};
 #[cfg(not(feature = "timely-next"))]
 use differential_dataflow::difference::DiffPair;
-use differential_dataflow::{
-    logging::DifferentialEvent, operators::CountTotal, AsCollection, Collection,
-};
+use differential_dataflow::{operators::CountTotal, AsCollection, Collection};
 use std::time::Duration;
 use timely::dataflow::{operators::Enter, Scope, Stream};
 
@@ -25,19 +23,13 @@ where
         let merge_diffs = differential_trace
             .filter_map(|(time, worker, event)| match event {
                 DifferentialEvent::Batch(batch) => Some((
-                    (
-                        (worker, OperatorId::new(batch.operator)),
-                        (batch.length as isize, 1),
-                    ),
+                    ((worker, batch.operator), (batch.length as isize, 1)),
                     time,
                     1,
                 )),
                 DifferentialEvent::Merge(merge) => merge.complete.map(|complete_size| {
                     (
-                        (
-                            (worker, OperatorId::new(merge.operator)),
-                            (complete_size as isize, 0),
-                        ),
+                        ((worker, merge.operator), (complete_size as isize, 0)),
                         time,
                         1,
                     )

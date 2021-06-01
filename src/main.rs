@@ -10,17 +10,19 @@ use crate::{
     colormap::{select_color, Color},
     dataflow::{
         operators::{Fuel, InspectExt, ReplayWithShutdown},
-        Channel, DataflowData, DataflowSenders, OperatorStats,
+        Channel, DataflowData, DataflowSenders, OperatorStats, DIFFERENTIAL_DISK_LOG_FILE,
+        TIMELY_DISK_LOG_FILE,
     },
     network::{acquire_replay_sources, wait_for_input, ReplaySource},
     ui::{ActivationDuration, DDShowStats, EdgeKind, Lifespan, TimelineEvent},
 };
 use anyhow::{Context, Result};
 use ddshow_types::{
+    differential_logging::DifferentialEvent,
     timely_logging::{OperatesEvent, TimelyEvent},
     OperatorAddr, OperatorId, WorkerId,
 };
-use differential_dataflow::logging::DifferentialEvent;
+use differential_dataflow::logging::DifferentialEvent as RawDifferentialEvent;
 use std::{
     collections::HashMap,
     env,
@@ -64,18 +66,18 @@ fn main() -> Result<()> {
         args.timely_connections,
         args.workers,
         args.replay_logs.as_deref(),
-        "timely.ddshow",
+        TIMELY_DISK_LOG_FILE,
         "Timely",
     )?;
 
     // Connect to the differential sources
     let differential_event_receivers = if args.differential_enabled {
-        Some(acquire_replay_sources::<Duration, DifferentialEvent, _>(
+        Some(acquire_replay_sources(
             args.differential_address,
             args.timely_connections,
             args.workers,
             args.replay_logs.as_deref(),
-            "differential.ddshow",
+            DIFFERENTIAL_DISK_LOG_FILE,
             "Differential",
         )?)
     } else {
@@ -166,15 +168,12 @@ fn main() -> Result<()> {
 
             let differential_stream = differential_traces.map(|traces| {
                 match traces {
-                    ReplaySource::Rkyv(_rkyv) => {
-                        // rkyv.replay_with_shutdown_into_named(
-                        //     "Differential Replay",
-                        //     scope,
-                        //     replay_shutdown.clone(),
-                        //     fuel,
-                        // )
-                        todo!("Differential disk replays are not yet implemented")
-                    }
+                    ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
+                        "Differential Replay",
+                        scope,
+                        replay_shutdown.clone(),
+                        fuel,
+                    ),
 
                     ReplaySource::Abomonation(abomonation) => abomonation
                         .replay_with_shutdown_into_named(
@@ -182,9 +181,13 @@ fn main() -> Result<()> {
                             scope,
                             replay_shutdown.clone(),
                             fuel,
+                        )
+                        .map(
+                            |(time, worker, event): (Duration, usize, RawDifferentialEvent)| {
+                                (time, WorkerId::new(worker), DifferentialEvent::from(event))
+                            },
                         ),
                 }
-                .map(|(time, worker, event)| (time, WorkerId::new(worker), event))
                 .debug_inspect(|x| tracing::trace!("differential dataflow event: {:?}", x))
             });
 

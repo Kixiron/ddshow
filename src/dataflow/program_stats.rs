@@ -7,10 +7,11 @@ use crate::{
     },
     ui::{ProgramStats, WorkerStats},
 };
-use ddshow_types::{timely_logging::OperatesEvent, OperatorId, WorkerId};
+use ddshow_types::{
+    differential_logging::DifferentialEvent, timely_logging::OperatesEvent, WorkerId,
+};
 use differential_dataflow::{
     difference::DiffPair,
-    logging::DifferentialEvent,
     operators::{arrange::ArrangeByKey, Count, CountTotal, Join, Reduce, ThresholdTotal},
     AsCollection, Collection, Data,
 };
@@ -99,7 +100,6 @@ where
                     DifferentialEvent::MergeShortfall(merge) => merge.operator,
                     DifferentialEvent::TraceShare(share) => share.operator,
                 };
-                let operator = OperatorId::new(operator);
 
                 (((worker, operator), ()), time, 1)
             })

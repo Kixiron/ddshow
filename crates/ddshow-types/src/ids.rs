@@ -1,3 +1,5 @@
+//! All dataflow related ids
+
 #[cfg(feature = "rkyv")]
 use _rkyv as rkyv;
 #[cfg(feature = "rkyv")]
@@ -29,6 +31,12 @@ impl WorkerId {
 
     pub const fn into_inner(self) -> WorkerIdentifier {
         self.worker
+    }
+}
+
+impl From<usize> for WorkerId {
+    fn from(worker: usize) -> Self {
+        Self::new(worker)
     }
 }
 

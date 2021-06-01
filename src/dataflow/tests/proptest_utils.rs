@@ -4,10 +4,10 @@ use crate::dataflow::{
     Diff,
 };
 use ddshow_types::{
+    differential_logging::{DifferentialEvent, DropEvent, MergeEvent, MergeShortfall},
     timely_logging::{ScheduleEvent, ShutdownEvent, StartStop, TimelyEvent},
     OperatorId, WorkerId,
 };
-use differential_dataflow::logging::{DifferentialEvent, DropEvent, MergeEvent, MergeShortfall};
 use proptest::{
     arbitrary::any,
     prelude::Rng,
@@ -125,7 +125,7 @@ impl Expected for EventPair<DifferentialEvent> {
     fn expected(&self) -> ExpectedEvent {
         let event = match &self.start.event {
             DifferentialEvent::Merge(merge) => PartialTimelineEvent::Merge {
-                operator_id: OperatorId::new(merge.operator),
+                operator_id: merge.operator,
             },
 
             DifferentialEvent::Batch(_)
@@ -263,9 +263,9 @@ impl EventInner for TimelyEvent {
 
 // FIXME: Make these numbers realistic
 impl EventInner for DifferentialEvent {
-    fn starting_event(operator_id: OperatorId, rng: &mut TestRng) -> BoxedStrategy<Self> {
+    fn starting_event(operator: OperatorId, rng: &mut TestRng) -> BoxedStrategy<Self> {
         Just(DifferentialEvent::Merge(MergeEvent {
-            operator: operator_id.into_inner(),
+            operator,
             scale: rng.gen(),
             length1: rng.gen(),
             length2: rng.gen(),
@@ -275,26 +275,26 @@ impl EventInner for DifferentialEvent {
     }
 
     fn terminating_event(
-        operator_id: OperatorId,
+        operator: OperatorId,
         allow_stops: bool,
         rng: &mut TestRng,
     ) -> BoxedStrategy<Self> {
         if allow_stops {
             prop_oneof![
                 Just(DifferentialEvent::Merge(MergeEvent {
-                    operator: operator_id.into_inner(),
+                    operator,
                     scale: rng.gen(),
                     length1: rng.gen(),
                     length2: rng.gen(),
                     complete: Some(rng.gen()),
                 })),
                 Just(DifferentialEvent::MergeShortfall(MergeShortfall {
-                    operator: operator_id.into_inner(),
+                    operator,
                     scale: rng.gen(),
                     shortfall: rng.gen(),
                 })),
                 Just(DifferentialEvent::Drop(DropEvent {
-                    operator: operator_id.into_inner(),
+                    operator,
                     length: rng.gen(),
                 })),
             ]
@@ -302,14 +302,14 @@ impl EventInner for DifferentialEvent {
         } else {
             prop_oneof![
                 Just(DifferentialEvent::Merge(MergeEvent {
-                    operator: operator_id.into_inner(),
+                    operator,
                     scale: rng.gen(),
                     length1: rng.gen(),
                     length2: rng.gen(),
                     complete: Some(rng.gen()),
                 })),
                 Just(DifferentialEvent::MergeShortfall(MergeShortfall {
-                    operator: operator_id.into_inner(),
+                    operator,
                     scale: rng.gen(),
                     shortfall: rng.gen(),
                 })),

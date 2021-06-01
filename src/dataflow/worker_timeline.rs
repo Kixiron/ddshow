@@ -1,9 +1,11 @@
 use crate::dataflow::{
+    constants::EVENT_NS_MARGIN,
     operators::{FilterSplit, Multiply, Split},
     Diff, DifferentialLogBundle,
 };
 use abomonation_derive::Abomonation;
 use ddshow_types::{
+    differential_logging::DifferentialEvent,
     timely_logging::{ParkEvent, StartStop, TimelyEvent},
     OperatorId, WorkerId,
 };
@@ -11,7 +13,6 @@ use differential_dataflow::{
     algorithms::identifiers::Identifiers,
     difference::Abelian,
     lattice::Lattice,
-    logging::DifferentialEvent,
     operators::{
         arrange::{ArrangeByKey, Arranged},
         JoinCore, Threshold,
@@ -220,24 +221,22 @@ fn process_differential_event(
 ) {
     match event {
         DifferentialEvent::Merge(merge) => {
-            let event_kind = EventKind::merge(OperatorId::new(merge.operator));
-            let partial_event = PartialTimelineEvent::merge(OperatorId::new(merge.operator));
+            let event_kind = EventKind::merge(merge.operator);
+            let partial_event = PartialTimelineEvent::merge(merge.operator);
             let is_start = merge.complete.is_none();
 
             event_processor.is_start(event_kind, partial_event, is_start);
         }
 
         DifferentialEvent::MergeShortfall(shortfall) => {
-            let event_kind = EventKind::merge(OperatorId::new(shortfall.operator));
-            let partial_event = PartialTimelineEvent::merge(OperatorId::new(shortfall.operator));
+            let event_kind = EventKind::merge(shortfall.operator);
+            let partial_event = PartialTimelineEvent::merge(shortfall.operator);
 
             event_processor.remove(event_kind, partial_event);
         }
 
         // Sometimes merges don't complete since they're dropped part way through
-        DifferentialEvent::Drop(drop) => {
-            event_processor.remove_referencing(OperatorId::new(drop.operator))
-        }
+        DifferentialEvent::Drop(drop) => event_processor.remove_referencing(drop.operator),
 
         DifferentialEvent::Batch(_) | DifferentialEvent::TraceShare(_) => {}
     }
@@ -447,8 +446,6 @@ where
     S::Timestamp: Lattice,
     R: Abelian + ExchangeData + Multiply<Output = R> + From<i8>,
 {
-    const MARGIN_NS: u64 = 500_000;
-
     fn fold_timeline_events(
         _key: &WorkerId,
         input: State,
@@ -478,11 +475,11 @@ where
                             // Make sure the events are the same and are also overlapping
                             // in their time windows (`event_start..event_end`) by using
                             // a simple bounding box. Note that the state's time window
-                            // is expanded by `MARGIN_NS` so that there's a small grace
+                            // is expanded by `EVENT_NS_MARGIN` so that there's a small grace
                             // period that allows events not directly adjacent to be collapsed
                             if old_state.event == input.event
-                                && state_start.saturating_sub(MARGIN_NS) <= input_end
-                                && (state_end + MARGIN_NS) >= input_start
+                                && state_start.saturating_sub(EVENT_NS_MARGIN) <= input_end
+                                && (state_end + EVENT_NS_MARGIN) >= input_start
                             {
                                 old_state.duration += input.duration;
                                 old_state.collapsed_events += 1;
@@ -534,7 +531,7 @@ where
         //       flush message arrives *after* any potentially collapsible messages, thereby making sure
         //       that there's actually an opportunity for events to be collapsed
         .split(|(event, time, _diff)| {
-            let end_time = time + Duration::from_nanos(event.duration + MARGIN_NS);
+            let end_time = time + Duration::from_nanos(event.duration + EVENT_NS_MARGIN);
 
             (
                 // Note: the time of this stream is entirely ignored

@@ -21,6 +21,8 @@ tera = "1.6.1"
 anyhow = "1.0.38"
 tracing = "0.1.25"
 colorous = "1.0.3"
+bytecheck = "0.5.1"
+byteorder = "1.4.3"
 structopt = "0.3.21"
 serde_json = "1.0.64"
 abomonation = "0.7.3"
@@ -28,17 +30,16 @@ comfy-table = "2.1.0"
 crossbeam-channel = "0.5.0"
 abomonation_derive = "0.5.0"
 tracing-subscriber = "0.2.16"
-strum = { version = "0.20.0", features = ["derive"] }
+strum = { version = "0.21.0", features = ["derive"] }
 serde = { version = "1.0.123", features = ["derive"] }
-tinyvec = { version = "1.2.0", features = ["alloc", "serde"] }
-ddshow-types = { path = "crates/ddshow-types", version = "0.1.0", features = ["rkyv", "serde", "enable_abomonation"] }
-
-byteorder = "1.4.3"
-bytecheck = "0.5.1"
 rkyv = { version = "0.6.6", features = ["validation"] }
+tinyvec = { version = "1.2.0", features = ["alloc", "serde"] }
+
+ddshow-sink = { version = "0.1.0", path = "crates/ddshow-sink", features = ["ddflow", "tracing"] }
+ddshow-types = { version = "0.1.0", path = "crates/ddshow-types", features = ["rkyv", "serde", "enable_abomonation"] }
 
 timely = "0.12.0"
-differential-dataflow = "0.12.0"
+differential-dataflow = { version = "0.12.0", default-features = false }
 # timely = { git = "https://github.com/TimelyDataflow/timely-dataflow" }
 # differential-dataflow = { git = "https://github.com/TimelyDataflow/differential-dataflow" }
 
@@ -52,7 +53,7 @@ default-features = false
 features = ["build", "cargo", "git", "rustc"]
 
 [profile.dev]
-debug = 2
+debug = 0
 lto = false
 opt-level = 0
 incremental = true

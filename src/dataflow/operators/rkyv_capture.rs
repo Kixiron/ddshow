@@ -1,77 +1,19 @@
 #![allow(clippy::clippy::unused_unit)]
 
 use crate::dataflow::operators::EventIterator;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use bytecheck::CheckBytes;
+use byteorder::{LittleEndian, ReadBytesExt};
 use ddshow_types::Event;
 use rkyv::{
-    archived_root,
-    de::deserializers::AllocDeserializer,
-    ser::{serializers::AlignedSerializer, Serializer},
-    AlignedVec, Archive, Deserialize, Serialize,
+    check_archived_root, de::deserializers::AllocDeserializer, validation::DefaultArchiveValidator,
+    AlignedVec, Archive, Deserialize,
 };
 use std::{
-    io::{self, Read, Write},
+    io::{self, Read},
     marker::PhantomData,
     mem,
 };
-use timely::dataflow::operators::capture::event::{
-    Event as TimelyEvent, EventPusher as TimelyEventPusher,
-};
-
-/// A wrapper for `W: Write` implementing `EventPusher<T, D>`.
-pub struct RkyvEventWriter<T, D, W> {
-    stream: W,
-    buffer: AlignedVec,
-    __type: PhantomData<(T, D)>,
-}
-
-impl<T, D, W> RkyvEventWriter<T, D, W> {
-    /// Allocates a new `EventWriter` wrapping a supplied writer.
-    pub fn new(stream: W) -> Self {
-        RkyvEventWriter {
-            stream,
-            buffer: AlignedVec::with_capacity(512),
-            __type: PhantomData,
-        }
-    }
-}
-
-impl<T, D, W> TimelyEventPusher<T, D> for RkyvEventWriter<T, D, W>
-where
-    W: Write,
-    T: for<'a> Serialize<AlignedSerializer<&'a mut AlignedVec>>,
-    D: for<'a> Serialize<AlignedSerializer<&'a mut AlignedVec>>,
-{
-    fn push(&mut self, event: TimelyEvent<T, D>) {
-        let event: Event<T, D> = event.into();
-
-        let archive_len = {
-            self.buffer.clear();
-
-            let mut serializer = AlignedSerializer::new(&mut self.buffer);
-            serializer
-                .serialize_value(&event)
-                .unwrap_or_else(|unreachable| match unreachable {});
-
-            serializer.pos()
-        };
-
-        if let Err(err) = self.stream.write_u64::<LittleEndian>(archive_len as u64) {
-            tracing::error!(
-                archive_len = archive_len,
-                "failed to write archive length to stream: {:?}",
-                err,
-            );
-
-            return;
-        }
-
-        if let Err(err) = self.stream.write_all(&self.buffer[..archive_len]) {
-            tracing::error!("failed to write buffer data to stream: {:?}", err);
-            return;
-        }
-    }
-}
+use timely::dataflow::operators::capture::event::Event as TimelyEvent;
 
 /// A Wrapper for `R: Read` implementing `EventIterator<T, D>`.
 #[derive(Debug)]
@@ -104,9 +46,9 @@ impl<T, D, R> EventIterator<T, D> for RkyvEventReader<T, D, R>
 where
     R: Read,
     T: Archive,
-    T::Archived: Deserialize<T, AllocDeserializer>, // + CheckBytes<DefaultArchiveValidator>,
+    T::Archived: Deserialize<T, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
     D: Archive,
-    D::Archived: Deserialize<D, AllocDeserializer>, // + CheckBytes<DefaultArchiveValidator>,
+    D::Archived: Deserialize<D, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
 {
     fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<TimelyEvent<T, D>>> {
         if self.peer_finished
@@ -129,26 +71,18 @@ where
                 .buffer1
                 .get(archive_start..archive_start + archive_length)
             {
-                // Safety: This isn't safe whatsoever, get `CheckBytes` implemented for `Duration`
-                let event = unsafe { archived_root::<Event<T, D>>(slice) }
-                    .deserialize(&mut AllocDeserializer)
-                    .unwrap_or_else(|unreachable| match unreachable {});
+                match check_archived_root::<Event<T, D>>(slice) {
+                    Ok(archive) => {
+                        let event = archive
+                            .deserialize(&mut AllocDeserializer)
+                            .unwrap_or_else(|unreachable| match unreachable {});
 
-                self.consumed += archive_length + mem::size_of::<u64>();
-                return Ok(Some(event.into()));
+                        self.consumed += archive_length + mem::size_of::<u64>();
+                        return Ok(Some(event.into()));
+                    }
 
-                // match check_archived_root::<Event<T, D>>(slice) {
-                //     Ok(archive) => {
-                //         let event = archive
-                //             .deserialize(&mut AllocDeserializer)
-                //             .unwrap_or_else(|unreachable| match unreachable {});
-                //
-                //         self.consumed += archive_length + mem::size_of::<u64>();
-                //         return Ok(Some(event.into()));
-                //     }
-                //
-                //     Err(err) => tracing::error!("failed to check archived event: {:?}", err),
-                // }
+                    Err(err) => tracing::error!("failed to check archived event: {:?}", err),
+                }
             }
         }
 
@@ -178,9 +112,9 @@ impl<T, D, R> Iterator for RkyvEventReader<T, D, R>
 where
     R: Read,
     T: Archive,
-    T::Archived: Deserialize<T, AllocDeserializer>, // + CheckBytes<DefaultArchiveValidator>,
+    T::Archived: Deserialize<T, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
     D: Archive,
-    D::Archived: Deserialize<D, AllocDeserializer>, // + CheckBytes<DefaultArchiveValidator>,
+    D::Archived: Deserialize<D, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
 {
     type Item = TimelyEvent<T, D>;
 
@@ -191,17 +125,19 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::dataflow::{
-        operators::{RkyvEventReader, RkyvEventWriter},
-        tests::init_test_logging,
+    use crate::dataflow::{operators::RkyvEventReader, tests::init_test_logging};
+    use ddshow_sink::EventWriter;
+    use ddshow_types::{
+        differential_logging::{DifferentialEvent, MergeEvent},
+        timely_logging::{OperatesEvent, TimelyEvent},
+        OperatorAddr, OperatorId,
     };
-    use ddshow_types::{timely_logging::OperatesEvent, OperatorAddr, OperatorId};
     use std::time::Duration;
     use timely::dataflow::operators::capture::{Event, EventPusher};
 
     // FIXME: Make this a proptest
     #[test]
-    fn roundtrip() {
+    fn timely_roundtrip() {
         init_test_logging();
 
         let events = vec![
@@ -214,28 +150,137 @@ mod tests {
             ]),
             Event::Messages(
                 Duration::from_secs(0),
-                vec![OperatesEvent::new(
+                vec![TimelyEvent::Operates(OperatesEvent::new(
                     OperatorId::new(0),
                     OperatorAddr::from_elem(OperatorId::new(0)),
                     "foobar".to_owned(),
-                )],
+                ))],
+            ),
+            Event::Messages(
+                Duration::from_secs(40),
+                vec![TimelyEvent::Operates(OperatesEvent::new(
+                    OperatorId::new(4),
+                    OperatorAddr::from(vec![OperatorId::new(0); 100]),
+                    "foobarbaz".to_owned(),
+                ))],
             ),
         ];
 
         let mut buffer = Vec::new();
 
         {
-            let mut writer = RkyvEventWriter::new(&mut buffer);
+            let mut writer = EventWriter::new(&mut buffer);
             writer.push(events[0].clone());
             writer.push(events[1].clone());
+            writer.push(events[2].clone());
         }
 
         let mut reader = RkyvEventReader::new(&buffer[..]);
 
+        // The first `.next()` call will fill the buffers, `RykvEventReader` doesn't
+        // act like a fused iterator
         assert!(reader.next().is_none());
+
         let first = reader.next().unwrap();
         let second = reader.next().unwrap();
+        let third = reader.next().unwrap();
 
-        assert_eq!(events, vec![first, second]);
+        assert_eq!(events, vec![first, second, third]);
+    }
+
+    // FIXME: Make this a proptest
+    #[test]
+    fn differential_roundtrip() {
+        init_test_logging();
+
+        let events = vec![
+            Event::Progress(vec![
+                (Duration::from_secs(0), 1),
+                (Duration::from_secs(1), 2),
+                (Duration::from_secs(2), 3),
+                (Duration::from_secs(3), 4),
+                (Duration::from_secs(4), 5),
+            ]),
+            Event::Messages(
+                Duration::from_secs(3243450),
+                vec![
+                    DifferentialEvent::Merge(MergeEvent::new(
+                        OperatorId::new(2345235),
+                        10000,
+                        5000,
+                        5000,
+                        None,
+                    )),
+                    DifferentialEvent::Merge(MergeEvent::new(
+                        OperatorId::new(4235),
+                        10000,
+                        5000,
+                        5000,
+                        None,
+                    )),
+                ],
+            ),
+            Event::Messages(
+                Duration::from_secs(40),
+                vec![
+                    DifferentialEvent::Merge(MergeEvent::new(
+                        OperatorId::new(52345),
+                        10000,
+                        5000,
+                        5000,
+                        Some(100000),
+                    )),
+                    DifferentialEvent::Merge(MergeEvent::new(
+                        OperatorId::new(54235),
+                        10000,
+                        5000,
+                        5000,
+                        Some(100000),
+                    )),
+                    DifferentialEvent::Merge(MergeEvent::new(
+                        OperatorId::new(765),
+                        10000,
+                        5000,
+                        5000,
+                        Some(100000),
+                    )),
+                    DifferentialEvent::Merge(MergeEvent::new(
+                        OperatorId::new(0),
+                        10000,
+                        5000,
+                        5000,
+                        Some(100000),
+                    )),
+                    DifferentialEvent::Merge(MergeEvent::new(
+                        OperatorId::new(345643645),
+                        10000,
+                        5000,
+                        5000,
+                        Some(100000),
+                    )),
+                ],
+            ),
+        ];
+
+        let mut buffer = Vec::new();
+
+        {
+            let mut writer = EventWriter::new(&mut buffer);
+            writer.push(events[0].clone());
+            writer.push(events[1].clone());
+            writer.push(events[2].clone());
+        }
+
+        let mut reader = RkyvEventReader::new(&buffer[..]);
+
+        // The first `.next()` call will fill the buffers, `RykvEventReader` doesn't
+        // act like a fused iterator
+        assert!(reader.next().is_none());
+
+        let first = reader.next().unwrap();
+        let second = reader.next().unwrap();
+        let third = reader.next().unwrap();
+
+        assert_eq!(events, vec![first, second, third]);
     }
 }

@@ -1,5 +1,7 @@
 use crate::{
     dataflow::{
+        channel_sink,
+        constants::DEFAULT_EXTRACTOR_CAPACITY,
         operators::{CrossbeamExtractor, Fuel},
         Channel, Diff, OperatorStats, Time, WorkerTimelineEvent,
     },
@@ -10,10 +12,14 @@ use ddshow_types::{timely_logging::OperatesEvent, OperatorAddr, OperatorId, Work
 use differential_dataflow::{
     operators::arrange::{Arranged, TraceAgent},
     trace::implementations::ord::OrdKeySpine,
+    Collection,
 };
-use std::{collections::HashMap, convert::identity, iter::Cycle};
+use std::{collections::HashMap, convert::identity, iter::Cycle, time::Duration};
 use strum::{EnumIter, IntoEnumIterator};
-use timely::dataflow::{operators::capture::Event, ScopeParent};
+use timely::dataflow::{
+    operators::{capture::Event, probe::Handle as ProbeHandle},
+    Scope, ScopeParent,
+};
 
 pub(crate) type ChannelAddrs<S, D> = Arranged<
     S,
@@ -23,8 +29,6 @@ type Bundled<D> = (D, Time, Diff);
 type ESender<D> = Sender<Event<Time, Bundled<D>>>;
 type EReceiver<D> = Receiver<Event<Time, Bundled<D>>>;
 type Extractor<D> = CrossbeamExtractor<Event<Time, Bundled<D>>>;
-
-const DEFAULT_EXTRACTOR_CAPACITY: usize = 1024;
 
 macro_rules! make_send_recv {
     ($($name:ident : $ty:ty),* $(,)?) => {
@@ -59,6 +63,26 @@ macro_rules! make_send_recv {
                 };
 
                 (sender, receiver)
+            }
+
+            #[allow(clippy::too_many_arguments)]
+            pub fn install_sinks<S>(
+                mut self,
+                probe: &mut ProbeHandle<Duration>,
+                $($name: (&Collection<S, $ty, Diff>, bool),)*
+            )
+            where
+                S: Scope<Timestamp = Duration>,
+            {
+                $(
+                    let (stream, needs_consolidation) = $name;
+                    channel_sink(
+                        stream,
+                        probe,
+                        self.$name(),
+                        needs_consolidation,
+                    );
+                )*
             }
 
             $(
