@@ -1,0 +1,28 @@
+[package]
+name = "ddshow-sink"
+version = "0.1.0"
+authors = ["Chase Wilson <me@chasewilson.dev>"]
+license = "MIT OR Apache-2.0"
+edition = "2018"
+
+[features]
+default = ["ddflow", "tracing"]
+ddflow = ["differential-dataflow", "ddshow-types/ddflow"]
+tracing = ["_tracing"]
+
+[dependencies]
+byteorder = "1.4.3"
+rkyv = { version = "0.6.6", features = ["validation"] }
+timely = { version = "0.12.0", default-features = false }
+differential-dataflow = { version = "0.12.0", default-features = false, optional = true }
+
+[dependencies.ddshow-types]
+version = "0.1.0"
+path = "../ddshow-types"
+features = ["rkyv", "enable_abomonation"]
+
+[dependencies._tracing]
+package = "tracing"
+version = "0.1.26"
+optional = true
+default-features = false

@@ -1,3 +1,5 @@
+//! Timely progress events
+
 #[cfg(feature = "rkyv")]
 use _rkyv as rkyv;
 #[cfg(feature = "rkyv")]

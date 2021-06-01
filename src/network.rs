@@ -1,6 +1,7 @@
 use crate::{
     args::Args,
     dataflow::{
+        constants::{IDLE_EXTRACTION_FUEL, TCP_READ_TIMEOUT},
         operators::{EventReader, Fuel, RkyvEventReader},
         DataflowData, DataflowReceivers,
     },
@@ -24,14 +25,6 @@ use std::{
     time::{Duration, Instant},
 };
 use timely::{communication::WorkerGuards, dataflow::operators::capture::Event};
-
-/// The read timeout to impose on tcp connections
-const TCP_READ_TIMEOUT: Option<Duration> = Some(Duration::from_millis(200));
-
-/// The fuel used to extract data from the dataflow within the
-/// main thread's spin loop
-// Safety: 1,000,000 isn't zero
-const IDLE_EXTRACTION_FUEL: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1_000_000) };
 
 type AcquiredStreams<T, D1, D2> =
     Result<EventReceivers<RkyvEventReader<T, D1, BufReader<File>>, EventReader<T, D2, TcpStream>>>;

@@ -1,4 +1,5 @@
 // mod channel_stats;
+pub(crate) mod constants;
 mod differential;
 mod operator_stats;
 pub mod operators;
@@ -11,6 +12,7 @@ mod summation;
 mod tests;
 mod worker_timeline;
 
+pub use constants::{DIFFERENTIAL_DISK_LOG_FILE, PROGRAM_NS_GRANULARITY, TIMELY_DISK_LOG_FILE};
 pub use operator_stats::OperatorStats;
 pub use send_recv::{DataflowData, DataflowExtractor, DataflowReceivers, DataflowSenders};
 pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
@@ -18,26 +20,28 @@ pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 use crate::{
     args::Args,
     dataflow::{
+        constants::{DIFFERENTIAL_DISK_LOGGER, TIMELY_DISK_LOGGER},
         differential::{arrangement_stats, ArrangementStats},
         operator_stats::{extract_timely_info, operator_stats},
-        operators::{CrossbeamPusher, FilterMap, JoinArranged, Multiply, RkyvEventWriter, SortBy},
+        operators::{CrossbeamPusher, FilterMap, JoinArranged, Multiply, SortBy},
         send_recv::ChannelAddrs,
         subgraphs::rewire_channels,
         worker_timeline::worker_timeline,
     },
-    ui::{DataflowStats, Lifespan},
+    ui::{DataflowStats, Lifespan, ProgramStats, WorkerStats},
 };
 use abomonation_derive::Abomonation;
 use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
+use ddshow_sink::EventWriter;
 use ddshow_types::{
+    differential_logging::DifferentialEvent,
     timely_logging::{OperatesEvent, TimelyEvent},
     ChannelId, OperatorAddr, OperatorId, WorkerId,
 };
 use differential_dataflow::{
     difference::Semigroup,
     lattice::Lattice,
-    logging::DifferentialEvent,
     operators::{
         arrange::{ArrangeByKey, ArrangeBySelf, Arranged, TraceAgent},
         Consolidate, CountTotal, Join, JoinCore, Reduce, ThresholdTotal,
@@ -56,7 +60,7 @@ use std::{
     fs::{self, File},
     io::BufWriter,
     iter,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 use timely::{
@@ -87,11 +91,6 @@ type ArrangedKey<S, K, D = Diff> =
 //       - Packing `(data, time, diff)` updates in DD where time
 //         is not greater or equal to the message capability.
 
-/// Only cause the program stats to update every N milliseconds to
-/// prevent this from absolutely thrashing the scheduler
-// TODO: Make this configurable by the user
-pub const PROGRAM_NS_GRANULARITY: u128 = 5_000_000_000;
-
 fn granulate(&time: &Duration) -> Duration {
     let timestamp = time.as_nanos();
     let window_idx = (timestamp / PROGRAM_NS_GRANULARITY) + 1;
@@ -120,7 +119,7 @@ pub fn dataflow<S>(
     args: &Args,
     timely_stream: &Stream<S, TimelyLogBundle>,
     differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
-    mut senders: DataflowSenders,
+    senders: DataflowSenders,
 ) -> Result<ProbeHandle<Time>>
 where
     S: Scope<Timestamp = Time>,
@@ -263,7 +262,7 @@ where
     let edges = attach_operators(scope, &raw_operators, &channels, &leaves_arranged);
 
     // TODO: Make `extract_timely_info()` get the relevant event information
-    let worker_timeline =
+    let timeline_events =
         worker_timeline(scope, differential_stream, &operator_names, &timely_events);
 
     // TODO: Arrange this
@@ -286,56 +285,22 @@ where
         &channel_scopes,
     );
 
-    channel_sink(
-        &operator_names
-            .as_collection(|&(worker, operator), name| ((worker, operator), name.to_owned())),
+    install_data_extraction(
+        senders,
         &mut probe,
-        senders.name_lookup(),
-        false,
+        program_stats,
+        worker_stats,
+        leaves,
+        edges,
+        subgraphs,
+        operator_stats,
+        addressed_operators,
+        cross_aggregated_operator_stats,
+        dataflow_stats,
+        timeline_events,
+        operator_names,
+        operator_ids,
     );
-    channel_sink(
-        &operator_ids.as_collection(|&key, addr| (key, addr.clone())),
-        &mut probe,
-        senders.addr_lookup(),
-        false,
-    );
-    channel_sink(&program_stats, &mut probe, senders.program_stats(), true);
-    channel_sink(
-        &worker_stats
-            .map(|(worker, stats)| ((), (worker, stats)))
-            .hierarchical_sort_by(|&(worker, _)| worker)
-            .map(|((), sorted_stats)| sorted_stats),
-        &mut probe,
-        senders.worker_stats(),
-        true,
-    );
-    channel_sink(
-        &addressed_operators.semijoin(&leaves),
-        &mut probe,
-        senders.nodes(),
-        true,
-    );
-    channel_sink(
-        &addressed_operators.semijoin(&subgraphs),
-        &mut probe,
-        senders.subgraphs(),
-        true,
-    );
-    channel_sink(&edges, &mut probe, senders.edges(), true);
-    channel_sink(&operator_stats, &mut probe, senders.operator_stats(), true);
-    channel_sink(
-        &cross_aggregated_operator_stats,
-        &mut probe,
-        senders.aggregated_operator_stats(),
-        true,
-    );
-    channel_sink(
-        &worker_timeline,
-        &mut probe,
-        senders.timeline_events(),
-        true,
-    );
-    channel_sink(&dataflow_stats, &mut probe, senders.dataflow_stats(), true);
 
     // TODO: Save ddflow logs
     // TODO: Probably want to prefix things with the current system time to allow
@@ -345,35 +310,70 @@ where
     //       hook within timely, we can make it serve us rkyv events while we're at it
     // If saving logs is enabled, write all log messages to the `save_logs` directory
     if let Some(save_logs) = args.save_logs.as_ref() {
-        fs::create_dir_all(&save_logs).context("failed to create `--save-logs` directory")?;
-
-        let file = if scope.index() == 0 {
-            save_logs.join("timely.ddshow")
-
-        // Make other workers pipe to a null output
-        } else if cfg!(windows) {
-            PathBuf::from("nul")
-        } else {
-            PathBuf::from("/dev/null")
-        };
-
-        tracing::debug!(
-            "installing file sink to {} on worker {}",
-            file.display(),
-            scope.index(),
+        tracing::info!(
+            "installing timely{} log sinks",
+            if differential_stream.is_some() {
+                " and differential"
+            } else {
+                ""
+            },
         );
 
-        let timely_file = BufWriter::new(
-            File::create(file).context("failed to create `--save-logs` timely file")?,
-        );
-
-        timely_stream
-            .exchange(|_| 0)
-            .probe_with(&mut probe)
-            .capture_into(RkyvEventWriter::new(timely_file));
+        logging_event_sink(
+            save_logs,
+            scope,
+            timely_stream,
+            &mut probe,
+            differential_stream,
+        )?;
     }
 
     Ok(probe)
+}
+
+#[allow(clippy::clippy::too_many_arguments)]
+fn install_data_extraction<S>(
+    senders: DataflowSenders,
+    probe: &mut ProbeHandle<Duration>,
+    program_stats: Collection<S, ProgramStats>,
+    worker_stats: Collection<S, (WorkerId, WorkerStats)>,
+    nodes: Collection<S, (WorkerId, OperatorAddr)>,
+    edges: Collection<S, (WorkerId, OperatesEvent, Channel, OperatesEvent)>,
+    subgraphs: Collection<S, (WorkerId, OperatorAddr)>,
+    operator_stats: Collection<S, ((WorkerId, OperatorId), OperatorStats)>,
+    addressed_operators: Collection<S, ((WorkerId, OperatorAddr), OperatesEvent)>,
+    aggregated_operator_stats: Collection<S, (OperatorId, OperatorStats)>,
+    dataflow_stats: Collection<S, DataflowStats>,
+    timeline_events: Collection<S, WorkerTimelineEvent>,
+    operator_names: ArrangedVal<S, (WorkerId, OperatorId), String>,
+    operator_ids: ArrangedVal<S, (WorkerId, OperatorId), OperatorAddr>,
+) where
+    S: Scope<Timestamp = Duration>,
+{
+    let worker_stats = worker_stats
+        .map(|(worker, stats)| ((), (worker, stats)))
+        .hierarchical_sort_by(|&(worker, _)| worker)
+        .map(|((), sorted_stats)| sorted_stats);
+    let nodes = addressed_operators.semijoin(&nodes);
+    let subgraphs = addressed_operators.semijoin(&subgraphs);
+    let operator_names = operator_names
+        .as_collection(|&(worker, operator), name| ((worker, operator), name.to_owned()));
+    let operator_ids = operator_ids.as_collection(|&key, addr| (key, addr.clone()));
+
+    senders.install_sinks(
+        probe,
+        (&program_stats, true),
+        (&worker_stats, true),
+        (&nodes, true),
+        (&edges, true),
+        (&subgraphs, true),
+        (&operator_stats, true),
+        (&aggregated_operator_stats, true),
+        (&dataflow_stats, true),
+        (&timeline_events, true),
+        (&operator_names, false),
+        (&operator_ids, false),
+    );
 }
 
 fn dataflow_stats<S, Tr1, Tr2, Tr3, Tr4>(
@@ -586,6 +586,85 @@ fn channel_sink<S, D, R>(
         "installed channel sink on worker {}",
         collection.scope().index(),
     );
+}
+
+/// Store all timely and differential events to disk
+fn logging_event_sink<S>(
+    save_logs: &Path,
+    scope: &mut S,
+    timely_stream: &Stream<S, (Duration, WorkerId, TimelyEvent)>,
+    probe: &mut ProbeHandle<Duration>,
+    differential_stream: Option<&Stream<S, (Duration, WorkerId, DifferentialEvent)>>,
+) -> Result<()>
+where
+    S: Scope<Timestamp = Duration>,
+{
+    // Create the directory for log files to go to
+    fs::create_dir_all(&save_logs).context("failed to create `--save-logs` directory")?;
+
+    let timely_path = log_file_path(
+        TIMELY_DISK_LOG_FILE,
+        save_logs,
+        scope.index(),
+        TIMELY_DISK_LOGGER,
+    );
+
+    tracing::debug!(
+        "installing timely file sink on worker {} pointed at {}",
+        scope.index(),
+        timely_path.display(),
+    );
+
+    let timely_file = BufWriter::new(
+        File::create(timely_path).context("failed to create `--save-logs` timely file")?,
+    );
+
+    timely_stream
+        .exchange(|_| TIMELY_DISK_LOGGER as u64)
+        .probe_with(probe)
+        .capture_into(EventWriter::new(timely_file));
+
+    if let Some(differential_stream) = differential_stream {
+        let differential_path = log_file_path(
+            DIFFERENTIAL_DISK_LOG_FILE,
+            save_logs,
+            scope.index(),
+            DIFFERENTIAL_DISK_LOGGER,
+        );
+
+        tracing::debug!(
+            "installing differential file sink on worker {} pointed at {}",
+            scope.index(),
+            differential_path.display(),
+        );
+
+        let differential_file = BufWriter::new(
+            File::create(differential_path)
+                .context("failed to create `--save-logs` differential file")?,
+        );
+
+        differential_stream
+            .exchange(|_| DIFFERENTIAL_DISK_LOGGER as u64)
+            .probe_with(probe)
+            .capture_into(EventWriter::new(differential_file));
+    }
+
+    Ok(())
+}
+
+/// Constructs the path to a logging file for the given worker and
+/// points all other workers at a null output
+fn log_file_path(file_name: &str, dir: &Path, worker_id: usize, sink_worker: usize) -> PathBuf {
+    // The specified worker is pointed at the actual file
+    if worker_id == sink_worker {
+        dir.join(file_name)
+
+    // Make other workers pipe to a null output
+    } else if cfg!(windows) {
+        PathBuf::from("nul")
+    } else {
+        PathBuf::from("/dev/null")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]

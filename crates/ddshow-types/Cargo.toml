@@ -4,13 +4,13 @@ version = "0.1.0"
 authors = ["Chase Wilson <me@chasewilson.dev>"]
 license = "MIT OR Apache-2.0"
 edition = "2018"
-resolver = "2"
 
 [features]
-default = ["rkyv"]
+default = ["rkyv", "ddflow"]
 rkyv = ["_rkyv", "bytecheck"]
 serde = ["_serde", "tinyvec/serde"]
 enable_abomonation = ["abomonation", "abomonation_derive"]
+ddflow = ["differential-dataflow"]
 
 [dependencies]
 tinyvec = { version = "1.2.0", features = ["alloc"] }
@@ -18,8 +18,7 @@ abomonation = { version = "0.7.3", optional = true }
 abomonation_derive = { version = "0.5.0", optional = true }
 bytecheck = { version = "0.5.1", optional = true }
 timely = { version = "0.12.0", default-features = false }
-# TODO: Differential dataflow log events
-# differential-dataflow = { version = "0.12.0", default-features = false }
+differential-dataflow = { version = "0.12.0", default-features = false, optional = true }
 
 # TODO: Allow random generation of types under feature flags
 #       to allow for fuzzing

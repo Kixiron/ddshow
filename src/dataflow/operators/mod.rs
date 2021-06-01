@@ -21,7 +21,7 @@ pub use filter_split::FilterSplit;
 pub use inspect::InspectExt;
 pub use min_max::{DiffDuration, Max, Min};
 pub use replay_with_shutdown::{EventIterator, EventReader, ReplayWithShutdown};
-pub use rkyv_capture::{RkyvEventReader, RkyvEventWriter};
+pub use rkyv_capture::RkyvEventReader;
 pub use sort::SortBy;
 pub use split::Split;
 pub use timely_version_hack::Multiply;

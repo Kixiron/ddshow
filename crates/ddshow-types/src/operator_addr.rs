@@ -1,3 +1,5 @@
+//! The [`OperatorAddr`] type
+
 use crate::ids::{OperatorId, PortId};
 #[cfg(feature = "rkyv")]
 use _rkyv::{
@@ -8,6 +10,7 @@ use _rkyv::{
 use _serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 #[cfg(feature = "enable_abomonation")]
 use abomonation::Abomonation;
+use bytecheck::handle_error;
 #[cfg(feature = "rkyv")]
 use bytecheck::{CheckBytes, StructCheckError};
 #[cfg(feature = "enable_abomonation")]
@@ -18,7 +21,7 @@ use std::{
     iter::{FromIterator, IntoIterator},
     mem::{ManuallyDrop, MaybeUninit},
     ops::Deref,
-    ptr, slice,
+    slice,
 };
 use tinyvec::{ArrayVec, TinyVec};
 
@@ -43,6 +46,13 @@ impl OperatorAddr {
             [segment, zero, zero, zero, zero, zero, zero, zero],
             1,
         )))
+    }
+
+    fn from_vec(addr: Vec<OperatorId>) -> Self {
+        let tiny_vec = ArrayVec::try_from(addr.as_slice())
+            .map_or_else(|_| TinyVec::Heap(addr), TinyVec::Inline);
+
+        Self::new(tiny_vec)
     }
 
     pub fn from_slice(addr: &[OperatorId]) -> Self {
@@ -87,10 +97,7 @@ impl From<&Vec<OperatorId>> for OperatorAddr {
 
 impl From<Vec<OperatorId>> for OperatorAddr {
     fn from(addr: Vec<OperatorId>) -> Self {
-        let tiny_vec = ArrayVec::try_from(addr.as_slice())
-            .map_or_else(|_| TinyVec::Heap(addr), TinyVec::Inline);
-
-        Self::new(tiny_vec)
+        Self::from_vec(addr)
     }
 }
 
@@ -192,16 +199,16 @@ impl Abomonation for OperatorAddr {
     }
 }
 
-#[cfg(feature = "rkyv")]
+///An archived `OperatorAddr`
 #[repr(C)]
 pub struct ArchivedOperatorAddr
 where
     Vec<OperatorId>: Archive,
 {
+    ///The archived counterpart of `OperatorAddr::addr`
     addr: Archived<Vec<OperatorId>>,
 }
 
-#[cfg(feature = "rkyv")]
 impl<C: ?Sized> CheckBytes<C> for ArchivedOperatorAddr
 where
     Vec<OperatorId>: Archive,
@@ -216,32 +223,20 @@ where
         let bytes = value.cast::<u8>();
         <Archived<Vec<OperatorId>> as CheckBytes<C>>::check_bytes(
             bytes
-                .add({
-                    let uninit = MaybeUninit::<ArchivedOperatorAddr>::uninit();
-                    let base_ptr: *const ArchivedOperatorAddr = uninit.as_ptr();
-
-                    let field_ptr = {
-                        let ArchivedOperatorAddr { addr: _, .. };
-                        let base = base_ptr;
-
-                        ptr::addr_of!(*(base as *const ArchivedOperatorAddr))
-                    };
-
-                    (field_ptr as usize) - (base_ptr as usize)
-                })
+                .add(_rkyv::offset_of!(ArchivedOperatorAddr, addr))
                 .cast(),
             context,
         )
         .map_err(|e| StructCheckError {
             field_name: "addr",
-            inner: e.into(),
+            inner: handle_error(e),
         })?;
 
         Ok(&*value)
     }
 }
 
-#[cfg(feature = "rkyv")]
+/// The resolver for an archived [`OperatorAddr`]
 pub struct OperatorAddrResolver
 where
     Vec<OperatorId>: Archive,
@@ -249,7 +244,6 @@ where
     addr: Resolver<Vec<OperatorId>>,
 }
 
-#[cfg(feature = "rkyv")]
 impl Archive for OperatorAddr
 where
     Vec<OperatorId>: Archive,
@@ -257,16 +251,16 @@ where
     type Archived = ArchivedOperatorAddr;
     type Resolver = OperatorAddrResolver;
 
+    #[inline]
     fn resolve(&self, pos: usize, resolver: Self::Resolver, out: &mut MaybeUninit<Self::Archived>) {
         self.addr.to_vec().resolve(
-            pos + _rkyv::offset_of!(Self::Archived, addr),
+            pos,
             resolver.addr,
             _rkyv::project_struct!(out: Self::Archived => addr: Archived<Vec<OperatorId>>),
         );
     }
 }
 
-#[cfg(feature = "rkyv")]
 impl<S: Fallible + ?Sized> RkyvSerialize<S> for OperatorAddr
 where
     Vec<OperatorId>: RkyvSerialize<S>,
@@ -279,7 +273,6 @@ where
     }
 }
 
-#[cfg(feature = "rkyv")]
 impl<D: Fallible + ?Sized> RkyvDeserialize<OperatorAddr, D> for Archived<OperatorAddr>
 where
     Vec<OperatorId>: Archive,
@@ -287,6 +280,6 @@ where
 {
     #[inline]
     fn deserialize(&self, deserializer: &mut D) -> Result<OperatorAddr, D::Error> {
-        Ok(OperatorAddr::from(self.addr.deserialize(deserializer)?))
+        Ok(OperatorAddr::from_vec(self.addr.deserialize(deserializer)?))
     }
 }

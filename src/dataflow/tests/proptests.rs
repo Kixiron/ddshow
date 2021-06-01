@@ -10,9 +10,10 @@ use crate::dataflow::{
     },
     Diff,
 };
-use ddshow_types::{timely_logging::TimelyEvent, WorkerId};
+use ddshow_types::{
+    differential_logging::DifferentialEvent, timely_logging::TimelyEvent, WorkerId,
+};
 use differential_dataflow::{
-    logging::DifferentialEvent,
     operators::{arrange::ArrangeByKey, Consolidate},
     AsCollection, ExchangeData,
 };

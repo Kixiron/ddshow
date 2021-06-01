@@ -11,10 +11,10 @@ use crate::dataflow::{
     TimelyLogBundle,
 };
 use ddshow_types::{
+    differential_logging::{DifferentialEvent, MergeEvent, MergeShortfall},
     timely_logging::{ScheduleEvent, StartStop, TimelyEvent},
     OperatorId, WorkerId,
 };
-use differential_dataflow::logging::{DifferentialEvent, MergeEvent, MergeShortfall};
 use std::{
     collections::HashMap,
     sync::{mpsc, Arc, Mutex},
@@ -107,7 +107,7 @@ fn differential_event_association() {
             Duration::from_nanos(1000),
             WorkerId::new(0),
             DifferentialEvent::Merge(MergeEvent {
-                operator: 0,
+                operator: OperatorId::new(0),
                 scale: 1000,
                 length1: 1000,
                 length2: 1000,
@@ -120,7 +120,7 @@ fn differential_event_association() {
             Duration::from_nanos(10_000),
             WorkerId::new(0),
             DifferentialEvent::Merge(MergeEvent {
-                operator: 0,
+                operator: OperatorId::new(0),
                 scale: 1000,
                 length1: 1000,
                 length2: 1000,
@@ -133,7 +133,7 @@ fn differential_event_association() {
             Duration::from_nanos(20_000),
             WorkerId::new(0),
             DifferentialEvent::Merge(MergeEvent {
-                operator: 1,
+                operator: OperatorId::new(1),
                 scale: 1000,
                 length1: 1000,
                 length2: 1000,
@@ -146,7 +146,7 @@ fn differential_event_association() {
             Duration::from_nanos(21_000),
             WorkerId::new(0),
             DifferentialEvent::MergeShortfall(MergeShortfall {
-                operator: 1,
+                operator: OperatorId::new(1),
                 scale: 1000,
                 shortfall: 100,
             }),
