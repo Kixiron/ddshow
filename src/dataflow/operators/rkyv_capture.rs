@@ -60,12 +60,18 @@ where
             return Ok(None);
         }
 
+        // Align to read
+        self.consumed += match self.consumed & 15 {
+            0 => 0,
+            x => 16 - x,
+        };
+
         let message_header = (&self.buffer1[self.consumed..])
-            .read_u64::<LittleEndian>()
-            .map(|archive_len| archive_len as usize);
+            .read_u128::<LittleEndian>()
+            .map(|archive_len: u128| archive_len as usize);
 
         if let Ok(archive_length) = message_header {
-            let archive_start = self.consumed + mem::size_of::<u64>();
+            let archive_start = self.consumed + mem::size_of::<u128>();
 
             if let Some(slice) = self
                 .buffer1
@@ -77,7 +83,7 @@ where
                             .deserialize(&mut AllocDeserializer)
                             .unwrap_or_else(|unreachable| match unreachable {});
 
-                        self.consumed += archive_length + mem::size_of::<u64>();
+                        self.consumed += archive_length + mem::size_of::<u128>();
                         return Ok(Some(event.into()));
                     }
 
