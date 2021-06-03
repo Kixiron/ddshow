@@ -1,6 +1,9 @@
+use bytecheck::CheckBytes;
 use ddshow_types::Event;
 use rkyv::{
+    check_archived_root,
     ser::{serializers::AlignedSerializer, Serializer},
+    validation::DefaultArchiveValidator,
     AlignedVec, Serialize,
 };
 use std::{io::Write, marker::PhantomData};
@@ -33,7 +36,9 @@ impl<T, D, W> TimelyEventPusher<T, D> for EventWriter<T, D, W>
 where
     W: Write,
     T: for<'a> Serialize<AlignedSerializer<&'a mut AlignedVec>>,
+    T::Archived: CheckBytes<DefaultArchiveValidator>,
     D: for<'a> Serialize<AlignedSerializer<&'a mut AlignedVec>>,
+    D::Archived: CheckBytes<DefaultArchiveValidator>,
 {
     fn push(&mut self, event: TimelyEvent<T, D>) {
         let event: Event<T, D> = event.into();
@@ -68,6 +73,12 @@ where
             .unwrap_or_else(|unreachable| match unreachable {});
 
         let archive_len = serializer.pos() as u128;
+        #[cfg(feature = "tracing")]
+        _tracing::trace!(
+            check_result = ?check_archived_root::<Event<T, D>>(&self.buffer).map(|_| ()),
+            "made an archive of length {}",
+            archive_len,
+        );
 
         let result = self
             .stream

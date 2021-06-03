@@ -61,48 +61,119 @@ where
         }
 
         // Align to read
-        self.consumed += match self.consumed & 15 {
-            0 => 0,
-            x => 16 - x,
-        };
+        let alignment_offset = match self.consumed & 15 {
+            0 => {
+                tracing::trace!("stream is already aligned");
+                0
+            }
 
-        let message_header = (&self.buffer1[self.consumed..])
+            x => {
+                let padding = 16 - x;
+                tracing::trace!(
+                    padding_bytes = ?&self.buffer1[self.consumed..self.consumed + padding],
+                    padding_is_zeroed = self.buffer1[self.consumed..self.consumed + padding].iter().all(|&x| x == 0),
+                    "skipping {} padding bytes to align to 16",
+                    padding,
+                );
+
+                padding
+            }
+        };
+        let consumed = self.consumed + alignment_offset;
+
+        let message_header = (&self.buffer1[consumed..])
             .read_u128::<LittleEndian>()
             .map(|archive_len: u128| archive_len as usize);
 
+        tracing::trace!(
+            header_bytes = ?&self.buffer1.get(consumed..consumed + std::mem::size_of::<u128>()),
+            message_header = ?message_header,
+            "read message header",
+        );
+
         if let Ok(archive_length) = message_header {
-            let archive_start = self.consumed + mem::size_of::<u128>();
+            let archive_start = consumed + mem::size_of::<u128>();
 
             if let Some(slice) = self
                 .buffer1
                 .get(archive_start..archive_start + archive_length)
             {
+                tracing::trace!(
+                    archive_bytes = ?slice,
+                    "read archive bytes",
+                );
+
+                // let archive = unsafe { archived_root::<Event<T, D>>(slice) };
+                // let event = archive
+                //     .deserialize(&mut AllocDeserializer)
+                //     .unwrap_or_else(|unreachable| match unreachable {});
+                //
+                // self.consumed += alignment_offset + archive_length + mem::size_of::<u128>();
+                // return Ok(Some(event.into()));
+
                 match check_archived_root::<Event<T, D>>(slice) {
                     Ok(archive) => {
                         let event = archive
                             .deserialize(&mut AllocDeserializer)
                             .unwrap_or_else(|unreachable| match unreachable {});
 
-                        self.consumed += archive_length + mem::size_of::<u128>();
+                        tracing::trace!(
+                            consumed = self.consumed,
+                            alignment_offset = alignment_offset,
+                            archive_length = archive_length,
+                            header_size = mem::size_of::<u128>(),
+                            new_consumed = self.consumed
+                                + alignment_offset
+                                + archive_length
+                                + mem::size_of::<u128>(),
+                            "successfully unarchived event",
+                        );
+                        self.consumed += alignment_offset + archive_length + mem::size_of::<u128>();
+
                         return Ok(Some(event.into()));
                     }
 
-                    Err(err) => tracing::error!("failed to check archived event: {:?}", err),
+                    Err(err) => {
+                        tracing::error!(
+                            type_name = std::any::type_name::<Event<T, D>>(),
+                            "failed to check archived event: {:?}",
+                            err,
+                        );
+
+                        tracing::trace!(
+                            consumed = self.consumed,
+                            alignment_offset = alignment_offset,
+                            archive_length = archive_length,
+                            header_size = mem::size_of::<u128>(),
+                            new_consumed = self.consumed
+                                + alignment_offset
+                                + archive_length
+                                + mem::size_of::<u128>(),
+                            "failed to unarchive event",
+                        );
+
+                        panic!("failed to check archived event: {:?}", err);
+                    }
                 }
             }
         }
 
-        // if we exhaust data we should shift back (if any shifting to do)
-        if self.consumed > 0 {
+        // if we exhaust data we should shift back while preserving our alignment
+        // of 16 bytes
+        if self.consumed > 15 {
+            tracing::trace!(consumed = self.consumed, "swapping buffers");
+
             self.buffer2.clear();
             self.buffer2
-                .extend_from_slice(&self.buffer1[self.consumed..]);
+                .extend_from_slice(&self.buffer1[self.consumed & !15..]);
 
             mem::swap(&mut self.buffer1, &mut self.buffer2);
-            self.consumed = 0;
+            self.consumed &= 15;
         }
 
         if let Ok(len) = self.reader.read(&mut self.bytes[..]) {
+            tracing::trace!(num_bytes = len, "read {} bytes from input stream", len);
+
             if len == 0 {
                 self.peer_finished = true;
             }
