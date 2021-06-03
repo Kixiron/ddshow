@@ -306,6 +306,7 @@ dependencies = [
 name = "ddshow-sink"
 version = "0.1.0"
 dependencies = [
+ "bytecheck",
  "byteorder",
  "ddshow-types",
  "differential-dataflow",

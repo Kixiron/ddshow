@@ -12,6 +12,7 @@ tracing = ["_tracing"]
 
 [dependencies]
 byteorder = "1.4.3"
+bytecheck = "0.5.1"
 rkyv = { version = "0.6.6", features = ["validation"] }
 timely = { version = "0.12.0", default-features = false }
 differential-dataflow = { version = "0.12.0", default-features = false, optional = true }

@@ -52,10 +52,10 @@ pub static DDSHOW_VERSION: &str = env!("VERGEN_GIT_SEMVER");
 // TODO: Set the panic hook to shut down the computation
 //       so that panics don't stick things
 fn main() -> Result<()> {
-    init_logging();
-
     // Grab the args from the user and build the required configs
     let args = Arc::new(Args::from_args());
+    init_logging(&args);
+
     tracing::trace!("initialized and received cli args: {:?}", args);
 
     let config = args.timely_config();
@@ -471,13 +471,14 @@ fn dump_program_json(
     Ok(())
 }
 
-fn init_logging() {
+fn init_logging(args: &Args) {
     let filter_layer = EnvFilter::from_env("DDSHOW_LOG");
     let fmt_layer = tracing_subscriber::fmt::layer()
         .pretty()
         .with_timer(Uptime::default())
         .with_thread_names(true)
-        .with_ansi(true);
+        .with_ansi(args.color.is_always() || args.color.is_auto())
+        .with_level(false);
 
     let _ = tracing_subscriber::registry()
         .with(filter_layer)

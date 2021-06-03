@@ -77,6 +77,57 @@ pub struct Args {
     /// Disables text report generation
     #[structopt(long, conflicts_with("report-file"))]
     pub no_report_file: bool,
+
+    /// The coloring to use for terminal output
+    #[structopt(long, default_value = "auto", possible_values = &["auto", "always", "never"])]
+    pub color: TerminalColor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TerminalColor {
+    Auto,
+    Always,
+    Never,
+}
+
+impl TerminalColor {
+    /// Returns `true` if the terminal_color is [`Auto`].
+    pub const fn is_auto(&self) -> bool {
+        matches!(self, Self::Auto)
+    }
+
+    /// Returns `true` if the terminal_color is [`Always`].
+    pub const fn is_always(&self) -> bool {
+        matches!(self, Self::Always)
+    }
+
+    // /// Returns `true` if the terminal_color is [`Never`].
+    // pub const fn is_never(&self) -> bool {
+    //     matches!(self, Self::Never)
+    // }
+}
+
+impl FromStr for TerminalColor {
+    type Err = String;
+
+    fn from_str(string: &str) -> Result<Self, Self::Err> {
+        let lowercase = string.to_lowercase();
+        match lowercase.as_str() {
+            "auto" => Ok(Self::Auto),
+            "always" => Ok(Self::Always),
+            "never" => Ok(Self::Never),
+            _ => Err(format!(
+                "invalid terminal color {:?}, only `auto`, `always` and `never` are supported",
+                string,
+            )),
+        }
+    }
+}
+
+impl Default for TerminalColor {
+    fn default() -> Self {
+        Self::Auto
+    }
 }
 
 impl Args {

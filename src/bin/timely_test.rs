@@ -4,6 +4,10 @@ use differential_dataflow::{
 };
 use std::{env, net::TcpStream};
 use timely::{communication::Allocate, dataflow::Scope, worker::Worker};
+use tracing_subscriber::{
+    fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
+    EnvFilter,
+};
 
 type Time = usize;
 type Diff = isize;
@@ -72,6 +76,19 @@ fn main() {
 }
 
 fn set_loggers<A: Allocate>(worker: &mut Worker<A>) {
+    let filter_layer = EnvFilter::from_env("DDSHOW_LOG");
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .pretty()
+        .with_timer(Uptime::default())
+        .with_thread_names(true)
+        .with_ansi(false)
+        .with_level(false);
+
+    let _ = tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(fmt_layer)
+        .try_init();
+
     if let Ok(dir) = env::var("TIMELY_DISK_LOG") {
         if !dir.is_empty() {
             ddshow_sink::save_timely_logs_to_disk(worker, &dir).unwrap();
