@@ -1,9 +1,14 @@
 use differential_dataflow::{
     input::Input,
     operators::{arrange::ArrangeBySelf, Iterate, Threshold},
+    AsCollection,
 };
-use std::{env, net::TcpStream};
-use timely::{communication::Allocate, dataflow::Scope, worker::Worker};
+use std::{env, fs, net::TcpStream};
+use timely::{
+    communication::Allocate,
+    dataflow::{operators::Exchange, Scope},
+    worker::Worker,
+};
 use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
     EnvFilter,
@@ -13,13 +18,42 @@ type Time = usize;
 type Diff = isize;
 
 fn main() {
+    let filter_layer = EnvFilter::from_env("DDSHOW_LOG");
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .pretty()
+        .with_timer(Uptime::default())
+        .with_thread_names(true)
+        .with_ansi(false)
+        .with_level(false);
+
+    let _ = tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(fmt_layer)
+        .try_init();
+
+    if let Ok(dir) = env::var("TIMELY_DISK_LOG") {
+        let _ = fs::remove_dir_all(dir);
+    }
+    if let Ok(dir) = env::var("DIFFERENTIAL_LOG") {
+        let _ = fs::remove_dir_all(dir);
+    }
+
     timely::execute_from_args(env::args(), |worker| {
         set_loggers(worker);
 
         // create a new input, exchange data, and inspect its output
         let (mut input, mut probe, mut trace) = worker.dataflow::<Time, _, _>(|scope| {
             let (input, stream) = scope.new_collection::<usize, Diff>();
+            let stream = stream
+                .inner
+                .exchange(|&(_, data, _)| data as u64)
+                .as_collection();
+
             let (_, stream2) = scope.new_collection::<usize, Diff>();
+            let stream2 = stream2
+                .inner
+                .exchange(|&(_, data, _)| data as u64)
+                .as_collection();
 
             let output_stream = scope.region_named("a middle region", |scope| {
                 let stream = stream.enter_region(scope);
@@ -76,19 +110,6 @@ fn main() {
 }
 
 fn set_loggers<A: Allocate>(worker: &mut Worker<A>) {
-    let filter_layer = EnvFilter::from_env("DDSHOW_LOG");
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .pretty()
-        .with_timer(Uptime::default())
-        .with_thread_names(true)
-        .with_ansi(false)
-        .with_level(false);
-
-    let _ = tracing_subscriber::registry()
-        .with(filter_layer)
-        .with(fmt_layer)
-        .try_init();
-
     if let Ok(dir) = env::var("TIMELY_DISK_LOG") {
         if !dir.is_empty() {
             ddshow_sink::save_timely_logs_to_disk(worker, &dir).unwrap();

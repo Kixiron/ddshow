@@ -223,7 +223,7 @@ where
             if !started {
                 tracing::debug!(
                     "acquired {} capabilities from within `.replay_with_shutdown_into_core()`",
-                    event_streams.len() - 1,
+                    event_streams.len().saturating_sub(1),
                 );
 
                 // The first thing we do is modify our capabilities to match the number of streams we manage.

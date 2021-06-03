@@ -167,28 +167,29 @@ impl<T: Ord, D: Ord> Extract<T, D> for CrossbeamExtractor<Event<T, D>> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Fuel {
-    fuel: Option<usize>,
-    default: Option<usize>,
+pub enum Fuel {
+    Unlimited,
+    Limited { fuel: usize, default: NonZeroUsize },
 }
 
 impl Fuel {
     pub const fn limited(fuel: NonZeroUsize) -> Self {
-        Self {
-            fuel: Some(fuel.get()),
-            default: Some(fuel.get()),
+        Self::Limited {
+            fuel: fuel.get(),
+            default: fuel,
         }
     }
 
     pub const fn unlimited() -> Self {
-        Self {
-            fuel: None,
-            default: None,
-        }
+        Self::Unlimited
+    }
+
+    pub const fn is_unlimited(&self) -> bool {
+        matches!(self, Self::Unlimited)
     }
 
     pub fn exert(&mut self, effort: usize) -> bool {
-        if let Some(fuel) = self.fuel.as_mut() {
+        if let Self::Limited { fuel, .. } = self {
             *fuel = fuel.saturating_sub(effort);
             *fuel == 0
         } else {
@@ -196,25 +197,30 @@ impl Fuel {
         }
     }
 
-    pub fn is_exhausted(&self) -> bool {
-        self.fuel.map_or(false, |fuel| fuel == 0)
+    pub const fn is_exhausted(&self) -> bool {
+        match *self {
+            Self::Unlimited => false,
+            Self::Limited { fuel, .. } => fuel == 0,
+        }
     }
 
     pub fn reset(&mut self) {
-        self.fuel = self.default;
+        if let Self::Limited { fuel, default } = self {
+            *fuel = default.get();
+        }
     }
 
     pub const fn remaining(&self) -> Option<usize> {
-        if let (Some(base), Some(current)) = (self.default, self.fuel) {
-            Some(base - current)
+        if let Self::Limited { fuel, default } = *self {
+            Some(default.get() - fuel)
         } else {
             None
         }
     }
 
     pub const fn used(&self) -> Option<usize> {
-        if let (Some(base), Some(current)) = (self.default, self.fuel) {
-            Some(base - (base - current))
+        if let Self::Limited { fuel, default } = *self {
+            Some(default.get() - (default.get() - fuel))
         } else {
             None
         }

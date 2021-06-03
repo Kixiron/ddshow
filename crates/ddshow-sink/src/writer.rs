@@ -6,7 +6,7 @@ use rkyv::{
     validation::DefaultArchiveValidator,
     AlignedVec, Serialize,
 };
-use std::{io::Write, marker::PhantomData};
+use std::{fmt::Debug, io::Write, marker::PhantomData, mem};
 use timely::dataflow::operators::capture::event::{
     Event as TimelyEvent, EventPusher as TimelyEventPusher,
 };
@@ -35,9 +35,9 @@ impl<T, D, W> EventWriter<T, D, W> {
 impl<T, D, W> TimelyEventPusher<T, D> for EventWriter<T, D, W>
 where
     W: Write,
-    T: for<'a> Serialize<AlignedSerializer<&'a mut AlignedVec>>,
+    T: for<'a> Serialize<AlignedSerializer<&'a mut AlignedVec>> + Debug,
     T::Archived: CheckBytes<DefaultArchiveValidator>,
-    D: for<'a> Serialize<AlignedSerializer<&'a mut AlignedVec>>,
+    D: for<'a> Serialize<AlignedSerializer<&'a mut AlignedVec>> + Debug,
     D::Archived: CheckBytes<DefaultArchiveValidator>,
 {
     fn push(&mut self, event: TimelyEvent<T, D>) {
@@ -49,7 +49,6 @@ where
             0 => (),
             x => {
                 let padding = 16 - x;
-                self.position += padding;
 
                 if let Err(err) = self.stream.write_all(&PADDING[..padding]) {
                     #[cfg(feature = "tracing")]
@@ -61,6 +60,8 @@ where
 
                     return;
                 }
+
+                self.position += padding;
             }
         }
 
@@ -86,8 +87,6 @@ where
             .write_all(&archive_len.to_le_bytes())
             .and_then(|_| self.stream.write_all(&self.buffer));
 
-        self.position += 16 + self.buffer.len();
-
         if let Err(err) = result {
             #[cfg(feature = "tracing")]
             _tracing::error!(
@@ -98,5 +97,7 @@ where
 
             return;
         }
+
+        self.position += mem::size_of::<u128>() + archive_len as usize;
     }
 }

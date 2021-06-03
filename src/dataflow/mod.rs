@@ -20,7 +20,6 @@ pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 use crate::{
     args::Args,
     dataflow::{
-        constants::{DIFFERENTIAL_DISK_LOGGER, TIMELY_DISK_LOGGER},
         differential::{arrangement_stats, ArrangementStats},
         operator_stats::{extract_timely_info, operator_stats},
         operators::{CrossbeamPusher, FilterMap, JoinArranged, Multiply, SortBy},
@@ -68,7 +67,7 @@ use timely::{
         operators::{
             capture::{Capture, Event},
             probe::Handle as ProbeHandle,
-            Exchange, Probe,
+            Probe,
         },
         Scope, ScopeParent, Stream,
     },
@@ -602,12 +601,7 @@ where
     // Create the directory for log files to go to
     fs::create_dir_all(&save_logs).context("failed to create `--save-logs` directory")?;
 
-    let timely_path = log_file_path(
-        TIMELY_DISK_LOG_FILE,
-        save_logs,
-        scope.index(),
-        TIMELY_DISK_LOGGER,
-    );
+    let timely_path = log_file_path(TIMELY_DISK_LOG_FILE, save_logs, scope.index());
 
     tracing::debug!(
         "installing timely file sink on worker {} pointed at {}",
@@ -620,17 +614,11 @@ where
     );
 
     timely_stream
-        .exchange(|_| TIMELY_DISK_LOGGER as u64)
         .probe_with(probe)
         .capture_into(EventWriter::new(timely_file));
 
     if let Some(differential_stream) = differential_stream {
-        let differential_path = log_file_path(
-            DIFFERENTIAL_DISK_LOG_FILE,
-            save_logs,
-            scope.index(),
-            DIFFERENTIAL_DISK_LOGGER,
-        );
+        let differential_path = log_file_path(DIFFERENTIAL_DISK_LOG_FILE, save_logs, scope.index());
 
         tracing::debug!(
             "installing differential file sink on worker {} pointed at {}",
@@ -644,7 +632,6 @@ where
         );
 
         differential_stream
-            .exchange(|_| DIFFERENTIAL_DISK_LOGGER as u64)
             .probe_with(probe)
             .capture_into(EventWriter::new(differential_file));
     }
@@ -652,19 +639,12 @@ where
     Ok(())
 }
 
-/// Constructs the path to a logging file for the given worker and
-/// points all other workers at a null output
-fn log_file_path(file_name: &str, dir: &Path, worker_id: usize, sink_worker: usize) -> PathBuf {
-    // The specified worker is pointed at the actual file
-    if worker_id == sink_worker {
-        dir.join(file_name)
-
-    // Make other workers pipe to a null output
-    } else if cfg!(windows) {
-        PathBuf::from("nul")
-    } else {
-        PathBuf::from("/dev/null")
-    }
+/// Constructs the path to a logging file for the given worker
+fn log_file_path(file_prefix: &str, dir: &Path, worker_id: usize) -> PathBuf {
+    dir.join(format!(
+        "{}.replay-worker-{}.ddshow",
+        file_prefix, worker_id
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
