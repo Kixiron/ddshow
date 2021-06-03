@@ -11,7 +11,7 @@ use ddshow_types::{timely_logging::TimelyEvent, WorkerId};
 use differential_dataflow::logging::DifferentialEvent as RawDifferentialEvent;
 use std::{
     any::Any,
-    fs::File,
+    fs::{self, File},
     io::{self, BufWriter, Write},
     path::Path,
 };
@@ -75,7 +75,7 @@ where
     A: Allocate,
 {
     let directory = directory.as_ref();
-    let path = directory.join("timely.ddshow");
+    let path = directory.join(format!("timely.worker-{}.ddshow", worker.index()));
 
     #[cfg(feature = "tracing")]
     _tracing::info!(
@@ -88,6 +88,7 @@ where
         path.display(),
     );
 
+    fs::create_dir_all(directory)?;
     let writer = BufWriter::new(File::create(path)?);
     Ok(enable_timely_logging(worker, writer))
 }
@@ -154,7 +155,7 @@ where
     A: Allocate,
 {
     let directory = directory.as_ref();
-    let path = directory.join("differential.ddshow");
+    let path = directory.join(format!("differential.worker-{}.ddshow", worker.index()));
 
     #[cfg(feature = "tracing")]
     _tracing::info!(
@@ -167,6 +168,7 @@ where
         path.display(),
     );
 
+    fs::create_dir_all(directory)?;
     let writer = BufWriter::new(File::create(path)?);
     Ok(enable_differential_logging(worker, writer))
 }

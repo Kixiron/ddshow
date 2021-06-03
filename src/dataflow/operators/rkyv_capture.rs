@@ -2,13 +2,15 @@
 
 use crate::dataflow::operators::EventIterator;
 use bytecheck::CheckBytes;
-use byteorder::{LittleEndian, ReadBytesExt};
 use ddshow_types::Event;
 use rkyv::{
-    check_archived_root, de::deserializers::AllocDeserializer, validation::DefaultArchiveValidator,
-    AlignedVec, Archive, Deserialize,
+    archived_root, check_archived_root, de::deserializers::AllocDeserializer,
+    validation::DefaultArchiveValidator, AlignedVec, Archive, Deserialize,
 };
 use std::{
+    cmp,
+    convert::TryInto,
+    fmt::Debug,
     io::{self, Read},
     marker::PhantomData,
     mem,
@@ -45,9 +47,9 @@ impl<T, D, R> RkyvEventReader<T, D, R> {
 impl<T, D, R> EventIterator<T, D> for RkyvEventReader<T, D, R>
 where
     R: Read,
-    T: Archive,
+    T: Archive + Debug,
     T::Archived: Deserialize<T, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
-    D: Archive,
+    D: Archive + Debug,
     D::Archived: Deserialize<D, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
 {
     fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<TimelyEvent<T, D>>> {
@@ -70,8 +72,8 @@ where
             x => {
                 let padding = 16 - x;
                 tracing::trace!(
-                    padding_bytes = ?&self.buffer1[self.consumed..self.consumed + padding],
-                    padding_is_zeroed = self.buffer1[self.consumed..self.consumed + padding].iter().all(|&x| x == 0),
+                    padding_bytes = ?&self.buffer1[self.consumed..cmp::min(self.buffer1.len(), self.consumed + padding)],
+                    padding_is_zeroed = self.buffer1[self.consumed..cmp::min(self.buffer1.len(), self.consumed + padding)].iter().all(|&x| x == 0),
                     "skipping {} padding bytes to align to 16",
                     padding,
                 );
@@ -81,17 +83,17 @@ where
         };
         let consumed = self.consumed + alignment_offset;
 
-        let message_header = (&self.buffer1[consumed..])
-            .read_u128::<LittleEndian>()
-            .map(|archive_len: u128| archive_len as usize);
+        if let Some(header_slice) = self
+            .buffer1
+            .get(consumed..consumed + mem::size_of::<u128>())
+        {
+            let archive_length = u128::from_le_bytes(header_slice.try_into().unwrap()) as usize;
+            tracing::trace!(
+                header_bytes = ?header_slice,
+                archive_length = archive_length,
+                "read message header",
+            );
 
-        tracing::trace!(
-            header_bytes = ?&self.buffer1.get(consumed..consumed + std::mem::size_of::<u128>()),
-            message_header = ?message_header,
-            "read message header",
-        );
-
-        if let Ok(archive_length) = message_header {
             let archive_start = consumed + mem::size_of::<u128>();
 
             if let Some(slice) = self
@@ -115,7 +117,8 @@ where
                     Ok(archive) => {
                         let event = archive
                             .deserialize(&mut AllocDeserializer)
-                            .unwrap_or_else(|unreachable| match unreachable {});
+                            .unwrap_or_else(|unreachable| match unreachable {})
+                            .into();
 
                         tracing::trace!(
                             consumed = self.consumed,
@@ -126,21 +129,23 @@ where
                                 + alignment_offset
                                 + archive_length
                                 + mem::size_of::<u128>(),
+                            event = ?event,
                             "successfully unarchived event",
                         );
                         self.consumed += alignment_offset + archive_length + mem::size_of::<u128>();
 
-                        return Ok(Some(event.into()));
+                        return Ok(Some(event));
                     }
 
                     Err(err) => {
+                        let unsafely_archived: TimelyEvent<T, D> =
+                            unsafe { archived_root::<Event<T, D>>(slice) }
+                                .deserialize(&mut AllocDeserializer)
+                                .unwrap_or_else(|unreachable| match unreachable {})
+                                .into();
+
                         tracing::error!(
                             type_name = std::any::type_name::<Event<T, D>>(),
-                            "failed to check archived event: {:?}",
-                            err,
-                        );
-
-                        tracing::trace!(
                             consumed = self.consumed,
                             alignment_offset = alignment_offset,
                             archive_length = archive_length,
@@ -149,12 +154,23 @@ where
                                 + alignment_offset
                                 + archive_length
                                 + mem::size_of::<u128>(),
-                            "failed to unarchive event",
+                            unsafely_archived = ?unsafely_archived,
+                            "failed to check archived event: {:?}",
+                            err,
                         );
 
                         panic!("failed to check archived event: {:?}", err);
                     }
                 }
+            } else {
+                tracing::trace!(
+                    archive_length = archive_length,
+                    requested_range = ?(archive_start..archive_start + archive_length),
+                    consumed = consumed,
+                    buffer_length = self.buffer1.len(),
+                    remaining_bytes = self.buffer1.len() - consumed + mem::size_of::<u128>(),
+                    "failed to get archive bytes",
+                );
             }
         }
 
@@ -188,9 +204,9 @@ where
 impl<T, D, R> Iterator for RkyvEventReader<T, D, R>
 where
     R: Read,
-    T: Archive,
+    T: Archive + Debug,
     T::Archived: Deserialize<T, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
-    D: Archive,
+    D: Archive + Debug,
     D::Archived: Deserialize<D, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
 {
     type Item = TimelyEvent<T, D>;

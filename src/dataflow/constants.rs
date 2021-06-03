@@ -8,16 +8,10 @@ use std::{num::NonZeroUsize, time::Duration};
 pub const PROGRAM_NS_GRANULARITY: u128 = 5_000_000_000;
 
 /// The file that all timely events will be stored in
-pub const TIMELY_DISK_LOG_FILE: &str = "timely.ddshow";
-
-/// The worker that'll log all timely events to disk
-pub(crate) const TIMELY_DISK_LOGGER: usize = 0;
+pub const TIMELY_DISK_LOG_FILE: &str = "timely";
 
 /// The file that all differential events will be stored in
-pub const DIFFERENTIAL_DISK_LOG_FILE: &str = "differential.ddshow";
-
-/// The worker that'll log all differential events to disk
-pub(crate) const DIFFERENTIAL_DISK_LOGGER: usize = 1;
+pub const DIFFERENTIAL_DISK_LOG_FILE: &str = "differential";
 
 /// The default capacity to initialize extractor maps to
 pub(crate) const DEFAULT_EXTRACTOR_CAPACITY: usize = 1024;

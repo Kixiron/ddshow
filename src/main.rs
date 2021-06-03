@@ -61,7 +61,7 @@ fn main() -> Result<()> {
     let config = args.timely_config();
 
     // Connect to the timely sources
-    let timely_event_receivers = acquire_replay_sources(
+    let (timely_event_receivers, are_timely_sources) = acquire_replay_sources(
         args.timely_address,
         args.timely_connections,
         args.workers,
@@ -83,6 +83,32 @@ fn main() -> Result<()> {
     } else {
         None
     };
+    let are_differential_sources = differential_event_receivers
+        .as_ref()
+        .map_or(true, |&(_, are_differential_sources)| {
+            are_differential_sources
+        });
+
+    // If no replay sources were provided, exit early
+    if !are_timely_sources || !are_differential_sources {
+        tracing::warn!(
+            are_timely_sources = are_timely_sources,
+            are_differential_sources = ?differential_event_receivers
+                .as_ref()
+                .map(|&(_, are_differential_sources)| are_differential_sources),
+            differential_enabled = args.differential_enabled,
+            "no replay sources were provided",
+        );
+
+        let source = if !are_timely_sources {
+            "timely"
+        } else {
+            "differential"
+        };
+        println!("No {} replay sources were provided, exiting", source);
+
+        return Ok(());
+    }
 
     let (running, workers_finished) = (
         Arc::new(AtomicBool::new(true)),
@@ -100,6 +126,7 @@ fn main() -> Result<()> {
     let worker_guards = timely::execute(config, move |worker| {
         let dataflow_name = concat!(env!("CARGO_CRATE_NAME"), " log processor");
         let args = moved_args.clone();
+
         tracing::info!(
             "spun up timely worker {}/{}",
             worker.index() + 1,
@@ -123,7 +150,7 @@ fn main() -> Result<()> {
             .recv()
             .expect("failed to receive timely event traces");
 
-        let differential_traces = differential_event_receivers.as_ref().map(|recv| {
+        let differential_traces = differential_event_receivers.as_ref().map(|(recv, _)| {
             recv[worker.index()]
                 .recv()
                 .expect("failed to receive differential event traces")
@@ -144,60 +171,82 @@ fn main() -> Result<()> {
                 Fuel::unlimited()
             };
 
-            // The timely log stream filtered down to worker 0's events
-            let timely_stream = match timely_traces {
-                ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
-                    "Timely Replay",
-                    scope,
-                    replay_shutdown.clone(),
-                    fuel.clone(),
-                ),
+            tracing::trace!(
+                worker_id = scope.index(),
+                fuel = ?fuel,
+                "giving worker {} {} replay fuel",
+                scope.index() + 1,
+                if fuel.is_unlimited() { "unlimited" } else { "limited" },
+            );
 
-                ReplaySource::Abomonation(abomonation) => abomonation
-                    .replay_with_shutdown_into_named(
+            // The timely log stream filtered down to worker 0's events
+            let span = tracing::info_span!("replay timely logs", worker_id = scope.index());
+            let timely_stream = span.in_scope(|| {
+                match timely_traces {
+                    ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
                         "Timely Replay",
                         scope,
                         replay_shutdown.clone(),
                         fuel.clone(),
-                    )
-                    .map(|(time, worker, event): (Duration, usize, RawTimelyEvent)| {
-                        (time, WorkerId::new(worker), TimelyEvent::from(event))
-                    }),
-            }
-            .debug_inspect(|x| tracing::trace!("timely event: {:?}", x));
-
-            let differential_stream = differential_traces.map(|traces| {
-                match traces {
-                    ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
-                        "Differential Replay",
-                        scope,
-                        replay_shutdown.clone(),
-                        fuel,
                     ),
 
                     ReplaySource::Abomonation(abomonation) => abomonation
                         .replay_with_shutdown_into_named(
+                            "Timely Replay",
+                            scope,
+                            replay_shutdown.clone(),
+                            fuel.clone(),
+                        )
+                        .map(|(time, worker, event): (Duration, usize, RawTimelyEvent)| {
+                            (time, WorkerId::new(worker), TimelyEvent::from(event))
+                        }),
+                }
+                .debug_inspect(|x| tracing::trace!("timely event: {:?}", x))
+            });
+
+            let span = tracing::info_span!("replay differential logs", worker_id = scope.index());
+            let differential_stream = span.in_scope(|| {
+                if let Some(traces) = differential_traces {
+                    let stream = match traces {
+                        ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
                             "Differential Replay",
                             scope,
                             replay_shutdown.clone(),
                             fuel,
-                        )
-                        .map(
-                            |(time, worker, event): (Duration, usize, RawDifferentialEvent)| {
-                                (time, WorkerId::new(worker), DifferentialEvent::from(event))
-                            },
                         ),
+
+                        ReplaySource::Abomonation(abomonation) => abomonation
+                            .replay_with_shutdown_into_named(
+                                "Differential Replay",
+                                scope,
+                                replay_shutdown.clone(),
+                                fuel,
+                            )
+                            .map(
+                                |(time, worker, event): (Duration, usize, RawDifferentialEvent)| {
+                                    (time, WorkerId::new(worker), DifferentialEvent::from(event))
+                                },
+                            ),
+                    }
+                    .debug_inspect(|x| tracing::trace!("differential dataflow event: {:?}", x));
+
+                    Some(stream)
+                } else {
+                    tracing::trace!("no differential sources were provided");
+                    None
                 }
-                .debug_inspect(|x| tracing::trace!("differential dataflow event: {:?}", x))
             });
 
-            dataflow::dataflow(
-                scope,
-                &*args,
-                &timely_stream,
-                differential_stream.as_ref(),
-                senders.clone(),
-            )
+            let span = tracing::info_span!("dataflow construction", worker_id = scope.index());
+            span.in_scope(|| {
+                dataflow::dataflow(
+                    scope,
+                    &*args,
+                    &timely_stream,
+                    differential_stream.as_ref(),
+                    senders.clone(),
+                )
+            })
         })?;
 
         'work_loop: while !probe.done() {

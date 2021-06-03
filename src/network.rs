@@ -10,7 +10,8 @@ use abomonation::Abomonation;
 use anyhow::{Context, Result};
 use crossbeam_channel::Receiver;
 use std::{
-    fs::File,
+    ffi::OsStr,
+    fs::{self, File},
     hint,
     io::{self, stdout, BufReader, Read, Write},
     iter,
@@ -27,7 +28,7 @@ use std::{
 use timely::{communication::WorkerGuards, dataflow::operators::capture::Event};
 
 type AcquiredStreams<T, D1, D2> =
-    Result<EventReceivers<RkyvEventReader<T, D1, BufReader<File>>, EventReader<T, D2, TcpStream>>>;
+    EventReceivers<RkyvEventReader<T, D1, BufReader<File>>, EventReader<T, D2, TcpStream>>;
 
 #[derive(Debug)]
 pub enum ReplaySource<R, A> {
@@ -41,6 +42,10 @@ impl<R, A> ReplaySource<R, A> {
             ReplaySource::Rkyv(rkyv) => rkyv.len(),
             ReplaySource::Abomonation(abomonation) => abomonation.len(),
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub const fn kind(&self) -> &'static str {
@@ -58,64 +63,92 @@ pub fn acquire_replay_sources<T, D1, D2>(
     connections: NonZeroUsize,
     workers: NonZeroUsize,
     log_dir: Option<&Path>,
-    file_name: &str,
+    file_prefix: &str,
     target: &str,
-) -> AcquiredStreams<T, D1, D2>
+) -> Result<(AcquiredStreams<T, D1, D2>, bool)>
 where
     Event<T, D2>: Clone,
     T: Abomonation + Send + 'static,
     D2: Abomonation + Send + 'static,
 {
-    let start_time = Instant::now();
-    let plural = if connections.get() == 1 { "" } else { "s" };
+    let span = tracing::trace_span!("loading replay sources", target = target);
+    span.in_scope(|| {
+        let start_time = Instant::now();
+        let plural = if connections.get() == 1 { "" } else { "s" };
 
-    if let Some(log_dir) = log_dir {
-        let replay_file = log_dir.join(file_name);
+        if let Some(log_dir) = log_dir {
+            print!(
+                "Loading {} replay from {}...",
+                target,
+                log_dir
+                    .canonicalize()
+                    .context("failed to canonicalize replay directory")?
+                    .display(),
+            );
+            stdout().flush().context("failed to flush stdout")?;
+        } else {
+            tracing::info!(
+                "started waiting for {} {} connections on {}",
+                connections,
+                target,
+                address,
+            );
 
-        tracing::info!("loading {} replay from {}", target, replay_file.display(),);
-        print!(
-            "Loading {} replay from {}... ",
-            target,
-            replay_file.display(),
-        );
-        stdout().flush().context("failed to flush stdout")?;
-    } else {
-        tracing::info!(
-            "started waiting for {} {} connections on {}",
-            connections,
-            target,
-            address,
-        );
+            println!(
+                "Waiting for {} {} connection{} on {}...",
+                connections, target, plural, address,
+            );
+        }
 
-        println!(
-            "Waiting for {} {} connection{} on {}...",
-            connections, target, plural, address,
-        );
-    }
+        let replay_sources = if let Some(log_dir) = log_dir {
+            let mut replays = Vec::with_capacity(connections.get());
 
-    let replay_sources = if let Some(log_dir) = log_dir {
-        let timely_file = File::open(log_dir.join(file_name)).with_context(|| {
-            format!("failed to open {} log file within replay directory", target)
-        })?;
+            // Load all files in the directory that have the `.ddshow` extension and a
+            // prefix that matches `file_prefix`
+            // TODO: Probably want some sort of method to allow distinguishing between
+            //       different runs saved to the same folder
+            let dir = fs::read_dir(log_dir).context("failed to read log directory")?;
+            for entry in dir.into_iter().filter_map(Result::ok) {
+                let replay_file = entry.path();
+                if entry.file_type().map_or(false, |file| file.is_file())
+                    && replay_file.extension() == Some(OsStr::new("ddshow"))
+                    && replay_file
+                        .file_name()
+                        .and_then(OsStr::to_str)
+                        .and_then(|file| file.split('.').next())
+                        .map_or(false, |prefix| prefix == file_prefix)
+                {
+                    tracing::debug!("loading {} replay from {}", target, replay_file.display());
+                    let timely_file = File::open(&replay_file).with_context(|| {
+                        format!("failed to open {} log file within replay directory", target)
+                    })?;
 
-        ReplaySource::Rkyv(vec![RkyvEventReader::new(BufReader::new(timely_file))])
-    } else {
-        wait_for_connections(address, connections)?
-    };
+                    replays.push(RkyvEventReader::new(BufReader::new(timely_file)));
+                }
+            }
 
-    let event_receivers = make_streams(workers.get(), replay_sources)?;
+            ReplaySource::Rkyv(replays)
+        } else {
+            wait_for_connections(address, connections)?
+        };
 
-    let elapsed = start_time.elapsed();
-    if log_dir.is_none() {
-        println!(
-            "Connected to {} {} trace{} in {:#?}",
-            connections, target, plural, elapsed,
-        );
-    } else {
-        println!("done!");
-    }
+        let are_replay_sources = !replay_sources.is_empty();
+        let event_receivers = make_streams(workers.get(), replay_sources)?;
 
-    Ok(event_receivers)
+        let elapsed = start_time.elapsed();
+        if !are_replay_sources {
+            println!("No replay sources found");
+        } else if log_dir.is_none() {
+            println!(
+                "Connected to {} {} trace{} in {:#?}",
+                connections, target, plural, elapsed,
+            );
+        } else {
+            println!(" done!");
+        }
+
+        Ok((event_receivers, are_replay_sources))
+    })
 }
 
 pub type EventReceivers<R, A> = Arc<[Receiver<ReplaySource<R, A>>]>;
@@ -136,6 +169,13 @@ pub fn make_streams<R, A>(
             let mut readers = Vec::with_capacity(num_workers);
             readers.extend(iter::repeat_with(Vec::new).take(num_workers));
 
+            tracing::info!(
+                "received {} rkyv sources to distribute among {} workers (average of {} per worker)",
+                rkyv.len(),
+                num_workers,
+                rkyv.len() / num_workers,
+            );
+
             for (idx, source) in rkyv.into_iter().enumerate() {
                 readers[idx % num_workers].push(source);
             }
@@ -146,6 +186,13 @@ pub fn make_streams<R, A>(
         ReplaySource::Abomonation(abomonation) => {
             let mut readers = Vec::with_capacity(num_workers);
             readers.extend(iter::repeat_with(Vec::new).take(num_workers));
+
+            tracing::info!(
+                "received {} abomonation sources to distribute among {} workers (average of {} per worker)",
+                abomonation.len(),
+                num_workers,
+                abomonation.len() / num_workers,
+            );
 
             for (idx, source) in abomonation.into_iter().enumerate() {
                 readers[idx % num_workers].push(source);
@@ -160,7 +207,12 @@ pub fn make_streams<R, A>(
         .unzip();
 
     for (worker, (sender, bundle)) in senders.into_iter().zip(readers).enumerate() {
-        tracing::debug!("sending {} sources to worker {}", bundle.len(), worker + 1);
+        tracing::debug!(
+            "sending {} sources to worker {}/{}",
+            bundle.len(),
+            worker + 1,
+            num_workers,
+        );
 
         sender
             .send(bundle)
