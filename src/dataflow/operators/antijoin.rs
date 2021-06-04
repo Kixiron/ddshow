@@ -1,3 +1,4 @@
+use crate::dataflow::operators::NegateExt;
 use differential_dataflow::{
     difference::{Abelian, Semigroup},
     lattice::Lattice,
@@ -8,7 +9,7 @@ use differential_dataflow::{
     trace::{BatchReader, Cursor, TraceReader},
     Collection, Data, ExchangeData, Hashable,
 };
-use std::ops::Mul;
+use std::{ops::Mul, panic::Location};
 use timely::dataflow::Scope;
 
 pub trait JoinArranged<S, K, V, R>
@@ -18,6 +19,7 @@ where
     V: Data,
     R: Semigroup,
 {
+    #[track_caller]
     fn semijoin_arranged<R2, T>(
         &self,
         other: &Arranged<S, T>,
@@ -32,6 +34,7 @@ where
         T::Batch: BatchReader<K, (), S::Timestamp, R2> + 'static,
         T::Cursor: Cursor<K, (), S::Timestamp, R2> + 'static;
 
+    #[track_caller]
     fn antijoin_arranged<R2, T>(&self, other: &Arranged<S, T>) -> Collection<S, (K, V), R>
     where
         S::Timestamp: Lattice,
@@ -51,6 +54,7 @@ where
     V: ExchangeData,
     R: Semigroup + ExchangeData,
 {
+    #[track_caller]
     fn semijoin_arranged<R2, T>(
         &self,
         other: &Arranged<S, T>,
@@ -65,10 +69,19 @@ where
         T::Batch: BatchReader<K, (), S::Timestamp, R2> + 'static,
         T::Cursor: Cursor<K, (), S::Timestamp, R2> + 'static,
     {
-        self.arrange_by_key()
+        let caller = Location::caller();
+        let arrange = format!(
+            "AntijoinArranged: ArrangeByKey @ {}:{}:{}",
+            caller.file(),
+            caller.line(),
+            caller.column(),
+        );
+
+        self.arrange_by_key_named(&arrange)
             .join_core(other, |k, v, _| Some((k.clone(), v.clone())))
     }
 
+    #[track_caller]
     fn antijoin_arranged<R2, T>(&self, other: &Arranged<S, T>) -> Collection<S, (K, V), R>
     where
         S::Timestamp: Lattice,
@@ -80,7 +93,15 @@ where
         T::Batch: BatchReader<K, (), S::Timestamp, R2> + 'static,
         T::Cursor: Cursor<K, (), S::Timestamp, R2> + 'static,
     {
-        self.concat(&self.semijoin_arranged(other).negate())
+        let caller = Location::caller();
+        let negate = format!(
+            "AntijoinArranged: Negate @ {}:{}:{}",
+            caller.file(),
+            caller.line(),
+            caller.column(),
+        );
+
+        self.concat(&self.semijoin_arranged(other).negate_named(&negate))
     }
 }
 
@@ -112,6 +133,7 @@ where
         self.join_core(other, |k, v, _| Some((k.clone(), v.clone())))
     }
 
+    #[track_caller]
     fn antijoin_arranged<R2, T>(&self, other: &Arranged<S, T>) -> Collection<S, (K, V), R>
     where
         S::Timestamp: Lattice,
@@ -123,7 +145,15 @@ where
         T::Batch: BatchReader<K, (), S::Timestamp, R2> + 'static,
         T::Cursor: Cursor<K, (), S::Timestamp, R2> + 'static,
     {
+        let caller = Location::caller();
+        let negate = format!(
+            "AntijoinArranged: Negate @ {}:{}:{}",
+            caller.file(),
+            caller.line(),
+            caller.column(),
+        );
+
         self.as_collection(|key, val| (key.clone(), val.clone()))
-            .concat(&self.semijoin_arranged(other).negate())
+            .concat(&self.semijoin_arranged(other).negate_named(&negate))
     }
 }

@@ -1,18 +1,16 @@
 use crate::{
     dataflow::{
         granulate,
-        operators::{DiffDuration, JoinArranged, Max, Min},
+        operators::{DiffDuration, JoinArranged, MapExt, Max, Min},
         send_recv::ChannelAddrs,
-        Channel, Diff, DifferentialLogBundle, OperatorAddr, TimelyLogBundle,
+        ArrangedKey, Channel, Diff, DifferentialLogBundle, OperatorAddr, TimelyLogBundle,
     },
     ui::{ProgramStats, WorkerStats},
 };
-use ddshow_types::{
-    differential_logging::DifferentialEvent, timely_logging::OperatesEvent, WorkerId,
-};
+use ddshow_types::{differential_logging::DifferentialEvent, WorkerId};
 use differential_dataflow::{
     difference::DiffPair,
-    operators::{arrange::ArrangeByKey, Count, CountTotal, Join, Reduce, ThresholdTotal},
+    operators::{CountTotal, Join, Reduce, ThresholdTotal},
     AsCollection, Collection, Data,
 };
 use std::{iter, time::Duration};
@@ -49,46 +47,47 @@ type AggregatedStats<S> = (
 pub fn aggregate_worker_stats<S>(
     timely: &Stream<S, TimelyLogBundle>,
     differential: Option<&Stream<S, DifferentialLogBundle>>,
-    operators: &Collection<S, (WorkerId, OperatesEvent), Diff>,
     channels: &Collection<S, (WorkerId, Channel), Diff>,
     subgraph_addresses: &ChannelAddrs<S, Diff>,
+    operator_addrs_by_self: &ArrangedKey<S, (WorkerId, OperatorAddr), Diff>,
 ) -> AggregatedStats<S>
 where
     S: Scope<Timestamp = Duration>,
 {
-    let addressed_operators = operators
-        .map(|(worker, operator)| ((worker, operator.addr), ()))
-        .arrange_by_key();
-
-    #[allow(clippy::suspicious_map)]
-    let total_operators = addressed_operators
-        .antijoin_arranged(subgraph_addresses)
-        .map(|((worker, _), _)| worker)
-        .count();
-
-    let only_subgraphs = addressed_operators
+    let only_operators = operator_addrs_by_self.antijoin_arranged(subgraph_addresses);
+    let only_subgraphs = operator_addrs_by_self
         .semijoin_arranged(subgraph_addresses)
-        .map(|((worker, addr), _)| (worker, addr));
+        .map_named("Map: Select Subgraphs", |((worker, addr), _)| {
+            (worker, addr)
+        });
+    let only_dataflows = only_subgraphs.filter(|(_, addr)| addr.is_top_level());
 
-    let only_dataflows = only_subgraphs.filter(|(_, addr)| addr.len() == 1);
+    // Collect all dataflow addresses into a single vec
+    let dataflow_addrs = only_dataflows.reduce_named(
+        "Reduce: Collect All Dataflow Addresses",
+        |_worker, input, output| {
+            let dataflows: Vec<OperatorAddr> = input
+                .iter()
+                .filter_map(|&(addr, diff)| if diff >= 1 { Some(addr.clone()) } else { None })
+                .collect();
 
-    #[allow(clippy::suspicious_map)]
-    let total_dataflows = only_dataflows.map(|(worker, _)| worker).count();
+            output.push((dataflows, 1));
+        },
+    );
 
-    let dataflow_addrs = only_dataflows.reduce(|_worker, input, output| {
-        let dataflows: Vec<OperatorAddr> = input
-            .iter()
-            .filter_map(|&(addr, diff)| if diff >= 1 { Some(addr.clone()) } else { None })
-            .collect();
-
-        output.push((dataflows, 1));
-    });
-
-    #[allow(clippy::suspicious_map)]
-    let total_subgraphs = only_subgraphs.map(|(worker, _)| worker).count();
-
-    #[allow(clippy::suspicious_map)]
-    let total_channels = channels.map(|(worker, _)| worker).count();
+    // Count the total number of each item
+    let total_dataflows = only_dataflows
+        .map_named("Map: Count Dataflows", |(worker, _)| worker)
+        .count_total();
+    let total_subgraphs = only_subgraphs
+        .map_named("Map: Count Subgraphs", |(worker, _)| worker)
+        .count_total();
+    let total_channels = channels
+        .map_named("Map: Count Channels", |(worker, _)| worker)
+        .count_total();
+    let total_operators = only_operators
+        .map_named("Map: Count Operators", |((worker, _), _)| worker)
+        .count_total();
 
     let mut total_arrangements = if let Some(differential) = differential {
         differential
@@ -104,18 +103,21 @@ where
                 (((worker, operator), ()), time, 1)
             })
             .as_collection()
-            .distinct_total()
-            .map(|((worker, _operator), ())| (worker, ()))
+            .distinct_total_core()
+            .map_named("Map: Count Arrangements", |((worker, _operator), ())| {
+                worker
+            })
             .count_total()
-            .map(|((worker, ()), arrangements)| (worker, arrangements))
 
     // If we don't have access to differential events just make every worker have zero
     // arrangements
     } else {
-        total_channels.map(|(worker, _)| (worker, 0))
+        total_channels.map_named("Map: Give Each Worker Zero Dataflows", |(worker, _)| {
+            (worker, 0)
+        })
     };
 
-    // Add back any workers that didn't contain any operators
+    // Add back any workers that didn't contain any arrangements
     total_arrangements = total_arrangements.concat(
         &total_arrangements
             .antijoin(&total_channels.map(|(worker, _)| worker))
@@ -130,7 +132,7 @@ where
     )
     .as_collection()
     .delay(granulate)
-    .count();
+    .count_total();
 
     let create_timestamps = |time, worker| {
         let diff = DiffPair::new(
@@ -149,7 +151,7 @@ where
     )
     .as_collection()
     .delay(granulate)
-    .count();
+    .count_total();
 
     // TODO: For whatever reason this part of the dataflow graph is de-prioritized,
     //       probably because of data dependence. Due to the nature of this data, for
@@ -159,6 +161,8 @@ where
     //       stream default values?) to make every field in `ProgramStats` optional
     //       so that as soon as we have any data we can chuck it at them, even if it's
     //       incomplete
+    // TODO: This really should be a delta join :(
+    // TODO: This may actually be feasibly hoisted into the difference type or something?
     let worker_stats = dataflow_addrs
         .join(&total_dataflows)
         .join(&total_operators)
@@ -228,7 +232,7 @@ where
 
                 iter::once(((), diff))
             })
-            .count()
+            .count_total()
             .map(
                 |(
                     (),

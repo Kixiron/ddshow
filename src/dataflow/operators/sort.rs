@@ -66,32 +66,37 @@ where
 {
     type Output = Collection<S, (K, Vec<D>), R>;
 
-    fn hierarchical_sort_core<B, F, DK>(&self, _name: &str, buckets: B, key: F) -> Self::Output
+    fn hierarchical_sort_core<B, F, DK>(&self, name: &str, buckets: B, key: F) -> Self::Output
     where
         B: IntoIterator<Item = u64>,
         F: Fn(&D) -> DK + Clone + 'static,
         DK: Ord,
     {
-        // Utilizes hierarchical aggregation to minimize the number of recomputation that must happen
-        let mut hashed = self.map(|(key, data)| ((data.hashed(), key), vec![(data, R::from(1))]));
+        self.scope().region_named(name, |region| {
+            let this = self.enter_region(region);
 
-        for bucket in buckets {
-            hashed = build_sort_bucket(hashed, key.clone(), 1u64 << bucket);
-        }
+            // Utilizes hierarchical aggregation to minimize the number of recomputation that must happen
+            let mut hashed =
+                this.map(|(key, data)| ((data.hashed(), key), vec![(data, R::from(1))]));
+            for bucket in buckets {
+                hashed = build_sort_bucket(hashed, key.clone(), 1u64 << bucket);
+            }
 
-        hashed
-            .inner
-            .map(|(((_hash, key), data), time, diff)| {
-                let data = data
-                    .into_iter()
-                    .flat_map(|(data, inner_diff)| {
-                        (0..inner_diff.into()).map(move |_| data.clone())
-                    })
-                    .collect::<Vec<_>>();
+            hashed
+                .inner
+                .map(|(((_hash, key), data), time, diff)| {
+                    let data = data
+                        .into_iter()
+                        .flat_map(|(data, inner_diff)| {
+                            (0..inner_diff.into()).map(move |_| data.clone())
+                        })
+                        .collect::<Vec<_>>();
 
-                ((key, data), time, diff)
-            })
-            .as_collection()
+                    ((key, data), time, diff)
+                })
+                .as_collection()
+                .leave_region()
+        })
     }
 }
 

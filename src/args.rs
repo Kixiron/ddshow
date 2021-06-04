@@ -27,7 +27,7 @@ pub struct Args {
     #[structopt(short = "c", long = "connections", default_value = "1")]
     pub timely_connections: NonZeroUsize,
 
-    /// The address to listen for timely dataflow log messages from
+    /// The address to listen for Timely Dataflow log messages from
     #[structopt(long = "address", default_value = "127.0.0.1:51317")]
     pub timely_address: SocketAddr,
 
@@ -35,10 +35,19 @@ pub struct Args {
     #[structopt(short = "d", long = "differential")]
     pub differential_enabled: bool,
 
-    /// The address to listen for differential dataflow log messages from
+    /// The address to listen for Differential Dataflow log messages from
     // FIXME: `requires("differential")` makes clap panic
     #[structopt(long, default_value = "127.0.0.1:51318")]
     pub differential_address: SocketAddr,
+
+    /// Whether or not Timely Dataflow progress logs should be read from
+    #[structopt(short = "p", long = "progress")]
+    pub progress_enabled: bool,
+
+    /// The address to listen for Timely Dataflow progress messages from
+    // FIXME: `requires("progress")` makes clap panic
+    #[structopt(long, default_value = "127.0.0.1:51319")]
+    pub progress_address: SocketAddr,
 
     /// The color palette to use for the generated graphs
     #[structopt(
@@ -81,6 +90,10 @@ pub struct Args {
     /// The coloring to use for terminal output
     #[structopt(long, default_value = "auto", possible_values = &["auto", "always", "never"])]
     pub color: TerminalColor,
+
+    /// Enable profiling for ddshow's internal dataflow
+    #[structopt(long)]
+    pub dataflow_profiling: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

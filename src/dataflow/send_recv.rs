@@ -199,7 +199,9 @@ macro_rules! make_send_recv {
                 $(
                     let $name: Vec<_> = self.$name.1
                         .into_iter()
-                        .filter(|&(_, diff)| diff >= 1)
+                        // Note: No filtering is needed here since `0..-N` produces no
+                        //       outputs and neither does `0..0` which ensures that only
+                        //       values with a difference of `diff >= 1` are produced
                         .flat_map(|(data, diff)| (0..diff).map(move |_| data.clone()))
                         .collect();
 

@@ -1,10 +1,10 @@
 mod event;
 mod ids;
 mod operator_addr;
-mod progress_logging;
 
 #[cfg(feature = "ddflow")]
 pub mod differential_logging;
+pub mod progress_logging;
 pub mod timely_logging;
 
 pub use event::Event;

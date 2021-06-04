@@ -107,6 +107,7 @@ where
             // prefix that matches `file_prefix`
             // TODO: Probably want some sort of method to allow distinguishing between
             //       different runs saved to the same folder
+            // TODO: Add support for decompressing archived log files
             let dir = fs::read_dir(log_dir).context("failed to read log directory")?;
             for entry in dir.into_iter().filter_map(Result::ok) {
                 let replay_file = entry.path();
