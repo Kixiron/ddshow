@@ -1,10 +1,10 @@
 use crate::dataflow::{
-    operator_stats::extract_timely_info,
     operators::ActivateCapabilitySet,
     tests::{
         collect_timely_events, init_test_logging,
         proptest_utils::{gen_event_pair, EventPair, Expected},
     },
+    timely_source::extract_timely_info,
     worker_timeline::{
         collect_differential_events, worker_timeline, EventData, WorkerTimelineEvent,
     },
@@ -180,9 +180,9 @@ fn timeline_events_inner(
 
             let partial_events = worker_timeline(
                 scope,
+                &timely_events,
                 Some(&differential_stream),
                 &operator_names,
-                &timely_events,
             );
 
             partial_events

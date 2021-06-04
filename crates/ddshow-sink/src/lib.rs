@@ -6,7 +6,7 @@ pub use writer::EventWriter;
 
 #[cfg(feature = "ddflow")]
 use ddshow_types::differential_logging::DifferentialEvent;
-use ddshow_types::{timely_logging::TimelyEvent, WorkerId};
+use ddshow_types::{progress_logging::TimelyProgressEvent, timely_logging::TimelyEvent, WorkerId};
 #[cfg(feature = "ddflow")]
 use differential_dataflow::logging::DifferentialEvent as RawDifferentialEvent;
 use std::{
@@ -15,7 +15,13 @@ use std::{
     io::{self, BufWriter, Write},
     path::Path,
 };
-use timely::{communication::Allocate, logging::TimelyEvent as RawTimelyEvent, worker::Worker};
+use timely::{
+    communication::Allocate,
+    logging::{TimelyEvent as RawTimelyEvent, TimelyProgressEvent as RawTimelyProgressEvent},
+    worker::Worker,
+};
+
+// TODO: Allow configuring what events are saved and support compression
 
 /// Writes all timely event logs to the given writer
 ///
@@ -160,7 +166,7 @@ where
     #[cfg(feature = "tracing")]
     _tracing::info!(
         worker = worker.index(),
-        logging_stream = "differential",
+        logging_stream = "differential/arrange",
         directory = ?directory,
         path = ?path,
         "installing a disk backed differential event logger on worker {} pointed at {}",
@@ -171,4 +177,57 @@ where
     fs::create_dir_all(directory)?;
     let writer = BufWriter::new(File::create(path)?);
     Ok(enable_differential_logging(worker, writer))
+}
+
+pub fn enable_timely_progress_logging<A, W>(
+    worker: &mut Worker<A>,
+    writer: W,
+) -> Option<Box<dyn Any + 'static>>
+where
+    A: Allocate,
+    W: Write + 'static,
+{
+    #[cfg(feature = "tracing")]
+    _tracing::info!(
+        worker = worker.index(),
+        logging_stream = "timely/progress",
+        "installing a timely progress logger on worker {}",
+        worker.index(),
+    );
+
+    let mut logger: BatchLogger<TimelyProgressEvent, WorkerId, _> =
+        BatchLogger::new(EventWriter::new(writer));
+
+    worker
+        .log_register()
+        .insert::<RawTimelyProgressEvent, _>("timely/progress", move |time, data| {
+            logger.publish_batch(time, data)
+        })
+}
+
+pub fn save_timely_progress_to_disk<P, A>(
+    worker: &mut Worker<A>,
+    directory: P,
+) -> io::Result<Option<Box<dyn Any + 'static>>>
+where
+    P: AsRef<Path>,
+    A: Allocate,
+{
+    let directory = directory.as_ref();
+    let path = directory.join(format!("timely-progress.worker-{}.ddshow", worker.index()));
+
+    #[cfg(feature = "tracing")]
+    _tracing::info!(
+        worker = worker.index(),
+        logging_stream = "timely/progress",
+        directory = ?directory,
+        path = ?path,
+        "installing a disk backed timely progress logger on worker {} pointed at {}",
+        worker.index(),
+        path.display(),
+    );
+
+    fs::create_dir_all(directory)?;
+    let writer = BufWriter::new(File::create(path)?);
+    Ok(enable_timely_logging(worker, writer))
 }

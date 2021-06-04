@@ -1,4 +1,5 @@
 // mod channel_stats;
+mod channel_stats;
 pub(crate) mod constants;
 mod differential;
 mod operator_stats;
@@ -10,8 +11,10 @@ mod send_recv;
 mod subgraphs;
 mod summation;
 mod tests;
+mod timely_source;
 mod worker_timeline;
 
+pub use channel_stats::Channel;
 pub use constants::{DIFFERENTIAL_DISK_LOG_FILE, PROGRAM_NS_GRANULARITY, TIMELY_DISK_LOG_FILE};
 pub use operator_stats::OperatorStats;
 pub use send_recv::{DataflowData, DataflowExtractor, DataflowReceivers, DataflowSenders};
@@ -20,16 +23,13 @@ pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 use crate::{
     args::Args,
     dataflow::{
-        differential::{arrangement_stats, ArrangementStats},
-        operator_stats::{extract_timely_info, operator_stats},
+        // worker_timeline::worker_timeline,
         operators::{CrossbeamPusher, FilterMap, JoinArranged, Multiply, SortBy},
         send_recv::ChannelAddrs,
         subgraphs::rewire_channels,
-        worker_timeline::worker_timeline,
     },
     ui::{DataflowStats, Lifespan, ProgramStats, WorkerStats},
 };
-use abomonation_derive::Abomonation;
 use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
 use ddshow_sink::EventWriter;
@@ -43,7 +43,7 @@ use differential_dataflow::{
     lattice::Lattice,
     operators::{
         arrange::{ArrangeByKey, ArrangeBySelf, Arranged, TraceAgent},
-        Consolidate, CountTotal, Join, JoinCore, Reduce, ThresholdTotal,
+        Consolidate, CountTotal, Join, JoinCore, ThresholdTotal,
     },
     trace::{
         implementations::ord::{OrdKeySpine, OrdValSpine},
@@ -55,7 +55,6 @@ use differential_dataflow::{
 use reachability::TrackerEvent;
 use std::{
     convert::TryFrom,
-    fmt::Debug,
     fs::{self, File},
     io::BufWriter,
     iter,
@@ -81,14 +80,17 @@ type ArrangedKey<S, K, D = Diff> =
     Arranged<S, TraceAgent<OrdKeySpine<K, <S as ScopeParent>::Timestamp, D>>>;
 
 // TODO: Dataflow lints
-//       - Inconsistent dataflows across workers
-//       - Not arranging before a loop feedback
-//       - you aren't supposed to be able to forge capabilities,
-//         but you can take an incoming CapabilityRef and turn
-//         it in to a Capability for any output, even those that
-//         the input should not be connected to via the summary.
-//       - Packing `(data, time, diff)` updates in DD where time
-//         is not greater or equal to the message capability.
+//  - Inconsistent dataflows across workers
+//  - Not arranging before a loop feedback
+//  - you aren't supposed to be able to forge capabilities,
+//    but you can take an incoming CapabilityRef and turn
+//    it in to a Capability for any output, even those that
+//    the input should not be connected to via the summary.
+//  - Packing `(data, time, diff)` updates in DD where time
+//    is not greater or equal to the message capability.
+// TODO: Timely progress logging
+// TODO: The PDG
+// TODO: Timely reachability logging
 
 fn granulate(&time: &Duration) -> Duration {
     let timestamp = time.as_nanos();
@@ -141,139 +143,56 @@ where
         channel_scopes,
         dataflow_ids,
         timely_events,
-    ) = extract_timely_info(scope, timely_stream);
+    ) = timely_source::extract_timely_info(scope, timely_stream);
 
-    let operator_stats = operator_stats(scope, &operator_activations);
-
-    let operator_stats = differential_stream
-        .as_ref()
-        .map(|stream| {
-            let arrangement_stats = arrangement_stats(scope, stream).consolidate();
-
-            let modified_stats = operator_stats.join_map(
-                &arrangement_stats,
-                |&operator, stats, &arrangement_stats| {
-                    let mut stats = stats.clone();
-                    stats.arrangement_size = Some(arrangement_stats);
-
-                    (operator, stats)
-                },
-            );
-
-            operator_stats
-                .antijoin(&modified_stats.map(|(operator, _)| operator))
-                .concat(&modified_stats)
-        })
-        .unwrap_or(operator_stats);
+    // FIXME: `invocations` looks off, figure that out
+    let operator_stats =
+        operator_stats::operator_stats(scope, &operator_activations, differential_stream);
 
     // FIXME: This is pretty much a guess since there's no way to actually associate
     //        operators/arrangements/channels across workers
     // TODO: This should use a specialized struct to hold relevant things like "total size across workers"
     //       in addition to per-worker stats
-    let cross_aggregated_operator_stats = operator_stats
-        .map(|((_worker, operator), stats)| (operator, stats))
-        .reduce(|&operator, worker_stats, aggregated| {
-            let activations = worker_stats.len();
-            let mut activation_durations = Vec::new();
-            let mut arrangements = Vec::new();
-            let mut totals = Vec::new();
-
-            for (stats, _diff) in worker_stats {
-                totals.push(stats.total);
-                activation_durations.extend(stats.activation_durations.iter().copied());
-
-                if let Some(size) = stats.arrangement_size {
-                    arrangements.push(size);
-                }
-            }
-
-            let max = activation_durations
-                .iter()
-                .map(|&(duration, _)| duration)
-                .max()
-                .expect("reduce is always called with non-empty input");
-
-            let min = activation_durations
-                .iter()
-                .map(|&(duration, _)| duration)
-                .min()
-                .expect("reduce is always called with non-empty input");
-
-            let average = activation_durations
-                .iter()
-                .map(|&(duration, _)| duration)
-                .sum::<Duration>()
-                / activation_durations.len() as u32;
-
-            let total = totals.iter().sum::<Duration>() / totals.len() as u32;
-
-            let arrangement_size = if arrangements.is_empty() {
-                None
-            } else {
-                let max_size = arrangements
-                    .iter()
-                    .map(|arr| arr.max_size)
-                    .max()
-                    .expect("arrangements is non-empty");
-
-                let min_size = arrangements
-                    .iter()
-                    .map(|arr| arr.max_size)
-                    .min()
-                    .expect("arrangements is non-empty");
-
-                let batches =
-                    arrangements.iter().map(|arr| arr.batches).sum::<usize>() / arrangements.len();
-
-                Some(ArrangementStats {
-                    max_size,
-                    min_size,
-                    batches,
-                })
-            };
-
-            let aggregate = OperatorStats {
-                id: operator,
-                worker: worker_stats[0].0.worker,
-                max,
-                min,
-                average,
-                total,
-                activations,
-                activation_durations,
-                arrangement_size,
-            };
-            aggregated.push((aggregate, 1))
-        });
+    // TODO: Hierarchical reduce this probably
+    let aggregated_operator_stats = operator_stats::aggregate_operator_stats(&operator_stats);
 
     // TODO: Turn these into collections of `(WorkerId, OperatorId)` and arrange them
     let (leaves, subgraphs) = sift_leaves_and_scopes(scope, &operator_addrs_by_self);
-    let (leaves_arranged, subgraphs_arranged) =
-        (leaves.arrange_by_self(), subgraphs.arrange_by_self());
+    let (leaves_arranged, subgraphs_arranged) = (
+        leaves.arrange_by_self_named("ArrangeBySelf: Dataflow Graph Leaves"),
+        subgraphs.arrange_by_self_named("ArrangeBySelf: Dataflow Graph Subgraphs"),
+    );
+
     let subgraph_ids = subgraphs_arranged
         .join_core(&operator_addrs, |&(worker, _), &(), &id| {
             iter::once((worker, id))
         })
-        .arrange_by_self();
+        .arrange_by_self_named("ArrangeBySelf: Dataflow Graph Subgraph Ids");
 
     let channels = rewire_channels(scope, &raw_channels, &subgraphs_arranged);
-
     let edges = attach_operators(scope, &raw_operators, &channels, &leaves_arranged);
 
     // TODO: Make `extract_timely_info()` get the relevant event information
-    let timeline_events =
-        worker_timeline(scope, differential_stream, &operator_names, &timely_events);
+    // TODO: Make this configurable by the user since it absolutely chugs memory
+    // TODO: Grabbing events absolutely shits the bed when it comes to large dataflows,
+    //       it needs a serious, intrinsic rework and/or disk backed arrangements
+    let timeline_events = worker_timeline::worker_timeline(
+        scope,
+        &timely_events,
+        differential_stream,
+        &operator_names,
+    );
 
-    // TODO: Arrange this
-    let addressed_operators =
-        raw_operators.map(|(worker, operator)| ((worker, operator.addr.clone()), operator));
+    let addressed_operators = raw_operators
+        .map(|(worker, operator)| ((worker, operator.addr.clone()), operator))
+        .arrange_by_key_named("ArrangeByKey: Addressed Operators");
 
     let (program_stats, worker_stats) = program_stats::aggregate_worker_stats(
         &timely_stream,
         differential_stream,
-        &raw_operators,
         &channels,
         &subgraphs_arranged,
+        &operator_addrs_by_self,
     );
 
     let dataflow_stats = dataflow_stats(
@@ -285,18 +204,19 @@ where
     );
 
     install_data_extraction(
+        scope,
         senders,
         &mut probe,
         program_stats,
         worker_stats,
-        leaves,
+        leaves_arranged,
         edges,
-        subgraphs,
+        subgraphs_arranged,
         operator_stats,
         addressed_operators,
-        cross_aggregated_operator_stats,
+        aggregated_operator_stats,
         dataflow_stats,
-        timeline_events,
+        timeline_events, // operator::empty(scope).as_collection(),
         operator_names,
         operator_ids,
     );
@@ -332,47 +252,71 @@ where
 
 #[allow(clippy::clippy::too_many_arguments)]
 fn install_data_extraction<S>(
+    scope: &mut S,
     senders: DataflowSenders,
     probe: &mut ProbeHandle<Duration>,
-    program_stats: Collection<S, ProgramStats>,
-    worker_stats: Collection<S, (WorkerId, WorkerStats)>,
-    nodes: Collection<S, (WorkerId, OperatorAddr)>,
-    edges: Collection<S, (WorkerId, OperatesEvent, Channel, OperatesEvent)>,
-    subgraphs: Collection<S, (WorkerId, OperatorAddr)>,
-    operator_stats: Collection<S, ((WorkerId, OperatorId), OperatorStats)>,
-    addressed_operators: Collection<S, ((WorkerId, OperatorAddr), OperatesEvent)>,
-    aggregated_operator_stats: Collection<S, (OperatorId, OperatorStats)>,
-    dataflow_stats: Collection<S, DataflowStats>,
-    timeline_events: Collection<S, WorkerTimelineEvent>,
-    operator_names: ArrangedVal<S, (WorkerId, OperatorId), String>,
-    operator_ids: ArrangedVal<S, (WorkerId, OperatorId), OperatorAddr>,
+    program_stats: Collection<S, ProgramStats, Diff>,
+    worker_stats: Collection<S, (WorkerId, WorkerStats), Diff>,
+    nodes: ArrangedKey<S, (WorkerId, OperatorAddr), Diff>,
+    edges: Collection<S, (WorkerId, OperatesEvent, Channel, OperatesEvent), Diff>,
+    subgraphs: ArrangedKey<S, (WorkerId, OperatorAddr), Diff>,
+    operator_stats: Collection<S, ((WorkerId, OperatorId), OperatorStats), Diff>,
+    addressed_operators: ArrangedVal<S, (WorkerId, OperatorAddr), OperatesEvent, Diff>,
+    aggregated_operator_stats: Collection<S, (OperatorId, OperatorStats), Diff>,
+    dataflow_stats: Collection<S, DataflowStats, Diff>,
+    timeline_events: Collection<S, WorkerTimelineEvent, Diff>,
+    operator_names: ArrangedVal<S, (WorkerId, OperatorId), String, Diff>,
+    operator_ids: ArrangedVal<S, (WorkerId, OperatorId), OperatorAddr, Diff>,
 ) where
     S: Scope<Timestamp = Duration>,
 {
-    let worker_stats = worker_stats
-        .map(|(worker, stats)| ((), (worker, stats)))
-        .hierarchical_sort_by(|&(worker, _)| worker)
-        .map(|((), sorted_stats)| sorted_stats);
-    let nodes = addressed_operators.semijoin(&nodes);
-    let subgraphs = addressed_operators.semijoin(&subgraphs);
-    let operator_names = operator_names
-        .as_collection(|&(worker, operator), name| ((worker, operator), name.to_owned()));
-    let operator_ids = operator_ids.as_collection(|&key, addr| (key, addr.clone()));
+    scope.region_named("Data Extraction", |region| {
+        let program_stats = program_stats.enter_region(region);
+        let worker_stats = worker_stats.enter_region(region);
+        let nodes = nodes.enter_region(region);
+        let edges = edges.enter_region(region);
+        let subgraphs = subgraphs.enter_region(region);
+        let operator_stats = operator_stats.enter_region(region);
+        let addressed_operators = addressed_operators.enter_region(region);
+        let aggregated_operator_stats = aggregated_operator_stats.enter_region(region);
+        let dataflow_stats = dataflow_stats.enter_region(region);
+        let timeline_events = timeline_events.enter_region(region);
+        let operator_names = operator_names.enter_region(region);
+        let operator_ids = operator_ids.enter_region(region);
 
-    senders.install_sinks(
-        probe,
-        (&program_stats, true),
-        (&worker_stats, true),
-        (&nodes, true),
-        (&edges, true),
-        (&subgraphs, true),
-        (&operator_stats, true),
-        (&aggregated_operator_stats, true),
-        (&dataflow_stats, true),
-        (&timeline_events, true),
-        (&operator_names, false),
-        (&operator_ids, false),
-    );
+        let worker_stats = worker_stats
+            .map(|(worker, stats)| ((), (worker, stats)))
+            .sort_by_named("Sort: Sort Worker Stats by Worker", |&(worker, _)| worker)
+            .map(|((), sorted_stats)| sorted_stats);
+
+        let nodes = addressed_operators.semijoin_arranged(&nodes);
+        let subgraphs = addressed_operators.semijoin_arranged(&subgraphs);
+
+        let operator_names = operator_names
+            .as_collection(|&(worker, operator), name| ((worker, operator), name.to_owned()));
+
+        let operator_ids = operator_ids.as_collection(|&key, addr| (key, addr.clone()));
+
+        // TODO: Since we pseudo-consolidate on the receiver side we may
+        //       not actually need to maintain arrangements here,
+        //       donno how that will interact with the eventual "live
+        //       ddshow" system though, could make some funky results
+        //       appear to the user
+        senders.install_sinks(
+            probe,
+            (&program_stats, true),
+            (&worker_stats, true),
+            (&nodes, true),
+            (&edges, true),
+            (&subgraphs, true),
+            (&operator_stats, true),
+            (&aggregated_operator_stats, true),
+            (&dataflow_stats, true),
+            (&timeline_events, true),
+            (&operator_names, false),
+            (&operator_ids, false),
+        );
+    })
 }
 
 fn dataflow_stats<S, Tr1, Tr2, Tr3, Tr4>(
@@ -447,6 +391,7 @@ where
     // Find the addresses of all dataflows
     let dataflows = addr_lookup.semijoin_arranged(dataflow_ids);
 
+    // TODO: Delta join this :(
     dataflows
         .join(&operator_lifespans)
         .join(&subgraph_operators)
@@ -492,7 +437,7 @@ where
                 iter::once((worker, addr))
             })
             .distinct_total()
-            .arrange_by_self();
+            .arrange_by_self_named("ArrangeBySelf: Potential Scopes");
 
         // Leaf operators
         let leaf_operators = operator_addrs
@@ -529,9 +474,11 @@ where
             leaves.enter_region(region),
         );
 
-        let operators_by_address =
-            operators.map(|(worker, operator)| ((worker, operator.addr.clone()), operator));
+        let operators_by_address = operators
+            .map(|(worker, operator)| ((worker, operator.addr.clone()), operator))
+            .arrange_by_key_named("ArrangeByKey: Operators by Address");
 
+        // TODO: Delta join this :(
         operators_by_address
             .semijoin_arranged(&leaves)
             .join_map(
@@ -543,15 +490,15 @@ where
                     )
                 },
             )
-            .join_map(
+            .join_core(
                 &operators_by_address,
                 |&(worker, ref _target_addr), (src_operator, channel), target_operator| {
-                    (
+                    iter::once((
                         worker,
                         src_operator.clone(),
                         channel.clone(),
                         target_operator.clone(),
-                    )
+                    ))
                 },
             )
             .leave_region()
@@ -645,43 +592,4 @@ fn log_file_path(file_prefix: &str, dir: &Path, worker_id: usize) -> PathBuf {
         "{}.replay-worker-{}.ddshow",
         file_prefix, worker_id
     ))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
-pub enum Channel {
-    ScopeCrossing {
-        channel_id: ChannelId,
-        source_addr: OperatorAddr,
-        target_addr: OperatorAddr,
-    },
-
-    Normal {
-        channel_id: ChannelId,
-        source_addr: OperatorAddr,
-        target_addr: OperatorAddr,
-    },
-}
-
-impl Channel {
-    pub const fn channel_id(&self) -> ChannelId {
-        match *self {
-            Self::ScopeCrossing { channel_id, .. } | Self::Normal { channel_id, .. } => channel_id,
-        }
-    }
-
-    pub fn source_addr(&self) -> OperatorAddr {
-        match self {
-            Self::ScopeCrossing { source_addr, .. } | Self::Normal { source_addr, .. } => {
-                source_addr.to_owned()
-            }
-        }
-    }
-
-    pub fn target_addr(&self) -> OperatorAddr {
-        match self {
-            Self::ScopeCrossing { target_addr, .. } | Self::Normal { target_addr, .. } => {
-                target_addr.to_owned()
-            }
-        }
-    }
 }

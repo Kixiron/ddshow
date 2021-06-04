@@ -1,6 +1,6 @@
 use differential_dataflow::{
     input::Input,
-    operators::{arrange::ArrangeBySelf, Iterate, Threshold},
+    operators::{arrange::ArrangeBySelf, Consolidate, Iterate, Threshold},
     AsCollection,
 };
 use std::{env, fs, net::TcpStream};
@@ -46,13 +46,13 @@ fn main() {
             let (input, stream) = scope.new_collection::<usize, Diff>();
             let stream = stream
                 .inner
-                .exchange(|&(_, data, _)| data as u64)
+                .exchange(|&(data, _, _)| data as u64)
                 .as_collection();
 
             let (_, stream2) = scope.new_collection::<usize, Diff>();
             let stream2 = stream2
                 .inner
-                .exchange(|&(_, data, _)| data as u64)
+                .exchange(|&(data, _, _)| data as u64)
                 .as_collection();
 
             let output_stream = scope.region_named("a middle region", |scope| {
@@ -63,7 +63,11 @@ fn main() {
                     let (_, stream3) = region.new_collection::<usize, Diff>();
                     stream3.leave();
 
-                    stream.enter_region(region).filter(|&x| x != 4).leave()
+                    stream
+                        .enter_region(region)
+                        .filter(|&x| x != 4)
+                        .consolidate()
+                        .leave()
                 });
 
                 out_of_scope
@@ -74,7 +78,7 @@ fn main() {
 
             (
                 input,
-                output_stream.probe(),
+                output_stream.consolidate().probe(),
                 output_stream.arrange_by_self().trace,
             )
         });
@@ -84,18 +88,22 @@ fn main() {
 
             arranged
                 .flat_map_ref(|&x, &()| if x % 2 == 0 { Some(x) } else { None })
+                .inner
+                .exchange(|&(data, time, _)| (data * time) as u64)
+                .as_collection()
                 .iterate(|stream| {
                     stream
                         .map(|x| x.saturating_sub(1))
                         .concat(&stream)
                         .distinct()
                 })
+                .consolidate()
                 .probe_with(&mut probe);
         });
 
         for i in 1..100 {
             if worker.index() == 0 {
-                for elem in 0..10000 {
+                for elem in 0..100_000 {
                     input.insert(elem);
                 }
             }
@@ -119,6 +127,12 @@ fn set_loggers<A: Allocate>(worker: &mut Worker<A>) {
     if let Ok(dir) = env::var("DIFFERENTIAL_DISK_LOG") {
         if !dir.is_empty() {
             ddshow_sink::save_differential_logs_to_disk(worker, &dir).unwrap();
+        }
+    }
+
+    if let Ok(dir) = env::var("TIMELY_PROGRESS_DISK_LOG") {
+        if !dir.is_empty() {
+            ddshow_sink::save_timely_progress_to_disk(worker, &dir).unwrap();
         }
     }
 

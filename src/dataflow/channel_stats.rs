@@ -1,60 +1,111 @@
-use super::{Address, Diff, FilterMap, Max, Min, TimelyLogBundle};
+use crate::dataflow::{
+    operators::{Max, Min},
+    Diff,
+};
 use abomonation_derive::Abomonation;
+use ddshow_types::{ChannelId, OperatorAddr, WorkerId};
 use differential_dataflow::{
-    difference::DiffPair,
-    operators::{Count, Join},
-    AsCollection, Collection,
+    difference::DiffPair, operators::CountTotal, AsCollection, Collection,
 };
 use std::time::Duration;
-use timely::{
-    dataflow::{
-        operators::{Enter, Filter, Map},
-        Scope, Stream,
-    },
-    logging::TimelyEvent,
+use timely::dataflow::{
+    operators::{Enter, Map},
+    Scope, Stream,
 };
 
-pub fn coagulate_channel_messages<S>(
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
+pub struct ChannelMessageStats {
+    pub channel: ChannelId,
+    pub worker: WorkerId,
+    pub max: usize,
+    pub min: usize,
+    pub total: usize,
+    pub average: usize,
+    pub invocations: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
+pub struct ChannelCapabilityStats {
+    pub channel: ChannelId,
+    pub worker: WorkerId,
+    pub max: usize,
+    pub min: usize,
+    pub total: usize,
+    pub average: usize,
+    pub invocations: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
+pub enum Channel {
+    ScopeCrossing {
+        channel_id: ChannelId,
+        source_addr: OperatorAddr,
+        target_addr: OperatorAddr,
+    },
+
+    Normal {
+        channel_id: ChannelId,
+        source_addr: OperatorAddr,
+        target_addr: OperatorAddr,
+    },
+}
+
+impl Channel {
+    pub const fn channel_id(&self) -> ChannelId {
+        match *self {
+            Self::ScopeCrossing { channel_id, .. } | Self::Normal { channel_id, .. } => channel_id,
+        }
+    }
+
+    pub fn source_addr(&self) -> OperatorAddr {
+        match self {
+            Self::ScopeCrossing { source_addr, .. } | Self::Normal { source_addr, .. } => {
+                source_addr.to_owned()
+            }
+        }
+    }
+
+    pub fn target_addr(&self) -> OperatorAddr {
+        match self {
+            Self::ScopeCrossing { target_addr, .. } | Self::Normal { target_addr, .. } => {
+                target_addr.to_owned()
+            }
+        }
+    }
+}
+
+pub fn aggregate_channel_messages<S>(
     scope: &mut S,
-    log_stream: &Stream<S, TimelyLogBundle>,
-) -> Collection<S, ((usize, usize, usize), ChannelMessageStats), Diff>
+    channel_messages: &Stream<S, ((WorkerId, ChannelId), usize, Duration)>,
+) -> Collection<S, ((WorkerId, ChannelId), ChannelMessageStats), Diff>
 where
     S: Scope<Timestamp = Duration>,
 {
-    scope.region_named("Collect Channel Messages", |region| {
-        let message_events = log_stream
-            .enter(region)
-            .filter_map(|(time, _worker, event)| {
-                if let TimelyEvent::Messages(event) = event {
-                    if event.is_send {
-                        return Some((event, time, 1));
-                    }
-                }
+    scope.region_named("Aggregate Channel Messages", |region| {
+        let channel_messages = channel_messages.enter(region);
 
-                None
-            })
-            .as_collection();
-
-        message_events
-            .explode(|(channel_addr, capability_updates)| {
-                Some((
-                    channel_addr,
+        channel_messages
+            .map(|((worker, channel), sent_tuples, time)| {
+                (
+                    (worker, channel),
+                    time,
                     DiffPair::new(
                         1,
                         DiffPair::new(
-                            capability_updates as isize,
+                            sent_tuples as isize,
                             DiffPair::new(
-                                Min::new(capability_updates as isize),
-                                Max::new(capability_updates as isize),
+                                Min::new(sent_tuples as isize),
+                                Max::new(sent_tuples as isize),
                             ),
                         ),
                     ),
-                ))
+                )
             })
+            .as_collection()
             .count_total()
             .map(
                 |(
-                    channel_addr,
+                    (worker, channel),
                     DiffPair {
                         element1: count,
                         element2:
@@ -68,41 +119,20 @@ where
                             },
                     },
                 )| {
-                    (
-                        channel_addr.clone(),
-                        ChannelCapabilityStats {
-                            channel_addr,
-                            max: max.value as usize,
-                            min: min.value as usize,
-                            total: total as usize,
-                            average: (total as f32 / count as f32).to_bits(),
-                            invocations: count as usize,
-                        },
-                    )
+                    let (total, count) = (total as usize, count as usize);
+                    let stats = ChannelMessageStats {
+                        channel,
+                        worker,
+                        max: max.value as usize,
+                        min: min.value as usize,
+                        total,
+                        average: total.checked_div(count).unwrap_or(0),
+                        invocations: count,
+                    };
+
+                    ((worker, channel), stats)
                 },
             )
             .leave_region()
     })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
-pub struct ChannelMessageStats {
-    pub channel_addr: Address,
-    pub max: usize,
-    pub min: usize,
-    pub total: usize,
-    /// An [`f32`] stored in bit form representing the average # of records per invocation
-    pub average: u32,
-    pub invocations: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
-pub struct ChannelCapabilityStats {
-    pub channel_addr: Address,
-    pub max: usize,
-    pub min: usize,
-    pub total: usize,
-    /// An [`f32`] stored in bit form representing the average # of records per invocation
-    pub average: u32,
-    pub invocations: usize,
 }

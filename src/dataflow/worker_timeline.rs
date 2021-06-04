@@ -15,7 +15,7 @@ use differential_dataflow::{
     lattice::Lattice,
     operators::{
         arrange::{ArrangeByKey, Arranged},
-        JoinCore, Threshold,
+        JoinCore, ThresholdTotal,
     },
     trace::TraceReader,
     AsCollection, Collection, ExchangeData,
@@ -33,9 +33,9 @@ use timely::dataflow::{
 
 pub(super) fn worker_timeline<S, Trace>(
     scope: &mut S,
+    timely_events: &Stream<S, (EventData, Duration, Diff)>,
     differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
     operator_names: &Arranged<S, Trace>,
-    timely_events: &Stream<S, (EventData, Duration, Diff)>,
 ) -> Collection<S, WorkerTimelineEvent, Diff>
 where
     S: Scope<Timestamp = Duration>,
@@ -44,9 +44,10 @@ where
         + 'static,
 {
     scope.region_named("Collect Worker Timelines", |region| {
-        let (differential_stream, timely_events) = (
+        let (differential_stream, timely_events, operator_names) = (
             differential_stream.map(|stream| stream.enter(region)),
             timely_events.enter(region),
+            operator_names.enter_region(region),
         );
 
         // TODO: Emit trace drops & shares to a separate stream so that we can make markers
@@ -60,7 +61,9 @@ where
             .map(|differential_events| timely_events.concat(differential_events))
             .unwrap_or(timely_events)
             .as_collection()
-            .distinct_core::<Diff>()
+            .distinct_total()
+            // TODO: These are expensive and not strictly needed,
+            //       they could be replaced by worker id + event timestamp
             .identifiers();
 
         let (needs_operators, finished) = partial_events.filter_split(
@@ -92,8 +95,8 @@ where
 
         // FIXME: Add errors for `needs_operators` that fail the join
         let events = needs_operators
-            .arrange_by_key()
-            .join_core(&operator_names.enter_region(region), |_id, event, name| {
+            .arrange_by_key_named("ArrangeByKey: Needs Operators")
+            .join_core(&operator_names, |_id, event, name| {
                 let mut event = event.to_owned();
                 *event.event.operator_name_mut().unwrap() = name.to_owned();
 
@@ -297,7 +300,14 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
         {
             self.output_event(start_time, stored_capability, partial_event)
         } else {
-            tracing::warn!("attempted to remove event that was never started");
+            tracing::warn!(
+                event_kind = ?event_kind,
+                partial_event = ?partial_event,
+                worker = ?self.worker,
+                capability = ?self.capability,
+                time = ?self.time,
+                "attempted to remove event that was never started",
+            );
         }
     }
 

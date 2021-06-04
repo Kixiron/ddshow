@@ -1,3 +1,5 @@
+use std::panic::Location;
+
 use differential_dataflow::{collection::AsCollection, difference::Semigroup, Collection};
 use timely::{
     dataflow::{channels::pact::Pipeline, operators::Operator, Scope, Stream},
@@ -7,11 +9,22 @@ use timely::{
 pub trait FilterMap<D, D2> {
     type Output;
 
+    #[track_caller]
     fn filter_map<L>(&self, logic: L) -> Self::Output
     where
         L: FnMut(D) -> Option<D2> + 'static,
     {
-        self.filter_map_named("FilterMap", logic)
+        let caller = Location::caller();
+
+        self.filter_map_named(
+            &format!(
+                "FilterMap @ {}:{}:{}",
+                caller.file(),
+                caller.line(),
+                caller.column(),
+            ),
+            logic,
+        )
     }
 
     fn filter_map_named<L>(&self, name: &str, logic: L) -> Self::Output

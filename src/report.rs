@@ -204,7 +204,13 @@ fn operator_stats(
         let mut row = vec![
             Cell::new(name),
             Cell::new(operator),
-            Cell::new(addr),
+            Cell::new(format!(
+                "[{}]",
+                addr.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )),
             Cell::new(format!("{:#?}", stats.total)),
             Cell::new(stats.activations),
             Cell::new(format!("{:#?}", stats.average)),
@@ -274,7 +280,13 @@ fn arrangement_stats(
         table.add_row(vec![
             Cell::new(name),
             Cell::new(operator),
-            Cell::new(addr),
+            Cell::new(format!(
+                "[{}]",
+                addr.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )),
             Cell::new(format!("{:#?}", stats.total)),
             Cell::new(arrange.max_size),
             Cell::new(arrange.min_size),

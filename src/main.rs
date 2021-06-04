@@ -1,6 +1,7 @@
 mod args;
 mod colormap;
 mod dataflow;
+mod logging;
 mod network;
 mod report;
 mod ui;
@@ -28,7 +29,6 @@ use std::{
     env,
     fs::{self, File},
     io::BufWriter,
-    net::TcpStream,
     num::NonZeroUsize,
     path::Path,
     sync::{
@@ -39,10 +39,6 @@ use std::{
 };
 use structopt::StructOpt;
 use timely::{dataflow::operators::Map, logging::TimelyEvent as RawTimelyEvent};
-use tracing_subscriber::{
-    fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
-    EnvFilter,
-};
 
 /// The current version of DDShow
 pub static DDSHOW_VERSION: &str = env!("VERGEN_GIT_SEMVER");
@@ -54,7 +50,7 @@ pub static DDSHOW_VERSION: &str = env!("VERGEN_GIT_SEMVER");
 fn main() -> Result<()> {
     // Grab the args from the user and build the required configs
     let args = Arc::new(Args::from_args());
-    init_logging(&args);
+    logging::init_logging(&args);
 
     tracing::trace!("initialized and received cli args: {:?}", args);
 
@@ -124,7 +120,6 @@ fn main() -> Result<()> {
 
     // Spin up the timely computation
     let worker_guards = timely::execute(config, move |worker| {
-        let dataflow_name = concat!(env!("CARGO_CRATE_NAME"), " log processor");
         let args = moved_args.clone();
 
         tracing::info!(
@@ -133,15 +128,8 @@ fn main() -> Result<()> {
             args.workers,
         );
 
-        if cfg!(debug_assertions) {
-            if let Ok(addr) = env::var("DIFFERENTIAL_LOG_ADDR") {
-                if let Ok(stream) = TcpStream::connect(&addr) {
-                    differential_dataflow::logging::enable(worker, stream);
-                    tracing::info!("connected to differential log stream at {}", addr);
-                } else {
-                    panic!("Could not connect to differential log address: {:?}", addr);
-                }
-            }
+        if args.dataflow_profiling {
+            logging::init_dataflow_logging(worker)?;
         }
 
         // Distribute the tcp streams across workers, converting each of them into an event reader
@@ -157,7 +145,7 @@ fn main() -> Result<()> {
         });
 
         let dataflow_id = worker.next_dataflow_index();
-        let probe = worker.dataflow_named(dataflow_name, |scope| {
+        let probe = worker.dataflow_named("DDShow Analysis Dataflow", |scope| {
             // If the dataflow is being sourced from a file, limit the
             // number of events read out in each batch so we don't overload
             // downstream consumers
@@ -460,16 +448,24 @@ fn main() -> Result<()> {
     println!(" done!");
 
     if !args.no_report_file {
-        println!("Wrote report file to {}", args.report_file.display());
+        let mut report_file = args.report_file.display().to_string();
+        if cfg!(windows) && report_file.starts_with(r"\\?\") {
+            report_file.replace_range(..r"\\?\".len(), "");
+        }
+
+        println!("Wrote report file to {}", report_file);
     }
 
-    println!(
-        "Wrote output graph to file:///{}",
-        fs::canonicalize(&args.output_dir)
-            .context("failed to get path of output dir")?
-            .join("graph.html")
-            .display(),
-    );
+    let mut graph_file = fs::canonicalize(&args.output_dir)
+        .context("failed to get path of output dir")?
+        .join("graph.html")
+        .display()
+        .to_string();
+    if cfg!(windows) && graph_file.starts_with(r"\\?\") {
+        graph_file.replace_range(..r"\\?\".len(), "");
+    }
+
+    println!("Wrote output graph to file:///{}", graph_file,);
 
     Ok(())
 }
@@ -518,19 +514,4 @@ fn dump_program_json(
     serde_json::to_writer(file, &data).context("failed to write json to file")?;
 
     Ok(())
-}
-
-fn init_logging(args: &Args) {
-    let filter_layer = EnvFilter::from_env("DDSHOW_LOG");
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .pretty()
-        .with_timer(Uptime::default())
-        .with_thread_names(true)
-        .with_ansi(args.color.is_always() || args.color.is_auto())
-        .with_level(false);
-
-    let _ = tracing_subscriber::registry()
-        .with(filter_layer)
-        .with(fmt_layer)
-        .try_init();
 }
