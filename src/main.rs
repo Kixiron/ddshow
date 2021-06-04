@@ -10,7 +10,7 @@ use crate::{
     args::Args,
     colormap::{select_color, Color},
     dataflow::{
-        operators::{Fuel, InspectExt, ReplayWithShutdown},
+        operators::{EventIterator, Fuel, InspectExt, ReplayWithShutdown},
         Channel, DataflowData, DataflowSenders, OperatorStats, DIFFERENTIAL_DISK_LOG_FILE,
         TIMELY_DISK_LOG_FILE,
     },
@@ -23,7 +23,7 @@ use ddshow_types::{
     timely_logging::{OperatesEvent, TimelyEvent},
     OperatorAddr, OperatorId, WorkerId,
 };
-use differential_dataflow::logging::DifferentialEvent as RawDifferentialEvent;
+use differential_dataflow::{logging::DifferentialEvent as RawDifferentialEvent, Data};
 use std::{
     collections::HashMap,
     env,
@@ -38,7 +38,10 @@ use std::{
     time::Duration,
 };
 use structopt::StructOpt;
-use timely::{dataflow::operators::Map, logging::TimelyEvent as RawTimelyEvent};
+use timely::{
+    dataflow::{operators::Map, Scope, Stream},
+    logging::TimelyEvent as RawTimelyEvent,
+};
 
 /// The current version of DDShow
 pub static DDSHOW_VERSION: &str = env!("VERGEN_GIT_SEMVER");
@@ -170,53 +173,25 @@ fn main() -> Result<()> {
             // The timely log stream filtered down to worker 0's events
             let span = tracing::info_span!("replay timely logs", worker_id = scope.index());
             let timely_stream = span.in_scope(|| {
-                match timely_traces {
-                    ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
-                        "Timely Replay",
-                        scope,
-                        replay_shutdown.clone(),
-                        fuel.clone(),
-                    ),
-
-                    ReplaySource::Abomonation(abomonation) => abomonation
-                        .replay_with_shutdown_into_named(
-                            "Timely Replay",
-                            scope,
-                            replay_shutdown.clone(),
-                            fuel.clone(),
-                        )
-                        .map(|(time, worker, event): (Duration, usize, RawTimelyEvent)| {
-                            (time, WorkerId::new(worker), TimelyEvent::from(event))
-                        }),
-                }
-                .debug_inspect(|x| tracing::trace!("timely event: {:?}", x))
+                replay_traces::<_, TimelyEvent, RawTimelyEvent, _, _>(
+                    scope,
+                    timely_traces,
+                    replay_shutdown.clone(),
+                    fuel.clone(),
+                    "Timely",
+                )
             });
 
             let span = tracing::info_span!("replay differential logs", worker_id = scope.index());
             let differential_stream = span.in_scope(|| {
                 if let Some(traces) = differential_traces {
-                    let stream = match traces {
-                        ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
-                            "Differential Replay",
-                            scope,
-                            replay_shutdown.clone(),
-                            fuel,
-                        ),
-
-                        ReplaySource::Abomonation(abomonation) => abomonation
-                            .replay_with_shutdown_into_named(
-                                "Differential Replay",
-                                scope,
-                                replay_shutdown.clone(),
-                                fuel,
-                            )
-                            .map(
-                                |(time, worker, event): (Duration, usize, RawDifferentialEvent)| {
-                                    (time, WorkerId::new(worker), DifferentialEvent::from(event))
-                                },
-                            ),
-                    }
-                    .debug_inspect(|x| tracing::trace!("differential dataflow event: {:?}", x));
+                    let stream = replay_traces::<_, DifferentialEvent, RawDifferentialEvent, _, _>(
+                        scope,
+                        traces,
+                        replay_shutdown.clone(),
+                        fuel.clone(),
+                        "Differential",
+                    );
 
                     Some(stream)
                 } else {
@@ -468,6 +443,36 @@ fn main() -> Result<()> {
     println!("Wrote output graph to file:///{}", graph_file,);
 
     Ok(())
+}
+
+fn replay_traces<S, Event, RawEvent, R, A>(
+    scope: &mut S,
+    timely_traces: ReplaySource<R, A>,
+    replay_shutdown: Arc<AtomicBool>,
+    fuel: Fuel,
+    source: &'static str,
+) -> Stream<S, (Duration, WorkerId, Event)>
+where
+    S: Scope<Timestamp = Duration>,
+    Event: Data + From<RawEvent>,
+    RawEvent: Data,
+    R: EventIterator<Duration, (Duration, WorkerId, Event)> + 'static,
+    A: EventIterator<Duration, (Duration, usize, RawEvent)> + 'static,
+{
+    let name = format!("{} Replay", source);
+
+    match timely_traces {
+        ReplaySource::Rkyv(rkyv) => {
+            rkyv.replay_with_shutdown_into_named(&name, scope, replay_shutdown, fuel)
+        }
+
+        ReplaySource::Abomonation(abomonation) => abomonation
+            .replay_with_shutdown_into_named(&name, scope, replay_shutdown, fuel)
+            .map(|(time, worker, event): (Duration, usize, RawEvent)| {
+                (time, WorkerId::new(worker), Event::from(event))
+            }),
+    }
+    .debug_inspect(move |x| tracing::trace!("{} event: {:?}", source, x))
 }
 
 fn dump_program_json(
