@@ -170,7 +170,11 @@ impl Debug for OperatorAddr {
 
 impl Display for OperatorAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Debug::fmt(&self.addr.as_slice(), f)
+        f.debug_list()
+            // FIXME: Is there really no way to make `.debug_list()`
+            //        call `Display` on elements?
+            .entries(self.as_slice().iter().copied().map(OperatorId::into_inner))
+            .finish()
     }
 }
 

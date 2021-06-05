@@ -10,6 +10,7 @@ use crate::{
     args::Args,
     colormap::{select_color, Color},
     dataflow::{
+        constants::PROGRESS_DISK_LOG_FILE,
         operators::{EventIterator, Fuel, InspectExt, ReplayWithShutdown},
         Channel, DataflowData, DataflowSenders, OperatorStats, DIFFERENTIAL_DISK_LOG_FILE,
         TIMELY_DISK_LOG_FILE,
@@ -20,6 +21,7 @@ use crate::{
 use anyhow::{Context, Result};
 use ddshow_types::{
     differential_logging::DifferentialEvent,
+    progress_logging::TimelyProgressEvent,
     timely_logging::{OperatesEvent, TimelyEvent},
     OperatorAddr, OperatorId, WorkerId,
 };
@@ -88,21 +90,44 @@ fn main() -> Result<()> {
             are_differential_sources
         });
 
+    // Connect to the progress sources
+    let progress_event_receivers = if args.progress_enabled {
+        Some(acquire_replay_sources::<
+            _,
+            (Duration, WorkerId, TimelyProgressEvent),
+            (Duration, WorkerId, TimelyProgressEvent),
+        >(
+            args.progress_address,
+            args.timely_connections,
+            args.workers,
+            args.replay_logs.as_deref(),
+            PROGRESS_DISK_LOG_FILE,
+            "Progress",
+        )?)
+    } else {
+        None
+    };
+    let are_progress_sources = progress_event_receivers
+        .as_ref()
+        .map_or(true, |&(_, are_progress_sources)| are_progress_sources);
+
     // If no replay sources were provided, exit early
-    if !are_timely_sources || !are_differential_sources {
+    if !are_timely_sources || !are_differential_sources || !are_progress_sources {
         tracing::warn!(
             are_timely_sources = are_timely_sources,
-            are_differential_sources = ?differential_event_receivers
-                .as_ref()
-                .map(|&(_, are_differential_sources)| are_differential_sources),
+            are_differential_sources = are_differential_sources,
             differential_enabled = args.differential_enabled,
+            are_progress_sources = are_progress_sources,
+            progress_enabled = args.progress_enabled,
             "no replay sources were provided",
         );
 
         let source = if !are_timely_sources {
             "timely"
-        } else {
+        } else if !are_differential_sources {
             "differential"
+        } else {
+            "progress"
         };
         println!("No {} replay sources were provided, exiting", source);
 
@@ -147,11 +172,22 @@ fn main() -> Result<()> {
                 .expect("failed to receive differential event traces")
         });
 
+        let progress_traces = progress_event_receivers.as_ref().map(|(recv, _)| {
+            recv[worker.index()]
+                .recv()
+                .expect("failed to receive progress traces")
+        });
+
         let dataflow_id = worker.next_dataflow_index();
         let probe = worker.dataflow_named("DDShow Analysis Dataflow", |scope| {
             // If the dataflow is being sourced from a file, limit the
             // number of events read out in each batch so we don't overload
             // downstream consumers
+            // TODO: Maybe fuel should always be unlimited so that the
+            //       "loading trace data" and "processing data"
+            //       prompts are accurate to the user? Does that matter
+            //       enough to take precedence over the possible performance
+            //       impact?
             let fuel = if args.is_file_sourced() {
                 Fuel::limited(NonZeroUsize::new(100_000_000).unwrap())
 
@@ -200,6 +236,31 @@ fn main() -> Result<()> {
                 }
             });
 
+            let span =
+                tracing::info_span!("replay timely progress logs", worker_id = scope.index());
+            let progress_stream = span.in_scope(|| {
+                if let Some(traces) = progress_traces {
+                    let stream = match traces {
+                        ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
+                            "Progress Replay",
+                            scope,
+                            replay_shutdown.clone(),
+                            fuel,
+                        ),
+
+                        ReplaySource::Abomonation(_) => anyhow::bail!(
+                            "Timely progress logging is only supported with rkyv sources",
+                        ),
+                    }
+                    .debug_inspect(move |x| tracing::trace!("progress event: {:?}", x));
+
+                    Ok(Some(stream))
+                } else {
+                    tracing::trace!("no progress sources were provided");
+                    Ok(None)
+                }
+            })?;
+
             let span = tracing::info_span!("dataflow construction", worker_id = scope.index());
             span.in_scope(|| {
                 dataflow::dataflow(
@@ -207,6 +268,7 @@ fn main() -> Result<()> {
                     &*args,
                     &timely_stream,
                     differential_stream.as_ref(),
+                    progress_stream.as_ref(),
                     senders.clone(),
                 )
             })
@@ -291,7 +353,9 @@ fn main() -> Result<()> {
     }
 
     let mut edge_events = data.edges;
-    edge_events.sort_unstable_by_key(|(worker, _, channel, _)| (*worker, channel.channel_id()));
+    edge_events.sort_unstable_by_key(|(worker, _, channel, _)| {
+        (*worker, channel.channel_path().into_owned())
+    });
     tracing::debug!("finished extracting {} edge events", edge_events.len());
 
     let (max_time, min_time) = (
@@ -394,7 +458,7 @@ fn main() -> Result<()> {
                     src,
                     dest,
                     worker,
-                    channel_id: channel.channel_id(),
+                    channel_path: channel.channel_path().into_owned(),
                     edge_kind: match channel {
                         Channel::Normal { .. } => EdgeKind::Normal,
                         Channel::ScopeCrossing { .. } => EdgeKind::Crossing,
@@ -418,6 +482,16 @@ fn main() -> Result<()> {
         html_edges,
         palette_colors,
         timeline_events,
+        data.channel_messages
+            .iter()
+            .map(
+                |&(channel, (messages, capability_updates))| ui::ChannelMessageStats {
+                    channel,
+                    messages,
+                    capability_updates,
+                },
+            )
+            .collect(),
     )?;
 
     println!(" done!");
@@ -455,7 +529,7 @@ fn replay_traces<S, Event, RawEvent, R, A>(
 where
     S: Scope<Timestamp = Duration>,
     Event: Data + From<RawEvent>,
-    RawEvent: Data,
+    RawEvent: Clone + 'static,
     R: EventIterator<Duration, (Duration, WorkerId, Event)> + 'static,
     A: EventIterator<Duration, (Duration, usize, RawEvent)> + 'static,
 {
@@ -513,6 +587,7 @@ fn dump_program_json(
         arrangements: Vec::new(),
         events,
         differential_enabled: args.differential_enabled,
+        progress_enabled: args.progress_enabled,
         ddshow_version: DDSHOW_VERSION.to_string(),
     };
 

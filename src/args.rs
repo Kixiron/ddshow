@@ -16,6 +16,10 @@ use timely::{CommunicationConfig, Config};
 // TODO: Process logs from file
 // TODO: Progress logging
 // TODO: Build info in help message
+// TODO: Reachability logging
+// TODO: Disable timeline events
+// TODO: This is complex enough to where it may need an
+//       actual config file
 #[derive(Debug, Clone, StructOpt)]
 #[structopt(rename_all = "kebab-case")]
 pub struct Args {
@@ -94,6 +98,11 @@ pub struct Args {
     /// Enable profiling for ddshow's internal dataflow
     #[structopt(long)]
     pub dataflow_profiling: bool,
+
+    /// Disables dataflow timeline analysis, can vastly improve performance
+    /// and memory usage on very large target dataflows
+    #[structopt(long)]
+    pub disable_timeline: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

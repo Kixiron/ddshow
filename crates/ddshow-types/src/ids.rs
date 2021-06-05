@@ -120,6 +120,12 @@ impl Debug for PortId {
     }
 }
 
+impl Display for PortId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.port, f)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
 #[cfg_attr(feature = "serde", serde(crate = "_serde", transparent))]
@@ -128,21 +134,27 @@ impl Debug for PortId {
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 #[repr(transparent)]
 pub struct ChannelId {
-    edge: usize,
+    channel: usize,
 }
 
 impl ChannelId {
-    pub const fn new(edge: usize) -> Self {
-        Self { edge }
+    pub const fn new(channel: usize) -> Self {
+        Self { channel }
     }
 
     pub const fn into_inner(self) -> usize {
-        self.edge
+        self.channel
     }
 }
 
 impl Debug for ChannelId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "EdgeId({})", self.edge)
+        write!(f, "ChannelId({})", self.channel)
+    }
+}
+
+impl Display for ChannelId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.channel, f)
     }
 }

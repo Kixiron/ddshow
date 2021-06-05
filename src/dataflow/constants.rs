@@ -13,6 +13,9 @@ pub const TIMELY_DISK_LOG_FILE: &str = "timely";
 /// The file that all differential events will be stored in
 pub const DIFFERENTIAL_DISK_LOG_FILE: &str = "differential";
 
+/// The file that all progress events will be stored in
+pub const PROGRESS_DISK_LOG_FILE: &str = "timely-progress";
+
 /// The default capacity to initialize extractor maps to
 pub(crate) const DEFAULT_EXTRACTOR_CAPACITY: usize = 1024;
 

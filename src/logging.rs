@@ -22,6 +22,7 @@ pub(crate) fn init_logging(args: &Args) {
         .try_init();
 }
 
+// TODO: Progress logging & configure logging via the cli
 pub(crate) fn init_dataflow_logging<A>(worker: &mut Worker<A>) -> Result<()>
 where
     A: Allocate,

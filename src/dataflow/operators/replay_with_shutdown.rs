@@ -131,7 +131,11 @@ where
 }
 
 /// Replay a capture stream into a scope with the same timestamp.
-pub trait ReplayWithShutdown<T: Timestamp, D: Data> {
+pub trait ReplayWithShutdown<T, D>
+where
+    T: Timestamp,
+    D: Data,
+{
     /// Replays `self` into the provided scope, as a `Stream<S, D>`.
     fn replay_with_shutdown_into<S>(
         self,

@@ -87,8 +87,8 @@ fn program_overview(args: &Args, data: &DataflowData, file: &mut File) -> Result
             ]);
 
         writeln!(file, "{}\n", table).context("failed to write to report file")?;
-    } else if cfg!(debug_assertions) {
-        panic!("didn't receive a program stats entry");
+    } else {
+        tracing::error!("didn't receive a program stats entry");
     }
 
     Ok(())

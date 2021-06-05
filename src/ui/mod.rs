@@ -24,6 +24,7 @@ pub fn render(
     edges: Vec<Edge>,
     palette_colors: Vec<String>,
     timeline_events: Vec<WorkerTimelineEvent>,
+    channel_messages: Vec<ChannelMessageStats>,
 ) -> Result<()> {
     let output_dir = &args.output_dir;
     tracing::info!(output_dir = ?output_dir, "writing graph files to disk");
@@ -51,6 +52,7 @@ pub fn render(
         edges,
         palette_colors,
         timeline_events,
+        channel_messages,
     };
 
     // // TODO: This shouldn't be here
@@ -107,6 +109,7 @@ pub struct DDShowStats {
     pub arrangements: Vec<ArrangementStats>,
     pub events: Vec<TimelineEvent>,
     pub differential_enabled: bool,
+    pub progress_enabled: bool,
     pub ddshow_version: String,
     // TODO: Lists of nodes, channels & arrangement ids (or addresses?) sorted
     //       by various metrics, e.g. runtime, size, # merges
@@ -505,11 +508,12 @@ pub struct TimelineEvent {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub struct GraphData {
-    nodes: Vec<Node>,
-    subgraphs: Vec<Subgraph>,
-    edges: Vec<Edge>,
-    palette_colors: Vec<String>,
-    timeline_events: Vec<WorkerTimelineEvent>,
+    pub nodes: Vec<Node>,
+    pub subgraphs: Vec<Subgraph>,
+    pub edges: Vec<Edge>,
+    pub palette_colors: Vec<String>,
+    pub timeline_events: Vec<WorkerTimelineEvent>,
+    pub channel_messages: Vec<ChannelMessageStats>,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
@@ -556,7 +560,7 @@ pub struct Edge {
     pub src: OperatorAddr,
     pub dest: OperatorAddr,
     pub worker: WorkerId,
-    pub channel_id: ChannelId,
+    pub channel_path: OperatorAddr,
     pub edge_kind: EdgeKind,
 }
 
@@ -564,4 +568,11 @@ pub struct Edge {
 pub enum EdgeKind {
     Normal,
     Crossing,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
+pub struct ChannelMessageStats {
+    pub channel: ChannelId,
+    pub messages: usize,
+    pub capability_updates: usize,
 }

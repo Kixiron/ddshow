@@ -229,5 +229,5 @@ where
 
     fs::create_dir_all(directory)?;
     let writer = BufWriter::new(File::create(path)?);
-    Ok(enable_timely_logging(worker, writer))
+    Ok(enable_timely_progress_logging(worker, writer))
 }

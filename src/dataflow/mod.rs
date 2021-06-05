@@ -1,10 +1,10 @@
 // mod channel_stats;
-mod channel_stats;
 pub(crate) mod constants;
 mod differential;
 mod operator_stats;
 pub mod operators;
 mod program_stats;
+mod progress_stats;
 #[cfg(feature = "timely-next")]
 mod reachability;
 mod send_recv;
@@ -14,9 +14,9 @@ mod tests;
 mod timely_source;
 mod worker_timeline;
 
-pub use channel_stats::Channel;
 pub use constants::{DIFFERENTIAL_DISK_LOG_FILE, PROGRAM_NS_GRANULARITY, TIMELY_DISK_LOG_FILE};
 pub use operator_stats::OperatorStats;
+pub use progress_stats::Channel;
 pub use send_recv::{DataflowData, DataflowExtractor, DataflowReceivers, DataflowSenders};
 pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 
@@ -35,6 +35,7 @@ use crossbeam_channel::Sender;
 use ddshow_sink::EventWriter;
 use ddshow_types::{
     differential_logging::DifferentialEvent,
+    progress_logging::TimelyProgressEvent,
     timely_logging::{OperatesEvent, TimelyEvent},
     ChannelId, OperatorAddr, OperatorId, WorkerId,
 };
@@ -49,7 +50,7 @@ use differential_dataflow::{
         implementations::ord::{OrdKeySpine, OrdValSpine},
         TraceReader,
     },
-    Collection, ExchangeData, Hashable,
+    AsCollection, Collection, ExchangeData, Hashable,
 };
 #[cfg(feature = "timely-next")]
 use reachability::TrackerEvent;
@@ -65,6 +66,7 @@ use timely::{
     dataflow::{
         operators::{
             capture::{Capture, Event},
+            generic::operator,
             probe::Handle as ProbeHandle,
             Probe,
         },
@@ -108,9 +110,10 @@ fn granulate(&time: &Duration) -> Duration {
 
 pub type TimelyLogBundle<Id = WorkerId> = (Time, Id, TimelyEvent);
 pub type DifferentialLogBundle<Id = WorkerId> = (Time, Id, DifferentialEvent);
+pub type ProgressLogBundle<Id = WorkerId> = (Time, Id, TimelyProgressEvent);
 
 #[cfg(feature = "timely-next")]
-type ReachabilityLogBundle = (Time, WorkerId, TrackerEvent);
+pub type ReachabilityLogBundle<Id = WorkerId> = (Time, Id, TrackerEvent);
 
 type Diff = isize;
 type Time = Duration;
@@ -120,6 +123,7 @@ pub fn dataflow<S>(
     args: &Args,
     timely_stream: &Stream<S, TimelyLogBundle>,
     differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
+    progress_stream: Option<&Stream<S, ProgressLogBundle>>,
     senders: DataflowSenders,
 ) -> Result<ProbeHandle<Time>>
 where
@@ -142,8 +146,11 @@ where
         operator_addrs_by_self,
         channel_scopes,
         dataflow_ids,
-        timely_events,
-    ) = timely_source::extract_timely_info(scope, timely_stream);
+        timeline_event_stream,
+    ) = timely_source::extract_timely_info(scope, timely_stream, args.disable_timeline);
+
+    let total_channel_messages = progress_stream
+        .map(|progress_stream| progress_stats::aggregate_channel_messages(scope, progress_stream));
 
     // FIXME: `invocations` looks off, figure that out
     let operator_stats =
@@ -173,15 +180,16 @@ where
     let edges = attach_operators(scope, &raw_operators, &channels, &leaves_arranged);
 
     // TODO: Make `extract_timely_info()` get the relevant event information
-    // TODO: Make this configurable by the user since it absolutely chugs memory
     // TODO: Grabbing events absolutely shits the bed when it comes to large dataflows,
     //       it needs a serious, intrinsic rework and/or disk backed arrangements
-    let timeline_events = worker_timeline::worker_timeline(
-        scope,
-        &timely_events,
-        differential_stream,
-        &operator_names,
-    );
+    let timeline_events = timeline_event_stream.as_ref().map(|timeline_event_stream| {
+        worker_timeline::worker_timeline(
+            scope,
+            timeline_event_stream,
+            differential_stream,
+            &operator_names,
+        )
+    });
 
     let addressed_operators = raw_operators
         .map(|(worker, operator)| ((worker, operator.addr.clone()), operator))
@@ -216,9 +224,10 @@ where
         addressed_operators,
         aggregated_operator_stats,
         dataflow_stats,
-        timeline_events, // operator::empty(scope).as_collection(),
+        timeline_events,
         operator_names,
         operator_ids,
+        total_channel_messages,
     );
 
     // TODO: Save ddflow logs
@@ -250,7 +259,7 @@ where
     Ok(probe)
 }
 
-#[allow(clippy::clippy::too_many_arguments)]
+#[allow(clippy::clippy::too_many_arguments, clippy::type_complexity)]
 fn install_data_extraction<S>(
     scope: &mut S,
     senders: DataflowSenders,
@@ -264,9 +273,10 @@ fn install_data_extraction<S>(
     addressed_operators: ArrangedVal<S, (WorkerId, OperatorAddr), OperatesEvent, Diff>,
     aggregated_operator_stats: Collection<S, (OperatorId, OperatorStats), Diff>,
     dataflow_stats: Collection<S, DataflowStats, Diff>,
-    timeline_events: Collection<S, WorkerTimelineEvent, Diff>,
+    timeline_events: Option<Collection<S, WorkerTimelineEvent, Diff>>,
     operator_names: ArrangedVal<S, (WorkerId, OperatorId), String, Diff>,
     operator_ids: ArrangedVal<S, (WorkerId, OperatorId), OperatorAddr, Diff>,
+    total_channel_messages: Option<Collection<S, (ChannelId, (usize, usize)), Diff>>,
 ) where
     S: Scope<Timestamp = Duration>,
 {
@@ -280,9 +290,11 @@ fn install_data_extraction<S>(
         let addressed_operators = addressed_operators.enter_region(region);
         let aggregated_operator_stats = aggregated_operator_stats.enter_region(region);
         let dataflow_stats = dataflow_stats.enter_region(region);
-        let timeline_events = timeline_events.enter_region(region);
+        let timeline_events = timeline_events.map(|events| events.enter_region(region));
         let operator_names = operator_names.enter_region(region);
         let operator_ids = operator_ids.enter_region(region);
+        let total_channel_messages =
+            total_channel_messages.map(|events| events.enter_region(region));
 
         let worker_stats = worker_stats
             .map(|(worker, stats)| ((), (worker, stats)))
@@ -312,9 +324,16 @@ fn install_data_extraction<S>(
             (&operator_stats, true),
             (&aggregated_operator_stats, true),
             (&dataflow_stats, true),
-            (&timeline_events, true),
+            (
+                &timeline_events.unwrap_or_else(|| operator::empty(region).as_collection()),
+                true,
+            ),
             (&operator_names, false),
             (&operator_ids, false),
+            (
+                &total_channel_messages.unwrap_or_else(|| operator::empty(region).as_collection()),
+                true,
+            ),
         );
     })
 }
