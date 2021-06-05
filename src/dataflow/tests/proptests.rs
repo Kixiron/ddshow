@@ -176,7 +176,8 @@ fn timeline_events_inner(
             let operator_names = operator_stream.as_collection().arrange_by_key();
 
             let (_, _, _, _, _, _, _, _, _, _, _, _, timely_events) =
-                extract_timely_info(scope, &timely_stream);
+                extract_timely_info(scope, &timely_stream, false);
+            let timely_events = timely_events.unwrap();
 
             let partial_events = worker_timeline(
                 scope,

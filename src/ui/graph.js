@@ -3,6 +3,7 @@ const raw_subgraphs = {{ subgraphs | json_encode() }};
 const raw_edges = {{ edges | json_encode() }};
 const palette_colors = {{ palette_colors | json_encode() }};
 const timeline_events = {{ timeline_events | json_encode() }};
+const channel_messages = {{ channel_messages | json_encode() }};
 
 const dataflow_svg = d3.select("#dataflow-graph");
 const svg = dataflow_svg.append("g");
@@ -139,7 +140,7 @@ svg.selectAll("g.node")
         }
 
         const node = unsafe_node.data;
-        let text = `ran for ${node.total_activation_time} over ${node.invocations} invocations<br>\
+        let html = `ran for ${node.total_activation_time} over ${node.invocations} invocations<br>\
             average runtime of ${node.average_activation_time} \
             (max: ${node.max_activation_time}, min: ${node.min_activation_time})`;
 
@@ -147,12 +148,12 @@ svg.selectAll("g.node")
             && node.max_arrangement_size !== null
             && node.min_arrangement_size !== null
         ) {
-            text += `<br>max arrangement size: ${node.max_arrangement_size}, \
+            html += `<br>max arrangement size: ${node.max_arrangement_size}, \
                 min arrangement size: ${node.min_arrangement_size}`;
         }
 
         tooltip
-            .html(text)
+            .html(html)
             .style("top", (d3.event.pageY - 40) + "px")
             .style("left", (d3.event.pageX + 40) + "px");
     })
@@ -188,8 +189,16 @@ svg.selectAll("g.edgePath")
         const src_name = get_node_name(edge.src);
         const dest_name = get_node_name(edge.dest);
 
+        let html = `channel from ${src_name} to ${dest_name}`;
+
+        const channel_stats = channel_messages.find(stats => edge.channel_path.includes(stats.channel));
+        if (channel_stats) {
+            html += `<br>Carried ${channel_stats.messages} messages and \
+                ${channel_stats.capability_updates} capability updates`;
+        }
+
         tooltip
-            .text(`channel from ${src_name} to ${dest_name}`)
+            .html(html)
             .style("top", (d3.event.pageY - 40) + "px")
             .style("left", (d3.event.pageX + 40) + "px");
     })

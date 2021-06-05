@@ -3,9 +3,7 @@ use crate::dataflow::{
     send_recv::ChannelAddrs,
     Channel, FilterMap, Multiply,
 };
-use ddshow_types::{
-    timely_logging::ChannelsEvent, ChannelId, OperatorAddr, OperatorId, PortId, WorkerId,
-};
+use ddshow_types::{timely_logging::ChannelsEvent, OperatorAddr, OperatorId, PortId, WorkerId};
 use differential_dataflow::{
     difference::Abelian,
     lattice::Lattice,
@@ -146,11 +144,11 @@ where
             .filter_map(
                 |(
                     (worker, source_addr, _source_port),
-                    ((target_addr, _target_port), channel_ids_along_path),
+                    ((target_addr, _target_port), channel_path),
                 )| {
-                    if channel_ids_along_path.len() >= 2 {
+                    if channel_path.len() >= 2 {
                         let channel = Channel::ScopeCrossing {
-                            channel_id: ChannelId::new(channel_ids_along_path[0].into_inner()),
+                            channel_path,
                             source_addr,
                             target_addr,
                         };

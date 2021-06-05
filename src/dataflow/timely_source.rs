@@ -15,8 +15,13 @@ use differential_dataflow::{
     Collection,
 };
 use std::{collections::HashMap, time::Duration};
-use timely::dataflow::{
-    channels::pact::Exchange, operators::generic::builder_rc::OperatorBuilder, Scope, Stream,
+use timely::{
+    dataflow::{
+        channels::{pact::Exchange, pushers::Tee},
+        operators::generic::{builder_rc::OperatorBuilder, OutputWrapper},
+        Scope, ScopeParent, Stream,
+    },
+    Data,
 };
 
 type TimelyCollections<S> = (
@@ -46,19 +51,23 @@ type TimelyCollections<S> = (
     ArrangedVal<S, (WorkerId, ChannelId), OperatorAddr>,
     // Dataflow operator ids
     ArrangedKey<S, (WorkerId, OperatorId)>,
-    // Timely event data
-    TimelineEventStream<S>,
+    // Timely event data, will be `None` if timeline analysis is disabled
+    Option<TimelineEventStream<S>>,
 );
 
 // TODO: These could all emit `Present` difference types since there's no retractions here
 pub(super) fn extract_timely_info<S>(
     scope: &mut S,
     timely_stream: &Stream<S, TimelyLogBundle>,
+    disable_timeline: bool,
 ) -> TimelyCollections<S>
 where
     S: Scope<Timestamp = Duration>,
 {
-    let mut builder = OperatorBuilder::new("Extract Operator Info".to_owned(), scope.clone());
+    let (mut builder, mut output_counter) = (
+        OperatorBuilder::new("Extract Operator Info".to_owned(), scope.clone()),
+        0,
+    );
     builder.set_notify(false);
 
     let mut timely_stream = builder.new_input(
@@ -75,19 +84,36 @@ where
     );
 
     // Create all of the outputs
-    let (mut lifespan_out, lifespan_stream) = builder.new_output();
-    let (mut activation_duration_out, activation_duration_stream) = builder.new_output();
-    let (mut operator_creation_out, operator_creation_stream) = builder.new_output();
-    let (mut channel_creation_out, channel_creation_stream) = builder.new_output();
-    let (mut raw_channels_out, raw_channels_stream) = builder.new_output();
-    let (mut raw_operators_out, raw_operators_stream) = builder.new_output();
-    let (mut operator_names_out, operator_names_stream) = builder.new_output();
-    let (mut operator_ids_out, operator_ids_stream) = builder.new_output();
-    let (mut operator_addrs_out, operator_addrs_stream) = builder.new_output();
-    let (mut operator_addrs_by_self_out, operator_addrs_by_self_stream) = builder.new_output();
-    let (mut channel_scope_addrs_out, channel_scope_addrs_stream) = builder.new_output();
-    let (mut dataflow_ids_out, dataflow_ids_stream) = builder.new_output();
-    let (mut worker_events_out, worker_events_stream) = builder.new_output();
+    let (mut lifespan_out, lifespan_stream, lifespan_idx) =
+        new_output(&mut output_counter, &mut builder);
+    let (mut activation_duration_out, activation_duration_stream, activation_duration_idx) =
+        new_output(&mut output_counter, &mut builder);
+    let (mut operator_creation_out, operator_creation_stream, operator_creation_idx) =
+        new_output(&mut output_counter, &mut builder);
+    let (mut channel_creation_out, channel_creation_stream, channel_creation_idx) =
+        new_output(&mut output_counter, &mut builder);
+    let (mut raw_channels_out, raw_channels_stream, raw_channels_idx) =
+        new_output(&mut output_counter, &mut builder);
+    let (mut raw_operators_out, raw_operators_stream, raw_operators_idx) =
+        new_output(&mut output_counter, &mut builder);
+    let (mut operator_names_out, operator_names_stream, operator_names_idx) =
+        new_output(&mut output_counter, &mut builder);
+    let (mut operator_ids_out, operator_ids_stream, operator_ids_idx) =
+        new_output(&mut output_counter, &mut builder);
+    let (mut operator_addrs_out, operator_addrs_stream, operator_addrs_idx) =
+        new_output(&mut output_counter, &mut builder);
+    let (mut operator_addrs_by_self_out, operator_addrs_by_self_stream, operator_addrs_by_self_idx) =
+        new_output(&mut output_counter, &mut builder);
+    let (mut channel_scope_addrs_out, channel_scope_addrs_stream, channel_scope_addrs_idx) =
+        new_output(&mut output_counter, &mut builder);
+    let (mut dataflow_ids_out, dataflow_ids_stream, dataflow_ids_idx) =
+        new_output(&mut output_counter, &mut builder);
+    let (mut worker_events_out, worker_events_stream, worker_events_idx) = if disable_timeline {
+        (None, None, None)
+    } else {
+        let (out, stream, idx) = new_output(&mut output_counter, &mut builder);
+        (Some(out), Some(stream), Some(idx))
+    };
 
     builder.build_reschedule(move |_capabilities| {
         move |_frontiers| {
@@ -121,7 +147,7 @@ where
             let mut operator_addrs_by_self_handle = operator_addrs_by_self_out.activate();
             let mut channel_scope_addrs_handle = channel_scope_addrs_out.activate();
             let mut dataflow_ids_handle = dataflow_ids_out.activate();
-            let mut worker_events_handle = worker_events_out.activate();
+            let mut worker_events_handle = worker_events_out.as_mut().map(OutputWrapper::activate);
 
             timely_stream.for_each(|capability, data| {
                 data.swap(&mut buffer);
@@ -131,34 +157,50 @@ where
                     let session_time = capability.time().join(&time);
 
                     // Get capabilities for every individual output
-                    let lifespan_cap = capability.delayed_for_output(&session_time, 0);
-                    let activation_duration_cap = capability.delayed_for_output(&session_time, 1);
-                    let operator_creation_cap = capability.delayed_for_output(&session_time, 2);
-                    let channel_creation_cap = capability.delayed_for_output(&session_time, 3);
-                    let raw_channels_cap = capability.delayed_for_output(&session_time, 4);
-                    let raw_operators_cap = capability.delayed_for_output(&session_time, 5);
-                    let operator_names_cap = capability.delayed_for_output(&session_time, 6);
-                    let operator_ids_cap = capability.delayed_for_output(&session_time, 7);
-                    let operator_addrs_cap = capability.delayed_for_output(&session_time, 8);
+                    let lifespan_cap = capability.delayed_for_output(&session_time, lifespan_idx);
+                    let activation_duration_cap =
+                        capability.delayed_for_output(&session_time, activation_duration_idx);
+                    let operator_creation_cap =
+                        capability.delayed_for_output(&session_time, operator_creation_idx);
+                    let channel_creation_cap =
+                        capability.delayed_for_output(&session_time, channel_creation_idx);
+                    let raw_channels_cap =
+                        capability.delayed_for_output(&session_time, raw_channels_idx);
+                    let raw_operators_cap =
+                        capability.delayed_for_output(&session_time, raw_operators_idx);
+                    let operator_names_cap =
+                        capability.delayed_for_output(&session_time, operator_names_idx);
+                    let operator_ids_cap =
+                        capability.delayed_for_output(&session_time, operator_ids_idx);
+                    let operator_addrs_cap =
+                        capability.delayed_for_output(&session_time, operator_addrs_idx);
                     let operator_addrs_by_self_cap =
-                        capability.delayed_for_output(&session_time, 9);
-                    let channel_scope_addrs_cap = capability.delayed_for_output(&session_time, 10);
-                    let dataflow_ids_cap = capability.delayed_for_output(&session_time, 11);
-                    // Note: This has a different timestamp than the other capabilities,
-                    //       this is because of the machinery within `EventProcessor`
-                    let worker_events_cap = capability.delayed_for_output(capability.time(), 12);
+                        capability.delayed_for_output(&session_time, operator_addrs_by_self_idx);
+                    let channel_scope_addrs_cap =
+                        capability.delayed_for_output(&session_time, channel_scope_addrs_idx);
+                    let dataflow_ids_cap =
+                        capability.delayed_for_output(&session_time, dataflow_ids_idx);
 
-                    let mut event_processor = EventProcessor::new(
-                        &mut event_map,
-                        &mut map_buffer,
-                        &mut stack_buffer,
-                        &mut worker_events_handle,
-                        &worker_events_cap,
-                        worker,
-                        time,
-                    );
+                    if let (Some(worker_events_handle), Some(worker_events_idx)) =
+                        (worker_events_handle.as_mut(), worker_events_idx)
+                    {
+                        // Note: This has a different timestamp than the other capabilities
+                        //       because of the machinery within `EventProcessor`
+                        let worker_events_cap =
+                            capability.delayed_for_output(capability.time(), worker_events_idx);
 
-                    process_timely_event(&mut event_processor, event.clone());
+                        let mut event_processor = EventProcessor::new(
+                            &mut event_map,
+                            &mut map_buffer,
+                            &mut stack_buffer,
+                            worker_events_handle,
+                            &worker_events_cap,
+                            worker,
+                            time,
+                        );
+
+                        process_timely_event(&mut event_processor, event.clone());
+                    }
 
                     match event {
                         TimelyEvent::Operates(operates) => {
@@ -339,4 +381,23 @@ where
         // Note: Don't granulate this
         worker_events_stream,
     )
+}
+
+type OutputTuple<S, D> = (
+    OutputWrapper<<S as ScopeParent>::Timestamp, D, Tee<<S as ScopeParent>::Timestamp, D>>,
+    Stream<S, D>,
+    usize,
+);
+
+fn new_output<S, D>(id_counter: &mut usize, builder: &mut OperatorBuilder<S>) -> OutputTuple<S, D>
+where
+    S: Scope,
+    D: Data,
+{
+    let output_id = *id_counter;
+    *id_counter += 1;
+
+    let (output, stream) = builder.new_output();
+
+    (output, stream, output_id)
 }

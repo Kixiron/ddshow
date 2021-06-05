@@ -42,7 +42,7 @@ pub struct TimelyProgressEvent {
 impl TimelyProgressEvent {
     pub fn new(
         is_send: bool,
-        source: WorkerId,
+        worker: WorkerId,
         channel: ChannelId,
         seq_no: usize,
         addr: OperatorAddr,
@@ -51,7 +51,7 @@ impl TimelyProgressEvent {
     ) -> Self {
         Self {
             is_send,
-            worker: source,
+            worker,
             channel,
             seq_no,
             addr,
