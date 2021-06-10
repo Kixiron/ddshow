@@ -1,14 +1,18 @@
 [package]
 name = "ddshow-sink"
-version = "0.1.0"
+description = "Utilities to allow setting ddshow loggers for timely dataflow programs"
+version = "0.1.1"
 authors = ["Chase Wilson <me@chasewilson.dev>"]
 license = "MIT OR Apache-2.0"
 edition = "2018"
+repository = "https://github.com/Kixiron/ddshow"
+keywords = ["timely", "differential", "dataflow", "ddshow"]
+categories = ["development-tools::debugging"]
 
 [features]
-default = ["ddflow", "tracing"]
+default = ["ddflow"]
 ddflow = ["differential-dataflow", "ddshow-types/ddflow"]
-tracing = ["_tracing"]
+tracing = ["tracing_dep"]
 
 [dependencies]
 byteorder = "1.4.3"
@@ -16,13 +20,9 @@ bytecheck = "0.5.1"
 rkyv = { version = "0.6.6", features = ["validation"] }
 timely = { version = "0.12.0", default-features = false }
 differential-dataflow = { version = "0.12.0", default-features = false, optional = true }
+ddshow-types = { version = "0.1.0", path = "../ddshow-types", features = ["rkyv", "enable_abomonation"] }
 
-[dependencies.ddshow-types]
-version = "0.1.0"
-path = "../ddshow-types"
-features = ["rkyv", "enable_abomonation"]
-
-[dependencies._tracing]
+[dependencies.tracing_dep]
 package = "tracing"
 version = "0.1.26"
 optional = true

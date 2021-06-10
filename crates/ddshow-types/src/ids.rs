@@ -1,21 +1,21 @@
 //! All dataflow related ids
 
-#[cfg(feature = "rkyv")]
-use _rkyv as rkyv;
-#[cfg(feature = "rkyv")]
-use _rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-#[cfg(feature = "serde")]
-use _serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 #[cfg(feature = "enable_abomonation")]
 use abomonation_derive::Abomonation;
 #[cfg(feature = "rkyv")]
 use bytecheck::CheckBytes;
+#[cfg(feature = "rkyv")]
+use rkyv_dep as rkyv;
+#[cfg(feature = "rkyv")]
+use rkyv_dep::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+#[cfg(feature = "serde")]
+use serde_dep::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 use std::fmt::{self, Debug, Display};
 use timely::logging::WorkerIdentifier;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "_serde", transparent))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep", transparent))]
 #[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
 #[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
@@ -54,7 +54,7 @@ impl Display for WorkerId {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "_serde", transparent))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep", transparent))]
 #[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
 #[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
@@ -87,7 +87,7 @@ impl Display for OperatorId {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "_serde", transparent))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep", transparent))]
 #[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
 #[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
@@ -128,7 +128,7 @@ impl Display for PortId {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "_serde", transparent))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep", transparent))]
 #[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
 #[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]

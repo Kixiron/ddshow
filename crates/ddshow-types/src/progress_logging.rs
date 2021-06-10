@@ -4,21 +4,21 @@ use crate::{
     ids::{ChannelId, PortId, WorkerId},
     OperatorAddr,
 };
-#[cfg(feature = "rkyv")]
-use _rkyv as rkyv;
-#[cfg(feature = "rkyv")]
-use _rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-#[cfg(feature = "serde")]
-use _serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 #[cfg(feature = "enable_abomonation")]
 use abomonation_derive::Abomonation;
 #[cfg(feature = "rkyv")]
 use bytecheck::CheckBytes;
+#[cfg(feature = "rkyv")]
+use rkyv_dep as rkyv;
+#[cfg(feature = "rkyv")]
+use rkyv_dep::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+#[cfg(feature = "serde")]
+use serde_dep::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 use timely::logging::TimelyProgressEvent as RawTimelyProgressEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "_serde"))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
 #[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
 #[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
@@ -105,7 +105,7 @@ impl From<RawTimelyProgressEvent> for TimelyProgressEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "_serde"))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
 #[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
 #[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
@@ -140,7 +140,7 @@ impl MessageUpdate {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "_serde"))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
 #[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
 #[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]

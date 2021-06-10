@@ -1,11 +1,20 @@
 [package]
 name = "ddshow"
-version = "0.1.0"
+description = "Timely and Differential dataflow log analysis and vizualization"
+version = "0.1.1"
 authors = ["Chase Wilson <me@chasewilson.dev>"]
 license = "MIT OR Apache-2.0"
 edition = "2018"
 resolver = "2"
 build = "build.rs"
+repository = "https://github.com/Kixiron/ddshow"
+keywords = ["timely", "differential", "dataflow"]
+categories = [
+    "command-line-interface",
+    "command-line-utilities",
+    "development-tools::debugging",
+    "visualization",
+]
 default-run = "ddshow"
 
 [workspace]

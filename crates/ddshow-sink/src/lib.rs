@@ -79,7 +79,7 @@ where
     W: Write + 'static,
 {
     #[cfg(feature = "tracing")]
-    _tracing::info!(
+    tracing_dep::info!(
         worker = worker.index(),
         logging_stream = TIMELY_LOGGER_NAME,
         "installing a {} event logger on worker {}",
@@ -113,7 +113,7 @@ where
     ));
 
     #[cfg(feature = "tracing")]
-    _tracing::info!(
+    tracing_dep::info!(
         worker = worker.index(),
         logging_stream = TIMELY_LOGGER_NAME,
         directory = ?directory,
@@ -164,7 +164,7 @@ where
     W: Write + 'static,
 {
     #[cfg(feature = "tracing")]
-    _tracing::info!(
+    tracing_dep::info!(
         worker = worker.index(),
         logging_stream = DIFFERENTIAL_ARRANGEMENT_LOGGER_NAME,
         "installing a differential event logger on worker {}",
@@ -198,7 +198,7 @@ where
     ));
 
     #[cfg(feature = "tracing")]
-    _tracing::info!(
+    tracing_dep::info!(
         worker = worker.index(),
         logging_stream = DIFFERENTIAL_ARRANGEMENT_LOGGER_NAME,
         directory = ?directory,
@@ -224,7 +224,7 @@ where
     W: Write + 'static,
 {
     #[cfg(feature = "tracing")]
-    _tracing::info!(
+    tracing_dep::info!(
         worker = worker.index(),
         logging_stream = TIMELY_PROGRESS_LOGGER_NAME,
         "installing a {} logger on worker {}",
@@ -258,7 +258,7 @@ where
     ));
 
     #[cfg(feature = "tracing")]
-    _tracing::info!(
+    tracing_dep::info!(
         worker = worker.index(),
         logging_stream = TIMELY_PROGRESS_LOGGER_NAME,
         directory = ?directory,

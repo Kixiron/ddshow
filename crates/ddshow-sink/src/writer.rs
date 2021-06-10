@@ -51,7 +51,7 @@ where
 
                 if let Err(err) = self.stream.write_all(&PADDING[..padding]) {
                     #[cfg(feature = "tracing")]
-                    _tracing::error!(
+                    tracing_dep::error!(
                         padding_len = padding,
                         "failed to write padding to stream: {:?}",
                         err,
@@ -81,7 +81,7 @@ where
 
         if let Err(err) = result {
             #[cfg(feature = "tracing")]
-            _tracing::error!(
+            tracing_dep::error!(
                 archive_len = %archive_len,
                 "failed to write buffer data to stream: {:?}",
                 err,

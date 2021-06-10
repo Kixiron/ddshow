@@ -1,14 +1,18 @@
 [package]
 name = "ddshow-types"
-version = "0.1.0"
+description = "FFI-safe types for ddshow"
+version = "0.1.1"
 authors = ["Chase Wilson <me@chasewilson.dev>"]
 license = "MIT OR Apache-2.0"
 edition = "2018"
+repository = "https://github.com/Kixiron/ddshow"
+keywords = ["timely", "differential", "dataflow", "ddshow"]
+categories = ["development-tools::debugging"]
 
 [features]
 default = ["rkyv", "ddflow"]
-rkyv = ["_rkyv", "bytecheck"]
-serde = ["_serde", "tinyvec/serde"]
+rkyv = ["rkyv_dep", "bytecheck"]
+serde = ["serde_dep", "tinyvec/serde"]
 enable_abomonation = ["abomonation", "abomonation_derive"]
 ddflow = ["differential-dataflow"]
 
@@ -23,13 +27,13 @@ differential-dataflow = { version = "0.12.0", default-features = false, optional
 # TODO: Allow random generation of types under feature flags
 #       to allow for fuzzing
 
-[dependencies._rkyv]
+[dependencies.rkyv_dep]
 package = "rkyv"
 version = "0.6.6"
 features = ["validation"]
 optional = true
 
-[dependencies._serde]
+[dependencies.serde_dep]
 package = "serde"
 version = "1.0.123"
 features = ["derive"]

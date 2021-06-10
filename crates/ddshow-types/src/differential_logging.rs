@@ -1,12 +1,6 @@
 //! Differential dataflow logging events
 
 use crate::ids::OperatorId;
-#[cfg(feature = "rkyv")]
-use _rkyv as rkyv;
-#[cfg(feature = "rkyv")]
-use _rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-#[cfg(feature = "serde")]
-use _serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 #[cfg(feature = "enable_abomonation")]
 use abomonation_derive::Abomonation;
 #[cfg(feature = "rkyv")]
@@ -16,13 +10,19 @@ use differential_dataflow::logging::{
     DropEvent as RawDropEvent, MergeEvent as RawMergeEvent, MergeShortfall as RawMergeShortfall,
     TraceShare as RawTraceShare,
 };
+#[cfg(feature = "rkyv")]
+use rkyv_dep as rkyv;
+#[cfg(feature = "rkyv")]
+use rkyv_dep::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+#[cfg(feature = "serde")]
+use serde_dep::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 
 /// Differential dataflow events
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
 #[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "_serde"))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub enum DifferentialEvent {
     /// Batch creation.
@@ -119,7 +119,7 @@ impl From<BatchEvent> for DifferentialEvent {
 #[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
 #[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "_serde"))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct BatchEvent {
     /// Operator identifier.
@@ -157,7 +157,7 @@ impl From<BatchEvent> for RawBatchEvent {
 #[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
 #[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "_serde"))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct DropEvent {
     /// Operator identifier.
@@ -195,7 +195,7 @@ impl From<DropEvent> for RawDropEvent {
 #[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
 #[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "_serde"))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct MergeEvent {
     /// Operator identifier.
@@ -257,7 +257,7 @@ impl From<MergeEvent> for RawMergeEvent {
 #[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
 #[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "_serde"))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct MergeShortfall {
     /// Operator identifer.
@@ -303,7 +303,7 @@ impl From<MergeShortfall> for RawMergeShortfall {
 #[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
 #[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "_serde"))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct TraceShare {
     /// Operator identifier.

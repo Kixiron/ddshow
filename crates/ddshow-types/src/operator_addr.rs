@@ -1,18 +1,18 @@
 //! The [`OperatorAddr`] type
 
 use crate::ids::{OperatorId, PortId};
-#[cfg(feature = "rkyv")]
-use _rkyv::{
-    Archive, Archived, Deserialize as RkyvDeserialize, Fallible, Resolver,
-    Serialize as RkyvSerialize,
-};
-#[cfg(feature = "serde")]
-use _serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 #[cfg(feature = "enable_abomonation")]
 use abomonation::Abomonation;
 use bytecheck::handle_error;
 #[cfg(feature = "rkyv")]
 use bytecheck::{CheckBytes, StructCheckError};
+#[cfg(feature = "rkyv")]
+use rkyv_dep::{
+    Archive, Archived, Deserialize as RkyvDeserialize, Fallible, Resolver,
+    Serialize as RkyvSerialize,
+};
+#[cfg(feature = "serde")]
+use serde_dep::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 #[cfg(feature = "enable_abomonation")]
 use std::io;
 use std::{
@@ -28,7 +28,7 @@ use tinyvec::{ArrayVec, TinyVec};
 // TODO: Change this to use `OperatorId` instead of `usize`
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "_serde", transparent))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep", transparent))]
 #[repr(transparent)]
 pub struct OperatorAddr {
     addr: TinyVec<[OperatorId; 8]>,
@@ -240,7 +240,7 @@ where
         let bytes = value.cast::<u8>();
         <Archived<Vec<OperatorId>> as CheckBytes<C>>::check_bytes(
             bytes
-                .add(_rkyv::offset_of!(ArchivedOperatorAddr, addr))
+                .add(rkyv_dep::offset_of!(ArchivedOperatorAddr, addr))
                 .cast(),
             context,
         )
@@ -273,7 +273,7 @@ where
         self.addr.to_vec().resolve(
             pos,
             resolver.addr,
-            _rkyv::project_struct!(out: Self::Archived => addr: Archived<Vec<OperatorId>>),
+            rkyv_dep::project_struct!(out: Self::Archived => addr: Archived<Vec<OperatorId>>),
         );
     }
 }

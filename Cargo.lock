@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "ddshow"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "abomonation",
  "abomonation_derive",
@@ -304,7 +304,7 @@ dependencies = [
 
 [[package]]
 name = "ddshow-sink"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytecheck",
  "byteorder",
@@ -317,7 +317,7 @@ dependencies = [
 
 [[package]]
 name = "ddshow-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "abomonation",
  "abomonation_derive",
