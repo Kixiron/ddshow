@@ -191,7 +191,7 @@ svg.selectAll("g.edgePath")
 
         let html = `channel from ${src_name} to ${dest_name}`;
 
-        const channel_stats = channel_messages.find(stats => edge.channel_path.includes(stats.channel));
+        const channel_stats = channel_messages.find(stats => edge.channel_id === stats.channel);
         if (channel_stats) {
             html += `<br>Carried ${channel_stats.messages} messages and \
                 ${channel_stats.capability_updates} capability updates`;

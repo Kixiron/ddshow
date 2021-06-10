@@ -55,6 +55,10 @@ For basic usage
 
 ![](https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow-large.png)
 
+![](https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow-sift-leaves.png)
+
+![](https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow-operator-addrs.png)
+
 ![](https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow.png)
 
 ![](https://raw.githubusercontent.com/Kixiron/ddshow/master/assets/ddshow-tooltip.png)
@@ -71,7 +75,8 @@ Another common problem is a mismatch of timely versions. Because of how [`abomon
 (used for sending events) works, the structure of events isn't consistent across timely versions
 (and even different `rustc` invocations) which can cause errors, incompatibilities and silent
 failures. The only known solution for this is to make sure ddshow and the target program use
-the same versions of timely and ddflow, but I'm working on a more stable solution.
+the same versions of timely and ddflow or to use the `ddshow-sink` crate which has stable and
+FFI-safe versions of the timely logging types.
 
 When looking for Differential Dataflow insights, make sure you have this (or an equivalent)
 snippet somewhere within your code in order to forward Differential Dataflow logs

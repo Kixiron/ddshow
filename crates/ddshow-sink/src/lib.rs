@@ -6,22 +6,44 @@ pub use writer::EventWriter;
 
 #[cfg(feature = "ddflow")]
 use ddshow_types::differential_logging::DifferentialEvent;
-use ddshow_types::{progress_logging::TimelyProgressEvent, timely_logging::TimelyEvent, WorkerId};
+use ddshow_types::{timely_logging::TimelyEvent, WorkerId};
 #[cfg(feature = "ddflow")]
 use differential_dataflow::logging::DifferentialEvent as RawDifferentialEvent;
 use std::{
     any::Any,
     fs::{self, File},
     io::{self, BufWriter, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
-use timely::{
-    communication::Allocate,
-    logging::{TimelyEvent as RawTimelyEvent, TimelyProgressEvent as RawTimelyProgressEvent},
-    worker::Worker,
-};
+use timely::{communication::Allocate, logging::TimelyEvent as RawTimelyEvent, worker::Worker};
 
 // TODO: Allow configuring what events are saved and support compression
+
+/// The name of the timely log stream for timely events
+pub const TIMELY_LOGGER_NAME: &str = "timely";
+
+/// The name of the timely log stream for differential arrangement events
+pub const DIFFERENTIAL_ARRANGEMENT_LOGGER_NAME: &str = "differential/arrange";
+
+// /// The name of the timely log stream for timely progress events
+// pub const TIMELY_PROGRESS_LOGGER_NAME: &str = "timely/progress";
+
+/// The file that all timely events will be stored in
+pub const TIMELY_LOG_FILE: &str = "timely";
+
+/// The file that all differential arrangement events will be stored in
+pub const DIFFERENTIAL_ARRANGEMENT_LOG_FILE: &str = "differential";
+
+// /// The file that all timely progress events will be stored in
+// pub const TIMELY_PROGRESS_LOG_FILE: &str = "timely-progress";
+
+/// Constructs the path to a logging file for the given worker
+pub fn log_file_path<A>(worker: &Worker<A>, file_prefix: &str, dir: &Path) -> PathBuf
+where
+    A: Allocate,
+{
+    dir.join(format!("{}.worker-{}.ddshow", file_prefix, worker.index()))
+}
 
 /// Writes all timely event logs to the given writer
 ///
@@ -59,8 +81,9 @@ where
     #[cfg(feature = "tracing")]
     _tracing::info!(
         worker = worker.index(),
-        logging_stream = "timely",
-        "installing a timely event logger on worker {}",
+        logging_stream = TIMELY_LOGGER_NAME,
+        "installing a {} event logger on worker {}",
+        TIMELY_LOGGER_NAME,
         worker.index(),
     );
 
@@ -69,7 +92,9 @@ where
 
     worker
         .log_register()
-        .insert::<RawTimelyEvent, _>("timely", move |time, data| logger.publish_batch(time, data))
+        .insert::<RawTimelyEvent, _>(TIMELY_LOGGER_NAME, move |time, data| {
+            logger.publish_batch(time, data)
+        })
 }
 
 pub fn save_timely_logs_to_disk<P, A>(
@@ -81,15 +106,20 @@ where
     A: Allocate,
 {
     let directory = directory.as_ref();
-    let path = directory.join(format!("timely.worker-{}.ddshow", worker.index()));
+    let path = directory.join(format!(
+        "{}.worker-{}.ddshow",
+        TIMELY_LOG_FILE,
+        worker.index()
+    ));
 
     #[cfg(feature = "tracing")]
     _tracing::info!(
         worker = worker.index(),
-        logging_stream = "timely",
+        logging_stream = TIMELY_LOGGER_NAME,
         directory = ?directory,
         path = ?path,
-        "installing a disk backed timely event logger on worker {} pointed at {}",
+        "installing a disk backed {} event logger on worker {} pointed at {}",
+        TIMELY_LOGGER_NAME,
         worker.index(),
         path.display(),
     );
@@ -136,7 +166,7 @@ where
     #[cfg(feature = "tracing")]
     _tracing::info!(
         worker = worker.index(),
-        logging_stream = "differential/arrange",
+        logging_stream = DIFFERENTIAL_ARRANGEMENT_LOGGER_NAME,
         "installing a differential event logger on worker {}",
         worker.index(),
     );
@@ -145,7 +175,7 @@ where
         BatchLogger::new(EventWriter::new(writer));
 
     worker.log_register().insert::<RawDifferentialEvent, _>(
-        "differential/arrange",
+        DIFFERENTIAL_ARRANGEMENT_LOGGER_NAME,
         move |time, data| {
             logger.publish_batch(time, data);
         },
@@ -161,15 +191,20 @@ where
     A: Allocate,
 {
     let directory = directory.as_ref();
-    let path = directory.join(format!("differential.worker-{}.ddshow", worker.index()));
+    let path = directory.join(format!(
+        "{}.worker-{}.ddshow",
+        DIFFERENTIAL_ARRANGEMENT_LOG_FILE,
+        worker.index()
+    ));
 
     #[cfg(feature = "tracing")]
     _tracing::info!(
         worker = worker.index(),
-        logging_stream = "differential/arrange",
+        logging_stream = DIFFERENTIAL_ARRANGEMENT_LOGGER_NAME,
         directory = ?directory,
         path = ?path,
-        "installing a disk backed differential event logger on worker {} pointed at {}",
+        "installing a disk backed {} event logger on worker {} pointed at {}",
+        DIFFERENTIAL_ARRANGEMENT_LOGGER_NAME,
         worker.index(),
         path.display(),
     );
@@ -179,6 +214,7 @@ where
     Ok(enable_differential_logging(worker, writer))
 }
 
+/*
 pub fn enable_timely_progress_logging<A, W>(
     worker: &mut Worker<A>,
     writer: W,
@@ -190,8 +226,9 @@ where
     #[cfg(feature = "tracing")]
     _tracing::info!(
         worker = worker.index(),
-        logging_stream = "timely/progress",
-        "installing a timely progress logger on worker {}",
+        logging_stream = TIMELY_PROGRESS_LOGGER_NAME,
+        "installing a {} logger on worker {}",
+        TIMELY_PROGRESS_LOGGER_NAME,
         worker.index(),
     );
 
@@ -200,7 +237,7 @@ where
 
     worker
         .log_register()
-        .insert::<RawTimelyProgressEvent, _>("timely/progress", move |time, data| {
+        .insert::<RawTimelyProgressEvent, _>(TIMELY_PROGRESS_LOGGER_NAME, move |time, data| {
             logger.publish_batch(time, data)
         })
 }
@@ -214,15 +251,20 @@ where
     A: Allocate,
 {
     let directory = directory.as_ref();
-    let path = directory.join(format!("timely-progress.worker-{}.ddshow", worker.index()));
+    let path = directory.join(format!(
+        "{}.worker-{}.ddshow",
+        TIMELY_PROGRESS_LOG_FILE,
+        worker.index()
+    ));
 
     #[cfg(feature = "tracing")]
     _tracing::info!(
         worker = worker.index(),
-        logging_stream = "timely/progress",
+        logging_stream = TIMELY_PROGRESS_LOGGER_NAME,
         directory = ?directory,
         path = ?path,
-        "installing a disk backed timely progress logger on worker {} pointed at {}",
+        "installing a disk backed {} logger on worker {} pointed at {}",
+        TIMELY_PROGRESS_LOGGER_NAME,
         worker.index(),
         path.display(),
     );
@@ -231,3 +273,4 @@ where
     let writer = BufWriter::new(File::create(path)?);
     Ok(enable_timely_progress_logging(worker, writer))
 }
+*/

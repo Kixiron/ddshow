@@ -10,20 +10,25 @@ use crate::{
     args::Args,
     colormap::{select_color, Color},
     dataflow::{
-        constants::PROGRESS_DISK_LOG_FILE,
+        // constants::PROGRESS_DISK_LOG_FILE,
         operators::{EventIterator, Fuel, InspectExt, ReplayWithShutdown},
-        Channel, DataflowData, DataflowSenders, OperatorStats, DIFFERENTIAL_DISK_LOG_FILE,
-        TIMELY_DISK_LOG_FILE,
+        Channel,
+        DataflowData,
+        DataflowSenders,
+        OperatorStats,
     },
     network::{acquire_replay_sources, wait_for_input, ReplaySource},
     ui::{ActivationDuration, DDShowStats, EdgeKind, Lifespan, TimelineEvent},
 };
 use anyhow::{Context, Result};
+use ddshow_sink::{DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE};
 use ddshow_types::{
     differential_logging::DifferentialEvent,
-    progress_logging::TimelyProgressEvent,
+    // progress_logging::TimelyProgressEvent,
     timely_logging::{OperatesEvent, TimelyEvent},
-    OperatorAddr, OperatorId, WorkerId,
+    OperatorAddr,
+    OperatorId,
+    WorkerId,
 };
 use differential_dataflow::{logging::DifferentialEvent as RawDifferentialEvent, Data};
 use std::{
@@ -67,7 +72,7 @@ fn main() -> Result<()> {
         args.timely_connections,
         args.workers,
         args.replay_logs.as_deref(),
-        TIMELY_DISK_LOG_FILE,
+        TIMELY_LOG_FILE,
         "Timely",
     )?;
 
@@ -78,7 +83,7 @@ fn main() -> Result<()> {
             args.timely_connections,
             args.workers,
             args.replay_logs.as_deref(),
-            DIFFERENTIAL_DISK_LOG_FILE,
+            DIFFERENTIAL_ARRANGEMENT_LOG_FILE,
             "Differential",
         )?)
     } else {
@@ -91,34 +96,36 @@ fn main() -> Result<()> {
         });
 
     // Connect to the progress sources
-    let progress_event_receivers = if args.progress_enabled {
-        Some(acquire_replay_sources::<
-            _,
-            (Duration, WorkerId, TimelyProgressEvent),
-            (Duration, WorkerId, TimelyProgressEvent),
-        >(
-            args.progress_address,
-            args.timely_connections,
-            args.workers,
-            args.replay_logs.as_deref(),
-            PROGRESS_DISK_LOG_FILE,
-            "Progress",
-        )?)
-    } else {
-        None
-    };
-    let are_progress_sources = progress_event_receivers
-        .as_ref()
-        .map_or(true, |&(_, are_progress_sources)| are_progress_sources);
+    // let progress_event_receivers = if args.progress_enabled {
+    //     Some(acquire_replay_sources::<
+    //         _,
+    //         (Duration, WorkerId, TimelyProgressEvent),
+    //         (Duration, WorkerId, TimelyProgressEvent),
+    //     >(
+    //         args.progress_address,
+    //         args.timely_connections,
+    //         args.workers,
+    //         args.replay_logs.as_deref(),
+    //         TIMELY_PROGRESS_LOG_FILE,
+    //         "Progress",
+    //     )?)
+    // } else {
+    //     None
+    // };
+    // let are_progress_sources = progress_event_receivers
+    //     .as_ref()
+    //     .map_or(true, |&(_, are_progress_sources)| are_progress_sources);
 
     // If no replay sources were provided, exit early
-    if !are_timely_sources || !are_differential_sources || !are_progress_sources {
+    if !are_timely_sources || !are_differential_sources
+    /* || !are_progress_sources */
+    {
         tracing::warn!(
             are_timely_sources = are_timely_sources,
             are_differential_sources = are_differential_sources,
             differential_enabled = args.differential_enabled,
-            are_progress_sources = are_progress_sources,
-            progress_enabled = args.progress_enabled,
+            // are_progress_sources = are_progress_sources,
+            // progress_enabled = args.progress_enabled,
             "no replay sources were provided",
         );
 
@@ -172,11 +179,11 @@ fn main() -> Result<()> {
                 .expect("failed to receive differential event traces")
         });
 
-        let progress_traces = progress_event_receivers.as_ref().map(|(recv, _)| {
-            recv[worker.index()]
-                .recv()
-                .expect("failed to receive progress traces")
-        });
+        // let progress_traces = progress_event_receivers.as_ref().map(|(recv, _)| {
+        //     recv[worker.index()]
+        //         .recv()
+        //         .expect("failed to receive progress traces")
+        // });
 
         let dataflow_id = worker.next_dataflow_index();
         let probe = worker.dataflow_named("DDShow Analysis Dataflow", |scope| {
@@ -236,30 +243,30 @@ fn main() -> Result<()> {
                 }
             });
 
-            let span =
-                tracing::info_span!("replay timely progress logs", worker_id = scope.index());
-            let progress_stream = span.in_scope(|| {
-                if let Some(traces) = progress_traces {
-                    let stream = match traces {
-                        ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
-                            "Progress Replay",
-                            scope,
-                            replay_shutdown.clone(),
-                            fuel,
-                        ),
-
-                        ReplaySource::Abomonation(_) => anyhow::bail!(
-                            "Timely progress logging is only supported with rkyv sources",
-                        ),
-                    }
-                    .debug_inspect(move |x| tracing::trace!("progress event: {:?}", x));
-
-                    Ok(Some(stream))
-                } else {
-                    tracing::trace!("no progress sources were provided");
-                    Ok(None)
-                }
-            })?;
+            // let span =
+            //     tracing::info_span!("replay timely progress logs", worker_id = scope.index());
+            // let progress_stream = span.in_scope(|| {
+            //     if let Some(traces) = progress_traces {
+            //         let stream = match traces {
+            //             ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
+            //                 "Progress Replay",
+            //                 scope,
+            //                 replay_shutdown.clone(),
+            //                 fuel,
+            //             ),
+            //
+            //             ReplaySource::Abomonation(_) => anyhow::bail!(
+            //                 "Timely progress logging is only supported with rkyv sources",
+            //             ),
+            //         }
+            //         .debug_inspect(move |x| tracing::trace!("progress event: {:?}", x));
+            //
+            //         Ok(Some(stream))
+            //     } else {
+            //         tracing::trace!("no progress sources were provided");
+            //         Ok(None)
+            //     }
+            // })?;
 
             let span = tracing::info_span!("dataflow construction", worker_id = scope.index());
             span.in_scope(|| {
@@ -268,7 +275,7 @@ fn main() -> Result<()> {
                     &*args,
                     &timely_stream,
                     differential_stream.as_ref(),
-                    progress_stream.as_ref(),
+                    None, // progress_stream.as_ref(),
                     senders.clone(),
                 )
             })
@@ -353,9 +360,7 @@ fn main() -> Result<()> {
     }
 
     let mut edge_events = data.edges;
-    edge_events.sort_unstable_by_key(|(worker, _, channel, _)| {
-        (*worker, channel.channel_path().into_owned())
-    });
+    edge_events.sort_unstable_by_key(|(worker, _, channel, _)| (*worker, channel.channel_id()));
     tracing::debug!("finished extracting {} edge events", edge_events.len());
 
     let (max_time, min_time) = (
@@ -447,25 +452,16 @@ fn main() -> Result<()> {
     let html_edges: Vec<_> = edge_events
         // .clone()
         .into_iter()
-        .map(
-            |(
-                worker,
-                OperatesEvent { addr: src, .. },
-                channel,
-                OperatesEvent { addr: dest, .. },
-            )| {
-                ui::Edge {
-                    src,
-                    dest,
-                    worker,
-                    channel_path: channel.channel_path().into_owned(),
-                    edge_kind: match channel {
-                        Channel::Normal { .. } => EdgeKind::Normal,
-                        Channel::ScopeCrossing { .. } => EdgeKind::Crossing,
-                    },
-                }
+        .map(|(worker, _, channel, _)| ui::Edge {
+            src: channel.source_addr(),
+            dest: channel.target_addr(),
+            worker,
+            channel_id: channel.channel_id(),
+            edge_kind: match channel {
+                Channel::Normal { .. } => EdgeKind::Normal,
+                Channel::ScopeCrossing { .. } => EdgeKind::Crossing,
             },
-        )
+        })
         .collect();
 
     let mut palette_colors = Vec::with_capacity(10);
@@ -587,7 +583,7 @@ fn dump_program_json(
         arrangements: Vec::new(),
         events,
         differential_enabled: args.differential_enabled,
-        progress_enabled: args.progress_enabled,
+        progress_enabled: false, // args.progress_enabled,
         ddshow_version: DDSHOW_VERSION.to_string(),
     };
 

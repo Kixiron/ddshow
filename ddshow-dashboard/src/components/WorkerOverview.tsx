@@ -14,8 +14,13 @@ import {
 } from "@material-ui/core";
 import React from "react";
 import { Tooltip } from "@visx/tooltip";
-import Gantt from "./Gantt";
-import { Duration, OperatorAddr, WorkerStats, TimelineEvent } from "../App";
+// import Gantt from "./Gantt";
+import {
+    Duration,
+    OperatorAddr,
+    WorkerStats,
+    TimelineEvent,
+} from "../DDShowData";
 
 const useStyles = makeStyles(theme =>
     createStyles({
@@ -132,6 +137,7 @@ export default function WorkerOverview(props: WorkerOverviewProps) {
                     xs={12}
                     key="worker-card-grid-gantt-overview"
                 >
+                    {/*
                     <Gantt
                         width={1000}
                         height={1000}
@@ -141,6 +147,7 @@ export default function WorkerOverview(props: WorkerOverviewProps) {
                             tooltip_color: classes.gantt_tooltip,
                         }}
                     />
+                    */}
                 </Grid>
             </Grid>
         </Container>

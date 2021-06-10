@@ -56,6 +56,14 @@ export function partition_events_by_worker(
     return partitioned;
 }
 
+export function collect_root_dataflows(data: DDShowStats | null): OperatorId[] {
+    return data
+        ? data.nodes
+              .filter(node => node.kind === "Dataflow")
+              .map(node => node.id)
+        : [];
+}
+
 export function total_workers(data: DDShowStats | null): number {
     return data ? data.program.workers : 0;
 }

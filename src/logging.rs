@@ -27,9 +27,10 @@ pub(crate) fn init_dataflow_logging<A>(worker: &mut Worker<A>) -> Result<()>
 where
     A: Allocate,
 {
-    let (differential_log_addr, timely_disk_log, differential_disk_log) = (
+    let (differential_log_addr, timely_disk_log, _progress_disk_log, differential_disk_log) = (
         env::var("DIFFERENTIAL_LOG_ADDR"),
         env::var("TIMELY_DISK_LOG"),
+        env::var("TIMELY_PROGRESS_DISK_LOG"),
         env::var("DIFFERENTIAL_DISK_LOG"),
     );
 
@@ -50,6 +51,13 @@ where
                 tracing::info!("saving timely logs to {}", dir);
             }
         }
+
+        // if let Ok(dir) = progress_disk_log {
+        //     if !dir.is_empty() {
+        //         ddshow_sink::save_timely_progress_to_disk(worker, &dir).unwrap();
+        //         tracing::info!("saving timely progress logs to {}", dir);
+        //     }
+        // }
 
         if let Ok(dir) = differential_disk_log {
             if !dir.is_empty() {

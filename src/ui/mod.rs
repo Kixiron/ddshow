@@ -560,7 +560,7 @@ pub struct Edge {
     pub src: OperatorAddr,
     pub dest: OperatorAddr,
     pub worker: WorkerId,
-    pub channel_path: OperatorAddr,
+    pub channel_id: ChannelId,
     pub edge_kind: EdgeKind,
 }
 

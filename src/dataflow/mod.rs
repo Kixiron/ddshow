@@ -14,7 +14,7 @@ mod tests;
 mod timely_source;
 mod worker_timeline;
 
-pub use constants::{DIFFERENTIAL_DISK_LOG_FILE, PROGRAM_NS_GRANULARITY, TIMELY_DISK_LOG_FILE};
+pub use constants::PROGRAM_NS_GRANULARITY;
 pub use operator_stats::OperatorStats;
 pub use progress_stats::Channel;
 pub use send_recv::{DataflowData, DataflowExtractor, DataflowReceivers, DataflowSenders};
@@ -32,7 +32,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
-use ddshow_sink::EventWriter;
+use ddshow_sink::{EventWriter, DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE};
 use ddshow_types::{
     differential_logging::DifferentialEvent,
     progress_logging::TimelyProgressEvent,
@@ -149,8 +149,9 @@ where
         timeline_event_stream,
     ) = timely_source::extract_timely_info(scope, timely_stream, args.disable_timeline);
 
-    let total_channel_messages = progress_stream
-        .map(|progress_stream| progress_stats::aggregate_channel_messages(scope, progress_stream));
+    let total_channel_messages = progress_stream.map(|progress_stream| {
+        progress_stats::aggregate_channel_messages(scope, progress_stream, &raw_channels)
+    });
 
     // FIXME: `invocations` looks off, figure that out
     let operator_stats =
@@ -567,7 +568,7 @@ where
     // Create the directory for log files to go to
     fs::create_dir_all(&save_logs).context("failed to create `--save-logs` directory")?;
 
-    let timely_path = log_file_path(TIMELY_DISK_LOG_FILE, save_logs, scope.index());
+    let timely_path = log_file_path(TIMELY_LOG_FILE, save_logs, scope.index());
 
     tracing::debug!(
         "installing timely file sink on worker {} pointed at {}",
@@ -584,7 +585,8 @@ where
         .capture_into(EventWriter::new(timely_file));
 
     if let Some(differential_stream) = differential_stream {
-        let differential_path = log_file_path(DIFFERENTIAL_DISK_LOG_FILE, save_logs, scope.index());
+        let differential_path =
+            log_file_path(DIFFERENTIAL_ARRANGEMENT_LOG_FILE, save_logs, scope.index());
 
         tracing::debug!(
             "installing differential file sink on worker {} pointed at {}",

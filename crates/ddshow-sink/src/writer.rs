@@ -1,7 +1,6 @@
 use bytecheck::CheckBytes;
 use ddshow_types::Event;
 use rkyv::{
-    check_archived_root,
     ser::{serializers::AlignedSerializer, Serializer},
     validation::DefaultArchiveValidator,
     AlignedVec, Serialize,
@@ -74,13 +73,6 @@ where
             .unwrap_or_else(|unreachable| match unreachable {});
 
         let archive_len = serializer.pos() as u128;
-        #[cfg(feature = "tracing")]
-        _tracing::trace!(
-            check_result = ?check_archived_root::<Event<T, D>>(&self.buffer).map(|_| ()),
-            "made an archive of length {}",
-            archive_len,
-        );
-
         let result = self
             .stream
             // This will keep 16-byte alignment because archive_len is a u128

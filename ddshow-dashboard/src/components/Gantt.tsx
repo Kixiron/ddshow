@@ -1,4 +1,6 @@
-import React from "react";
+export {};
+
+/*import React from "react";
 import * as d3 from "d3";
 import { Tooltip } from "@visx/tooltip";
 import { AxisDomain } from "d3";
@@ -75,7 +77,7 @@ export default class Gantt<
                         </div>
 
                         <div>
-                            {/* FIXME: Pretty durations & more info */}
+                            {/ * FIXME: Pretty durations & more info * /}
                             {this.state.tooltip_data.data.end -
                                 this.state.tooltip_data.data.start}
                         </div>
@@ -226,4 +228,4 @@ export default class Gantt<
             }),
         );
     }
-}
+}*/

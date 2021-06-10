@@ -70,8 +70,21 @@ impl OperatorAddr {
         self.addr.push(OperatorId::new(segment.into_inner()));
     }
 
+    pub fn push_imm(&self, elem: PortId) -> Self {
+        let mut this = self.clone();
+        this.push(elem);
+        this
+    }
+
     pub fn pop(&mut self) -> Option<OperatorId> {
         self.addr.pop()
+    }
+
+    pub fn pop_imm(&self) -> (Self, Option<OperatorId>) {
+        let mut this = self.clone();
+        let popped = this.pop();
+
+        (this, popped)
     }
 
     pub fn as_slice(&self) -> &[OperatorId] {

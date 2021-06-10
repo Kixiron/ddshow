@@ -45,7 +45,9 @@ import {
     DDShowStats,
     get_totals,
     partition_events_by_worker,
+    collect_root_dataflows,
 } from "./DDShowData";
+import Dataflows from "./components/Dataflows";
 
 const menu_width = 240;
 const useStyles = makeStyles(theme => ({
@@ -115,6 +117,9 @@ export default function App() {
     );
     const [data, set_data] = React.useState<DDShowStats | null>(null);
 
+    // TODO: Don't fill things with defaults, just set the widgets
+    //       to their "loading" state when data isn't available yet
+    // TODO: Probably want to memoize calculated data
     const [
         workers,
         nodes,
@@ -125,8 +130,9 @@ export default function App() {
         arrangements,
         events,
     ] = get_totals(data);
-    let worker_stats = data ? data.workers : [];
-    let worker_events = partition_events_by_worker(data);
+    const worker_stats = data ? data.workers : [];
+    const worker_events = partition_events_by_worker(data);
+    const root_dataflows = collect_root_dataflows(data);
 
     return (
         <ThemeProvider theme={theme}>
@@ -178,7 +184,14 @@ export default function App() {
                         />
                     </Route>
 
-                    <Route path="/dataflows"></Route>
+                    <Route path="/dataflows">
+                        <Dataflows
+                            root_dataflows={root_dataflows}
+                            nodes={data ? data.nodes : []}
+                            channels={data ? data.channels : []}
+                            arrangements={data ? data.arrangements : []}
+                        />
+                    </Route>
 
                     <Route path="/operators"></Route>
 

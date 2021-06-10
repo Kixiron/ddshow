@@ -3,7 +3,9 @@ use crate::dataflow::{
     send_recv::ChannelAddrs,
     Channel, FilterMap, Multiply,
 };
-use ddshow_types::{timely_logging::ChannelsEvent, OperatorAddr, OperatorId, PortId, WorkerId};
+use ddshow_types::{
+    timely_logging::ChannelsEvent, ChannelId, OperatorAddr, OperatorId, PortId, WorkerId,
+};
 use differential_dataflow::{
     difference::Abelian,
     lattice::Lattice,
@@ -67,7 +69,7 @@ where
             )
         });
 
-        let channels_arranged = channels.arrange_by_key_named("ArrangeByKey: Subgraph Channels");
+        let channels_forward = channels.arrange_by_key_named("ArrangeByKey: Subgraph Channels");
         let channels_reverse = channels
             .map(
                 |((worker, source_addr, src_channel), ((target_addr, target_channel), path))| {
@@ -82,7 +84,7 @@ where
         let propagated_channels =
             channels.iterate_named("Propagate Channels Over Scope Boundaries", |links| {
                 let (channels_arranged, channels_reverse) = (
-                    channels_arranged.enter(&links.scope()),
+                    channels_forward.enter(&links.scope()),
                     channels_reverse.enter(&links.scope()),
                 );
 
@@ -148,7 +150,7 @@ where
                 )| {
                     if channel_path.len() >= 2 {
                         let channel = Channel::ScopeCrossing {
-                            channel_path,
+                            channel_id: ChannelId::new(channel_path[0].into_inner()),
                             source_addr,
                             target_addr,
                         };

@@ -366,9 +366,7 @@ where
         activation_duration_stream.as_collection().delay(granulate),
         operator_creation_stream.as_collection().delay(granulate),
         channel_creation_stream.as_collection().delay(granulate),
-        // FIXME: This isn't granulated since I have no idea what depends
-        //       on the timestamp being the event time
-        raw_channels_stream.as_collection(),
+        raw_channels_stream.as_collection().delay(granulate),
         // FIXME: This isn't granulated since I have no idea what depends
         //       on the timestamp being the event time
         raw_operators_stream.as_collection(),
