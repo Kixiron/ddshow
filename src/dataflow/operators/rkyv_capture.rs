@@ -8,7 +8,6 @@ use rkyv::{
     validation::DefaultArchiveValidator, AlignedVec, Archive, Deserialize,
 };
 use std::{
-    cmp,
     convert::TryInto,
     fmt::Debug,
     io::{self, Read},
@@ -64,22 +63,8 @@ where
 
         // Align to read
         let alignment_offset = match self.consumed & 15 {
-            0 => {
-                tracing::trace!("stream is already aligned");
-                0
-            }
-
-            x => {
-                let padding = 16 - x;
-                tracing::trace!(
-                    padding_bytes = ?&self.buffer1[self.consumed..cmp::min(self.buffer1.len(), self.consumed + padding)],
-                    padding_is_zeroed = self.buffer1[self.consumed..cmp::min(self.buffer1.len(), self.consumed + padding)].iter().all(|&x| x == 0),
-                    "skipping {} padding bytes to align to 16",
-                    padding,
-                );
-
-                padding
-            }
+            0 => 0,
+            x => 16 - x,
         };
         let consumed = self.consumed + alignment_offset;
 
@@ -88,11 +73,6 @@ where
             .get(consumed..consumed + mem::size_of::<u128>())
         {
             let archive_length = u128::from_le_bytes(header_slice.try_into().unwrap()) as usize;
-            tracing::trace!(
-                header_bytes = ?header_slice,
-                archive_length = archive_length,
-                "read message header",
-            );
 
             let archive_start = consumed + mem::size_of::<u128>();
 
@@ -100,11 +80,6 @@ where
                 .buffer1
                 .get(archive_start..archive_start + archive_length)
             {
-                tracing::trace!(
-                    archive_bytes = ?slice,
-                    "read archive bytes",
-                );
-
                 // let archive = unsafe { archived_root::<Event<T, D>>(slice) };
                 // let event = archive
                 //     .deserialize(&mut AllocDeserializer)
@@ -120,18 +95,6 @@ where
                             .unwrap_or_else(|unreachable| match unreachable {})
                             .into();
 
-                        tracing::trace!(
-                            consumed = self.consumed,
-                            alignment_offset = alignment_offset,
-                            archive_length = archive_length,
-                            header_size = mem::size_of::<u128>(),
-                            new_consumed = self.consumed
-                                + alignment_offset
-                                + archive_length
-                                + mem::size_of::<u128>(),
-                            event = ?event,
-                            "successfully unarchived event",
-                        );
                         self.consumed += alignment_offset + archive_length + mem::size_of::<u128>();
 
                         return Ok(Some(event));
@@ -162,23 +125,12 @@ where
                         panic!("failed to check archived event: {:?}", err);
                     }
                 }
-            } else {
-                tracing::trace!(
-                    archive_length = archive_length,
-                    requested_range = ?(archive_start..archive_start + archive_length),
-                    consumed = consumed,
-                    buffer_length = self.buffer1.len(),
-                    remaining_bytes = self.buffer1.len() - consumed + mem::size_of::<u128>(),
-                    "failed to get archive bytes",
-                );
             }
         }
 
         // if we exhaust data we should shift back while preserving our alignment
         // of 16 bytes
         if self.consumed > 15 {
-            tracing::trace!(consumed = self.consumed, "swapping buffers");
-
             self.buffer2.clear();
             self.buffer2
                 .extend_from_slice(&self.buffer1[self.consumed & !15..]);
@@ -188,8 +140,6 @@ where
         }
 
         if let Ok(len) = self.reader.read(&mut self.bytes[..]) {
-            tracing::trace!(num_bytes = len, "read {} bytes from input stream", len);
-
             if len == 0 {
                 self.peer_finished = true;
             }

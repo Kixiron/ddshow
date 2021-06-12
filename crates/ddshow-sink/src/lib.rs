@@ -25,8 +25,8 @@ pub const TIMELY_LOGGER_NAME: &str = "timely";
 /// The name of the timely log stream for differential arrangement events
 pub const DIFFERENTIAL_ARRANGEMENT_LOGGER_NAME: &str = "differential/arrange";
 
-// /// The name of the timely log stream for timely progress events
-// pub const TIMELY_PROGRESS_LOGGER_NAME: &str = "timely/progress";
+/// The name of the timely log stream for timely progress events
+pub const TIMELY_PROGRESS_LOGGER_NAME: &str = "timely/progress";
 
 /// The file that all timely events will be stored in
 pub const TIMELY_LOG_FILE: &str = "timely";
@@ -34,8 +34,8 @@ pub const TIMELY_LOG_FILE: &str = "timely";
 /// The file that all differential arrangement events will be stored in
 pub const DIFFERENTIAL_ARRANGEMENT_LOG_FILE: &str = "differential";
 
-// /// The file that all timely progress events will be stored in
-// pub const TIMELY_PROGRESS_LOG_FILE: &str = "timely-progress";
+/// The file that all timely progress events will be stored in
+pub const TIMELY_PROGRESS_LOG_FILE: &str = "timely-progress";
 
 /// Constructs the path to a logging file for the given worker
 pub fn log_file_path<A>(worker: &Worker<A>, file_prefix: &str, dir: &Path) -> PathBuf

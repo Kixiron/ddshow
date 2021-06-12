@@ -1,7 +1,7 @@
 use crate::dataflow::{
     constants::EVENT_NS_MARGIN,
     operators::{FilterSplit, Multiply, Split},
-    Diff, DifferentialLogBundle,
+    utils::{Diff, DifferentialLogBundle},
 };
 use abomonation_derive::Abomonation;
 use ddshow_types::{

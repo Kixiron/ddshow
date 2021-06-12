@@ -1,6 +1,7 @@
 use crate::dataflow::{
     operators::{Max, Min},
-    Diff, DifferentialLogBundle, FilterMap,
+    utils::{Diff, DifferentialLogBundle},
+    FilterMap,
 };
 use abomonation_derive::Abomonation;
 use ddshow_types::{differential_logging::DifferentialEvent, OperatorId, WorkerId};

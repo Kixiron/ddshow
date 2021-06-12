@@ -1,6 +1,6 @@
 use crate::{
     dataflow::{
-        granulate,
+        utils::granulate,
         worker_timeline::{process_timely_event, EventProcessor, TimelineEventStream},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelyLogBundle,
         WorkerId,

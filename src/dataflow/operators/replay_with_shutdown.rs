@@ -1,5 +1,6 @@
 use crate::dataflow::{constants::DEFAULT_REACTIVATION_DELAY, operators::util::Fuel};
 use abomonation::Abomonation;
+use indicatif::ProgressBar;
 use std::{
     convert::identity,
     io::{self, Read, Write},
@@ -152,6 +153,7 @@ where
             is_running,
             Fuel::unlimited(),
             DEFAULT_REACTIVATION_DELAY,
+            None,
         )
     }
 
@@ -161,6 +163,7 @@ where
         scope: &mut S,
         is_running: Arc<AtomicBool>,
         fuel: Fuel,
+        progress_bar: Option<ProgressBar>,
     ) -> Stream<S, D>
     where
         Self: Sized,
@@ -173,6 +176,7 @@ where
             is_running,
             fuel,
             DEFAULT_REACTIVATION_DELAY,
+            progress_bar,
         )
     }
 
@@ -183,6 +187,7 @@ where
         is_running: Arc<AtomicBool>,
         fuel: Fuel,
         reactivation_delay: Duration,
+        progress_bar: Option<ProgressBar>,
     ) -> Stream<S, D>
     where
         N: Into<String>,
@@ -203,11 +208,16 @@ where
         is_running: Arc<AtomicBool>,
         mut fuel: Fuel,
         reactivation_delay: Duration,
+        progress_bar: Option<ProgressBar>,
     ) -> Stream<S, D>
     where
         N: Into<String>,
         S: Scope<Timestamp = T>,
     {
+        if let Some(bar) = progress_bar.as_ref() {
+            bar.tick();
+        }
+
         let worker_index = scope.index();
         let mut builder = OperatorBuilder::new(name.into(), scope.clone());
         builder.set_notify(false);
@@ -222,6 +232,10 @@ where
 
         let mut antichain = MutableAntichain::new();
         let (mut started, mut streams_finished) = (false, vec![false; event_streams.len()]);
+
+        if let Some(bar) = progress_bar.as_ref() {
+            bar.tick();
+        }
 
         builder.build(move |progress| {
             if !started {
@@ -260,6 +274,12 @@ where
                             Event::Messages(time, mut data) => {
                                 // Exert effort for each record we receive
                                 fuel.exert(data.len());
+
+                                // Update the progress bar with the number of messages we've ingested
+                                if let Some(bar) = progress_bar.as_ref() {
+                                    bar.inc_length(data.len() as u64);
+                                    bar.inc(data.len() as u64);
+                                }
 
                                 output.session(&time).give_vec(&mut data);
                             }
@@ -346,6 +366,12 @@ where
                     }
 
                     antichain.update_iter(elements);
+                }
+
+                if let Some(bar) = progress_bar.as_ref() {
+                    if started {
+                        bar.finish_using_style();
+                    }
                 }
 
                 // Tell timely we're completely done

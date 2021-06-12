@@ -1,9 +1,9 @@
 use crate::{
     dataflow::{
-        granulate,
         operators::{DiffDuration, JoinArranged, MapExt, Max, Min},
         send_recv::ChannelAddrs,
-        ArrangedKey, Channel, Diff, DifferentialLogBundle, OperatorAddr, TimelyLogBundle,
+        utils::{granulate, ArrangedKey, DifferentialLogBundle, TimelyLogBundle},
+        Channel, Diff, OperatorAddr,
     },
     ui::{ProgramStats, WorkerStats},
 };

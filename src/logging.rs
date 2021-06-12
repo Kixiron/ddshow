@@ -1,5 +1,8 @@
 use crate::args::Args;
 use anyhow::Result;
+use ddshow_sink::{
+    DIFFERENTIAL_ARRANGEMENT_LOGGER_NAME, TIMELY_LOGGER_NAME, TIMELY_PROGRESS_LOGGER_NAME,
+};
 use std::{env, net::TcpStream};
 use timely::{communication::Allocate, worker::Worker};
 use tracing_subscriber::{
@@ -68,4 +71,24 @@ where
     }
 
     Ok(())
+}
+
+/// Timely may register some logging hooks automatically,
+/// this just attempts to remove all of them
+pub(crate) fn unset_logging_hooks<A>(worker: &mut Worker<A>)
+where
+    A: Allocate,
+{
+    let mut register = worker.log_register();
+    let builtin_hooks = [
+        TIMELY_LOGGER_NAME,
+        DIFFERENTIAL_ARRANGEMENT_LOGGER_NAME,
+        TIMELY_PROGRESS_LOGGER_NAME,
+    ];
+
+    for hook in builtin_hooks.iter() {
+        if register.remove(hook).is_some() {
+            tracing::debug!(hook_name = hook, "removed builtin logging hook from timely");
+        }
+    }
 }

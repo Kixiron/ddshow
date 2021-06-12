@@ -1,4 +1,7 @@
-use crate::dataflow::{granulate, Diff, ProgressLogBundle};
+use crate::dataflow::{
+    utils::{granulate, ProgressLogBundle},
+    Diff,
+};
 use abomonation_derive::Abomonation;
 use ddshow_types::{timely_logging::ChannelsEvent, ChannelId, OperatorAddr, WorkerId};
 use differential_dataflow::{

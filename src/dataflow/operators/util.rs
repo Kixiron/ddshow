@@ -7,9 +7,12 @@ use differential_dataflow::{
     Collection, Data,
 };
 use std::{collections::HashMap, fmt::Debug, hash::Hash, mem, num::NonZeroUsize};
-use timely::dataflow::{
-    operators::capture::{Event, EventPusher, Extract},
-    Scope,
+use timely::{
+    dataflow::{
+        operators::capture::{Event, EventPusher, Extract},
+        Scope,
+    },
+    progress::ChangeBatch,
 };
 
 pub trait OperatorExt<G, D, R> {
@@ -54,13 +57,18 @@ impl<T> CrossbeamExtractor<T> {
 
 impl<T, D> CrossbeamExtractor<Event<T, (D, T, Diff)>>
 where
-    T: Ord + Hash + Clone,
+    T: Debug + Ord + Hash + Clone,
     D: Ord + Hash + Clone,
 {
     /// Extracts in a non-blocking manner, exerting fuel for any data pulled from the channel
     /// and returning when the fuel is exhausted or the channel is empty. Returns `true` if
     /// channel's sending side disconnects and `false` otherwise
-    pub fn extract_with_fuel(&self, fuel: &mut Fuel, sink: &mut HashMap<D, Diff>) -> bool {
+    pub fn extract_with_fuel(
+        &self,
+        fuel: &mut Fuel,
+        sink: &mut HashMap<D, Diff>,
+        consumed: &mut ChangeBatch<T>,
+    ) -> bool {
         while !fuel.is_exhausted() {
             // Exert one fuel for the channel receive
             fuel.exert(1);
@@ -89,7 +97,7 @@ where
                 }
 
                 // We pretty much ignore progress events here, no idea if that's bad or not
-                Ok(Event::Progress(_progress)) => {}
+                Ok(Event::Progress(progress)) => consumed.extend(progress.into_iter()),
 
                 // If the channel is empty then break
                 Err(TryRecvError::Empty) => break,

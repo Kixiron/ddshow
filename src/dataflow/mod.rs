@@ -12,21 +12,27 @@ mod subgraphs;
 mod summation;
 mod tests;
 mod timely_source;
+pub(crate) mod utils;
+mod worker;
 mod worker_timeline;
 
 pub use constants::PROGRAM_NS_GRANULARITY;
 pub use operator_stats::OperatorStats;
 pub use progress_stats::Channel;
 pub use send_recv::{DataflowData, DataflowExtractor, DataflowReceivers, DataflowSenders};
+pub use worker::worker_runtime;
 pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 
 use crate::{
     args::Args,
     dataflow::{
-        // worker_timeline::worker_timeline,
         operators::{CrossbeamPusher, FilterMap, JoinArranged, Multiply, SortBy},
         send_recv::ChannelAddrs,
         subgraphs::rewire_channels,
+        utils::{
+            ArrangedKey, ArrangedVal, Diff, DifferentialLogBundle, ProgressLogBundle, Time,
+            TimelyLogBundle,
+        },
     },
     ui::{DataflowStats, Lifespan, ProgramStats, WorkerStats},
 };
@@ -35,7 +41,6 @@ use crossbeam_channel::Sender;
 use ddshow_sink::{EventWriter, DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE};
 use ddshow_types::{
     differential_logging::DifferentialEvent,
-    progress_logging::TimelyProgressEvent,
     timely_logging::{OperatesEvent, TimelyEvent},
     ChannelId, OperatorAddr, OperatorId, WorkerId,
 };
@@ -46,16 +51,10 @@ use differential_dataflow::{
         arrange::{ArrangeByKey, ArrangeBySelf, Arranged, TraceAgent},
         Consolidate, CountTotal, Join, JoinCore, ThresholdTotal,
     },
-    trace::{
-        implementations::ord::{OrdKeySpine, OrdValSpine},
-        TraceReader,
-    },
+    trace::TraceReader,
     AsCollection, Collection, ExchangeData, Hashable,
 };
-#[cfg(feature = "timely-next")]
-use reachability::TrackerEvent;
 use std::{
-    convert::TryFrom,
     fs::{self, File},
     io::BufWriter,
     iter,
@@ -70,16 +69,10 @@ use timely::{
             probe::Handle as ProbeHandle,
             Probe,
         },
-        Scope, ScopeParent, Stream,
+        Scope, Stream,
     },
     order::TotalOrder,
 };
-
-type ArrangedVal<S, K, V, D = Diff> =
-    Arranged<S, TraceAgent<OrdValSpine<K, V, <S as ScopeParent>::Timestamp, D>>>;
-
-type ArrangedKey<S, K, D = Diff> =
-    Arranged<S, TraceAgent<OrdKeySpine<K, <S as ScopeParent>::Timestamp, D>>>;
 
 // TODO: Dataflow lints
 //  - Inconsistent dataflows across workers
@@ -93,30 +86,6 @@ type ArrangedKey<S, K, D = Diff> =
 // TODO: Timely progress logging
 // TODO: The PDG
 // TODO: Timely reachability logging
-
-fn granulate(&time: &Duration) -> Duration {
-    let timestamp = time.as_nanos();
-    let window_idx = (timestamp / PROGRAM_NS_GRANULARITY) + 1;
-
-    let minted = Duration::from_nanos((window_idx * PROGRAM_NS_GRANULARITY) as u64);
-    debug_assert_eq!(
-        u64::try_from(window_idx * PROGRAM_NS_GRANULARITY).map(|res| res as u128),
-        Ok(window_idx * PROGRAM_NS_GRANULARITY),
-    );
-    debug_assert!(time <= minted);
-
-    minted
-}
-
-pub type TimelyLogBundle<Id = WorkerId> = (Time, Id, TimelyEvent);
-pub type DifferentialLogBundle<Id = WorkerId> = (Time, Id, DifferentialEvent);
-pub type ProgressLogBundle<Id = WorkerId> = (Time, Id, TimelyProgressEvent);
-
-#[cfg(feature = "timely-next")]
-pub type ReachabilityLogBundle<Id = WorkerId> = (Time, Id, TrackerEvent);
-
-type Diff = isize;
-type Time = Duration;
 
 pub fn dataflow<S>(
     scope: &mut S,

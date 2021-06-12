@@ -2,56 +2,32 @@ mod args;
 mod colormap;
 mod dataflow;
 mod logging;
-mod network;
+mod replay_loading;
 mod report;
 mod ui;
 
 use crate::{
     args::Args,
     colormap::{select_color, Color},
-    dataflow::{
-        // constants::PROGRESS_DISK_LOG_FILE,
-        operators::{EventIterator, Fuel, InspectExt, ReplayWithShutdown},
-        Channel,
-        DataflowData,
-        DataflowSenders,
-        OperatorStats,
-    },
-    network::{acquire_replay_sources, wait_for_input, ReplaySource},
+    dataflow::{constants::DDSHOW_VERSION, Channel, DataflowData, DataflowSenders, OperatorStats},
+    replay_loading::{connect_to_sources, wait_for_input},
     ui::{ActivationDuration, DDShowStats, EdgeKind, Lifespan, TimelineEvent},
 };
 use anyhow::{Context, Result};
-use ddshow_sink::{DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE};
-use ddshow_types::{
-    differential_logging::DifferentialEvent,
-    // progress_logging::TimelyProgressEvent,
-    timely_logging::{OperatesEvent, TimelyEvent},
-    OperatorAddr,
-    OperatorId,
-    WorkerId,
-};
-use differential_dataflow::{logging::DifferentialEvent as RawDifferentialEvent, Data};
+use ddshow_types::{timely_logging::OperatesEvent, OperatorAddr, OperatorId, WorkerId};
+use indicatif::MultiProgress;
 use std::{
     collections::HashMap,
-    env,
     fs::{self, File},
     io::BufWriter,
-    num::NonZeroUsize,
     path::Path,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize},
         Arc,
     },
     time::Duration,
 };
 use structopt::StructOpt;
-use timely::{
-    dataflow::{operators::Map, Scope, Stream},
-    logging::TimelyEvent as RawTimelyEvent,
-};
-
-/// The current version of DDShow
-pub static DDSHOW_VERSION: &str = env!("VERGEN_GIT_SEMVER");
 
 // TODO: Library-ify a lot of this
 // FIXME: Clean this up so much
@@ -66,84 +42,17 @@ fn main() -> Result<()> {
 
     let config = args.timely_config();
 
-    // Connect to the timely sources
-    let (timely_event_receivers, are_timely_sources) = acquire_replay_sources(
-        args.timely_address,
-        args.timely_connections,
-        args.workers,
-        args.replay_logs.as_deref(),
-        TIMELY_LOG_FILE,
-        "Timely",
-    )?;
-
-    // Connect to the differential sources
-    let differential_event_receivers = if args.differential_enabled {
-        Some(acquire_replay_sources(
-            args.differential_address,
-            args.timely_connections,
-            args.workers,
-            args.replay_logs.as_deref(),
-            DIFFERENTIAL_ARRANGEMENT_LOG_FILE,
-            "Differential",
-        )?)
-    } else {
-        None
-    };
-    let are_differential_sources = differential_event_receivers
-        .as_ref()
-        .map_or(true, |&(_, are_differential_sources)| {
-            are_differential_sources
-        });
-
-    // Connect to the progress sources
-    // let progress_event_receivers = if args.progress_enabled {
-    //     Some(acquire_replay_sources::<
-    //         _,
-    //         (Duration, WorkerId, TimelyProgressEvent),
-    //         (Duration, WorkerId, TimelyProgressEvent),
-    //     >(
-    //         args.progress_address,
-    //         args.timely_connections,
-    //         args.workers,
-    //         args.replay_logs.as_deref(),
-    //         TIMELY_PROGRESS_LOG_FILE,
-    //         "Progress",
-    //     )?)
-    // } else {
-    //     None
-    // };
-    // let are_progress_sources = progress_event_receivers
-    //     .as_ref()
-    //     .map_or(true, |&(_, are_progress_sources)| are_progress_sources);
-
-    // If no replay sources were provided, exit early
-    if !are_timely_sources || !are_differential_sources
-    /* || !are_progress_sources */
-    {
-        tracing::warn!(
-            are_timely_sources = are_timely_sources,
-            are_differential_sources = are_differential_sources,
-            differential_enabled = args.differential_enabled,
-            // are_progress_sources = are_progress_sources,
-            // progress_enabled = args.progress_enabled,
-            "no replay sources were provided",
-        );
-
-        let source = if !are_timely_sources {
-            "timely"
-        } else if !are_differential_sources {
-            "differential"
+    let (timely_event_receivers, differential_event_receivers, _total_sources) =
+        if let Some(sources) = connect_to_sources(&args)? {
+            sources
         } else {
-            "progress"
+            return Ok(());
         };
-        println!("No {} replay sources were provided, exiting", source);
 
-        return Ok(());
-    }
-
-    let (running, workers_finished) = (
+    let (running, workers_finished, progress_bars) = (
         Arc::new(AtomicBool::new(true)),
         Arc::new(AtomicUsize::new(0)),
+        Arc::new(MultiProgress::new()),
     );
     let (replay_shutdown, moved_args, moved_workers_finished) =
         (running.clone(), args.clone(), workers_finished.clone());
@@ -155,25 +64,13 @@ fn main() -> Result<()> {
 
     // Spin up the timely computation
     let worker_guards = timely::execute(config, move |worker| {
-        let args = moved_args.clone();
-
-        tracing::info!(
-            "spun up timely worker {}/{}",
-            worker.index() + 1,
-            args.workers,
-        );
-
-        if args.dataflow_profiling {
-            logging::init_dataflow_logging(worker)?;
-        }
-
         // Distribute the tcp streams across workers, converting each of them into an event reader
         let timely_traces = timely_event_receivers[worker.index()]
             .clone()
             .recv()
             .expect("failed to receive timely event traces");
 
-        let differential_traces = differential_event_receivers.as_ref().map(|(recv, _)| {
+        let differential_traces = differential_event_receivers.as_ref().map(|recv| {
             recv[worker.index()]
                 .recv()
                 .expect("failed to receive differential event traces")
@@ -185,140 +82,23 @@ fn main() -> Result<()> {
         //         .expect("failed to receive progress traces")
         // });
 
-        let dataflow_id = worker.next_dataflow_index();
-        let probe = worker.dataflow_named("DDShow Analysis Dataflow", |scope| {
-            // If the dataflow is being sourced from a file, limit the
-            // number of events read out in each batch so we don't overload
-            // downstream consumers
-            // TODO: Maybe fuel should always be unlimited so that the
-            //       "loading trace data" and "processing data"
-            //       prompts are accurate to the user? Does that matter
-            //       enough to take precedence over the possible performance
-            //       impact?
-            let fuel = if args.is_file_sourced() {
-                Fuel::limited(NonZeroUsize::new(100_000_000).unwrap())
-
-            // If the dataflow is being sourced from a running program,
-            // take as many events as we possibly can so that we don't
-            // slow down its execution
-            } else {
-                Fuel::unlimited()
-            };
-
-            tracing::trace!(
-                worker_id = scope.index(),
-                fuel = ?fuel,
-                "giving worker {} {} replay fuel",
-                scope.index() + 1,
-                if fuel.is_unlimited() { "unlimited" } else { "limited" },
-            );
-
-            // The timely log stream filtered down to worker 0's events
-            let span = tracing::info_span!("replay timely logs", worker_id = scope.index());
-            let timely_stream = span.in_scope(|| {
-                replay_traces::<_, TimelyEvent, RawTimelyEvent, _, _>(
-                    scope,
-                    timely_traces,
-                    replay_shutdown.clone(),
-                    fuel.clone(),
-                    "Timely",
-                )
-            });
-
-            let span = tracing::info_span!("replay differential logs", worker_id = scope.index());
-            let differential_stream = span.in_scope(|| {
-                if let Some(traces) = differential_traces {
-                    let stream = replay_traces::<_, DifferentialEvent, RawDifferentialEvent, _, _>(
-                        scope,
-                        traces,
-                        replay_shutdown.clone(),
-                        fuel.clone(),
-                        "Differential",
-                    );
-
-                    Some(stream)
-                } else {
-                    tracing::trace!("no differential sources were provided");
-                    None
-                }
-            });
-
-            // let span =
-            //     tracing::info_span!("replay timely progress logs", worker_id = scope.index());
-            // let progress_stream = span.in_scope(|| {
-            //     if let Some(traces) = progress_traces {
-            //         let stream = match traces {
-            //             ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
-            //                 "Progress Replay",
-            //                 scope,
-            //                 replay_shutdown.clone(),
-            //                 fuel,
-            //             ),
-            //
-            //             ReplaySource::Abomonation(_) => anyhow::bail!(
-            //                 "Timely progress logging is only supported with rkyv sources",
-            //             ),
-            //         }
-            //         .debug_inspect(move |x| tracing::trace!("progress event: {:?}", x));
-            //
-            //         Ok(Some(stream))
-            //     } else {
-            //         tracing::trace!("no progress sources were provided");
-            //         Ok(None)
-            //     }
-            // })?;
-
-            let span = tracing::info_span!("dataflow construction", worker_id = scope.index());
-            span.in_scope(|| {
-                dataflow::dataflow(
-                    scope,
-                    &*args,
-                    &timely_stream,
-                    differential_stream.as_ref(),
-                    None, // progress_stream.as_ref(),
-                    senders.clone(),
-                )
-            })
-        })?;
-
-        'work_loop: while !probe.done() {
-            if !replay_shutdown.load(Ordering::Acquire) {
-                tracing::info!(
-                    worker_id = worker.index(),
-                    dataflow_id = dataflow_id,
-                    "forcibly shutting down dataflow {} on worker {}",
-                    dataflow_id,
-                    worker.index(),
-                );
-
-                worker.drop_dataflow(dataflow_id);
-                break 'work_loop;
-            }
-
-            worker.step_or_park(Some(Duration::from_millis(500)));
-        }
-
-        let total_finished = moved_workers_finished.fetch_add(1, Ordering::Release);
-        tracing::info!(
-            "timely worker {}/{} finished ({}/{} workers have finished)",
-            worker.index() + 1,
-            args.workers,
-            total_finished,
-            args.workers,
-        );
-
-        Ok(())
+        // Start the analysis worker's runtime
+        dataflow::worker_runtime(
+            worker,
+            moved_args.clone(),
+            senders.clone(),
+            replay_shutdown.clone(),
+            moved_workers_finished.clone(),
+            progress_bars.clone(),
+            timely_traces,
+            differential_traces,
+        )
     })
     .map_err(|err| anyhow::anyhow!("failed to start up timely computation: {}", err))?;
 
     // Wait for the user's prompt
-    let data = wait_for_input(
-        &*args,
-        &*running,
-        &*workers_finished,
-        worker_guards,
-        receivers,
-    )?;
+    let data = wait_for_input(&args, &running, &workers_finished, worker_guards, receivers)?;
+
     let name_lookup: HashMap<_, _> = data.name_lookup.iter().cloned().collect();
     let addr_lookup: HashMap<_, _> = data.addr_lookup.iter().cloned().collect();
 
@@ -513,36 +293,6 @@ fn main() -> Result<()> {
     println!("Wrote output graph to file:///{}", graph_file,);
 
     Ok(())
-}
-
-fn replay_traces<S, Event, RawEvent, R, A>(
-    scope: &mut S,
-    timely_traces: ReplaySource<R, A>,
-    replay_shutdown: Arc<AtomicBool>,
-    fuel: Fuel,
-    source: &'static str,
-) -> Stream<S, (Duration, WorkerId, Event)>
-where
-    S: Scope<Timestamp = Duration>,
-    Event: Data + From<RawEvent>,
-    RawEvent: Clone + 'static,
-    R: EventIterator<Duration, (Duration, WorkerId, Event)> + 'static,
-    A: EventIterator<Duration, (Duration, usize, RawEvent)> + 'static,
-{
-    let name = format!("{} Replay", source);
-
-    match timely_traces {
-        ReplaySource::Rkyv(rkyv) => {
-            rkyv.replay_with_shutdown_into_named(&name, scope, replay_shutdown, fuel)
-        }
-
-        ReplaySource::Abomonation(abomonation) => abomonation
-            .replay_with_shutdown_into_named(&name, scope, replay_shutdown, fuel)
-            .map(|(time, worker, event): (Duration, usize, RawEvent)| {
-                (time, WorkerId::new(worker), Event::from(event))
-            }),
-    }
-    .debug_inspect(move |x| tracing::trace!("{} event: {:?}", source, x))
 }
 
 fn dump_program_json(

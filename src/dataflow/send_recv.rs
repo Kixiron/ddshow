@@ -16,9 +16,12 @@ use differential_dataflow::{
 };
 use std::{collections::HashMap, convert::identity, iter::Cycle, time::Duration};
 use strum::{EnumIter, IntoEnumIterator};
-use timely::dataflow::{
-    operators::{capture::Event, probe::Handle as ProbeHandle},
-    Scope, ScopeParent,
+use timely::{
+    dataflow::{
+        operators::{capture::Event, probe::Handle as ProbeHandle},
+        Scope, ScopeParent,
+    },
+    progress::ChangeBatch,
 };
 
 pub(crate) type ChannelAddrs<S, D> = Arranged<
@@ -138,6 +141,8 @@ macro_rules! make_send_recv {
         pub struct DataflowExtractor {
             $(pub $name: (Extractor<$ty>, HashMap<$ty, Diff>),)*
             step: Cycle<DataflowStepIter>,
+            consumed: ChangeBatch<Duration>,
+            last_consumed: Duration,
         }
 
         impl DataflowExtractor {
@@ -151,6 +156,8 @@ macro_rules! make_send_recv {
                         HashMap::with_capacity(DEFAULT_EXTRACTOR_CAPACITY),
                     ),)*
                     step: DataflowStep::iter().cycle(),
+                    consumed: ChangeBatch::new(),
+                    last_consumed: Duration::from_secs(0),
                 }
             }
 
@@ -167,12 +174,30 @@ macro_rules! make_send_recv {
                             DataflowStep::$name => {
                                 let (extractor, sink) = &mut self.$name;
 
-                                extractor.extract_with_fuel(fuel, sink);
+                                extractor.extract_with_fuel(fuel, sink, &mut self.consumed);
                             },
                         )*
                     }
                 }
             }
+
+            // // FIXME: Use the tracker progress infrastructure for a more
+            // //        accurate version of this
+            // pub fn latest_timestamp(&mut self) -> Duration {
+            //     self.consumed.compact();
+            //     self.consumed
+            //         .unstable_internal_updates()
+            //         .iter()
+            //         .map(|&(time, _)| time)
+            //         .max()
+            //         .map(|time| if time < self.last_consumed {
+            //             self.last_consumed
+            //         } else {
+            //             self.last_consumed = time;
+            //             time
+            //         })
+            //         .unwrap_or(self.last_consumed)
+            // }
 
             // TODO: Does this need to guard against never-disconnected channels?
             #[inline(never)]
@@ -185,7 +210,7 @@ macro_rules! make_send_recv {
                         extractor_status.push({
                             let (extractor, sink) = &mut self.$name;
 
-                            extractor.extract_with_fuel(&mut fuel, sink)
+                            extractor.extract_with_fuel(&mut fuel, sink, &mut self.consumed)
                         });
                     )*
 

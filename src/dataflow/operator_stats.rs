@@ -1,7 +1,8 @@
 use crate::dataflow::{
     differential::{self, ArrangementStats},
     summation::{summation, Summation},
-    Diff, DifferentialLogBundle, OperatorId, WorkerId,
+    utils::{Diff, DifferentialLogBundle},
+    OperatorId, WorkerId,
 };
 use abomonation_derive::Abomonation;
 use differential_dataflow::{

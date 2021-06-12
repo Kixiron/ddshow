@@ -24,3 +24,6 @@ pub(crate) const IDLE_EXTRACTION_FUEL: NonZeroUsize =
 
 /// The delay to reactivate replay operators after
 pub(crate) const DEFAULT_REACTIVATION_DELAY: Duration = Duration::from_millis(200);
+
+/// The current version of DDShow
+pub const DDSHOW_VERSION: &str = env!("VERGEN_GIT_SEMVER");

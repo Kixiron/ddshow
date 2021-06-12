@@ -20,7 +20,7 @@ bytecheck = "0.5.1"
 rkyv = { version = "0.6.6", features = ["validation"] }
 timely = { version = "0.12.0", default-features = false }
 differential-dataflow = { version = "0.12.0", default-features = false, optional = true }
-ddshow-types = { version = "0.1.0", path = "../ddshow-types", features = ["rkyv", "enable_abomonation"] }
+ddshow-types = { version = "0.1.1", path = "../ddshow-types", features = ["rkyv", "enable_abomonation"] }
 
 [dependencies.tracing_dep]
 package = "tracing"
