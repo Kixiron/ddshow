@@ -6,11 +6,14 @@ use crate::{
         DataflowSenders,
     },
     logging,
-    replay_loading::{DifferentialReplaySource, ReplaySource, TimelyReplaySource},
+    replay_loading::{
+        DifferentialReplaySource, ProgressReplaySource, ReplaySource, TimelyReplaySource,
+    },
 };
 use anyhow::Result;
 use ddshow_types::{
-    differential_logging::DifferentialEvent, timely_logging::TimelyEvent, WorkerId,
+    differential_logging::DifferentialEvent, progress_logging::TimelyProgressEvent,
+    timely_logging::TimelyEvent, WorkerId,
 };
 use differential_dataflow::{logging::DifferentialEvent as RawDifferentialEvent, Data};
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
@@ -41,6 +44,7 @@ pub fn worker_runtime<A>(
     multi_progress: Arc<MultiProgress>,
     timely_traces: TimelyReplaySource,
     differential_traces: Option<DifferentialReplaySource>,
+    progress_traces: Option<ProgressReplaySource>,
 ) -> Result<()>
 where
     A: Allocate,
@@ -62,9 +66,16 @@ where
     let dataflow_id = worker.next_dataflow_index();
     let (mut progress_bars, mut source_counter, total_sources) = (
         Vec::new(),
-        (worker.index() * if args.differential_enabled { 2 } else { 1 }) + 1,
+        (worker.index() * (args.differential_enabled as usize + 1))
+            + (worker.index() * (args.progress_enabled as usize + 1))
+            + 1,
         worker.peers()
             + if args.differential_enabled {
+                worker.peers()
+            } else {
+                0
+            }
+            + if args.progress_enabled {
                 worker.peers()
             } else {
                 0
@@ -136,30 +147,31 @@ where
             }
         });
 
-        // let span =
-        //     tracing::info_span!("replay timely progress logs", worker_id = scope.index());
-        // let progress_stream = span.in_scope(|| {
-        //     if let Some(traces) = progress_traces {
-        //         let stream = match traces {
-        //             ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
-        //                 "Progress Replay",
-        //                 scope,
-        //                 replay_shutdown.clone(),
-        //                 fuel,
-        //             ),
-        //
-        //             ReplaySource::Abomonation(_) => anyhow::bail!(
-        //                 "Timely progress logging is only supported with rkyv sources",
-        //             ),
-        //         }
-        //         .debug_inspect(move |x| tracing::trace!("progress event: {:?}", x));
-        //
-        //         Ok(Some(stream))
-        //     } else {
-        //         tracing::trace!("no progress sources were provided");
-        //         Ok(None)
-        //     }
-        // })?;
+        let span = tracing::info_span!("replay timely progress logs", worker_id = scope.index());
+        let progress_stream = span.in_scope(|| {
+            if let Some(traces) = progress_traces {
+                if traces.is_abomonation() {
+                    anyhow::bail!("Timely progress logging is only supported with rkyv sources",);
+                }
+
+                let stream = replay_traces::<_, TimelyProgressEvent, TimelyProgressEvent, _, _>(
+                    scope,
+                    traces,
+                    replay_shutdown.clone(),
+                    fuel.clone(),
+                    &multi_progress,
+                    "Progress",
+                    &mut progress_bars,
+                    &mut source_counter,
+                    total_sources,
+                );
+
+                Ok(Some(stream))
+            } else {
+                tracing::trace!("no progress sources were provided");
+                Ok(None)
+            }
+        })?;
 
         let span = tracing::info_span!("dataflow construction", worker_id = scope.index());
         span.in_scope(|| {
@@ -168,7 +180,7 @@ where
                 &*args,
                 &timely_stream,
                 differential_stream.as_ref(),
-                None, // progress_stream.as_ref(),
+                progress_stream.as_ref(),
                 senders.clone(),
             )
         })

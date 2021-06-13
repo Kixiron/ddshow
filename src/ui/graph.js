@@ -3,7 +3,7 @@ const raw_subgraphs = {{ subgraphs | json_encode() }};
 const raw_edges = {{ edges | json_encode() }};
 const palette_colors = {{ palette_colors | json_encode() }};
 const timeline_events = {{ timeline_events | json_encode() }};
-const channel_messages = {{ channel_messages | json_encode() }};
+const channel_progress = {{ channel_progress | json_encode() }};
 
 const dataflow_svg = d3.select("#dataflow-graph");
 const svg = dataflow_svg.append("g");
@@ -152,6 +152,14 @@ svg.selectAll("g.node")
                 min arrangement size: ${node.min_arrangement_size}`;
         }
 
+        const channel_stats = channel_progress.filter(([addr, _]) => node.addr === addr);
+        for (const [_addr, info] of channel_stats) {
+            html += `<br>Produced ${info.produced.messages} messages and \
+                ${info.produced.capability_updates} capability updates
+                <br>and consumed ${info.consumed.messages} messages and \
+                ${info.consumed.capability_updates} capability updates`;
+        }
+
         tooltip
             .html(html)
             .style("top", (d3.event.pageY - 40) + "px")
@@ -191,10 +199,12 @@ svg.selectAll("g.edgePath")
 
         let html = `channel from ${src_name} to ${dest_name}`;
 
-        const channel_stats = channel_messages.find(stats => edge.channel_id === stats.channel);
+        const channel_stats = channel_progress.find(stats => edge.channel_id === stats[0]);
         if (channel_stats) {
-            html += `<br>Carried ${channel_stats.messages} messages and \
-                ${channel_stats.capability_updates} capability updates`;
+            html += `<br>Produced ${channel_stats[1].produced.messages} messages and \
+                ${channel_stats[1].produced.capability_updates} capability updates
+                <br>and consumed ${channel_stats[1].consumed.messages} messages and \
+                ${channel_stats[1].consumed.capability_updates} capability updates`;
         }
 
         tooltip

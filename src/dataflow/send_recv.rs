@@ -1,14 +1,16 @@
 use crate::{
     dataflow::{
-        channel_sink,
         constants::DEFAULT_EXTRACTOR_CAPACITY,
+        operator_stats::OperatorStats,
         operators::{CrossbeamExtractor, Fuel},
-        Channel, Diff, OperatorStats, Time, WorkerTimelineEvent,
+        progress_stats::{Channel, ProgressInfo},
+        utils::{channel_sink, Diff, Time},
+        worker_timeline::WorkerTimelineEvent,
     },
     ui::{DataflowStats, ProgramStats, WorkerStats},
 };
 use crossbeam_channel::{Receiver, Sender};
-use ddshow_types::{timely_logging::OperatesEvent, ChannelId, OperatorAddr, OperatorId, WorkerId};
+use ddshow_types::{timely_logging::OperatesEvent, OperatorAddr, OperatorId, WorkerId};
 use differential_dataflow::{
     operators::arrange::{Arranged, TraceAgent},
     trace::implementations::ord::OrdKeySpine,
@@ -280,7 +282,7 @@ type AggOperatorStatsData = (OperatorId, OperatorStats);
 type TimelineEventData = WorkerTimelineEvent;
 type NameLookupData = ((WorkerId, OperatorId), String);
 type AddrLookupData = ((WorkerId, OperatorId), OperatorAddr);
-type ChannelMessageData = (ChannelId, (usize, usize));
+type ChannelProgressData = (OperatorAddr, ProgressInfo);
 
 make_send_recv! {
     program_stats: ProgramStats,
@@ -294,5 +296,5 @@ make_send_recv! {
     timeline_events: TimelineEventData,
     name_lookup: NameLookupData,
     addr_lookup: AddrLookupData,
-    channel_messages: ChannelMessageData,
+    channel_progress: ChannelProgressData,
 }

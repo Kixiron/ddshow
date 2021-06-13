@@ -3,14 +3,14 @@ use crate::{
     dataflow::{
         constants::{IDLE_EXTRACTION_FUEL, TCP_READ_TIMEOUT},
         operators::{EventReader, Fuel, RkyvEventReader},
-        utils::{DifferentialLogBundle, TimelyLogBundle},
+        utils::{DifferentialLogBundle, ProgressLogBundle, TimelyLogBundle},
         DataflowData, DataflowReceivers,
     },
 };
 use abomonation::Abomonation;
 use anyhow::{Context, Result};
 use crossbeam_channel::Receiver;
-use ddshow_sink::{DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE};
+use ddshow_sink::{DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE, TIMELY_PROGRESS_LOG_FILE};
 use differential_dataflow::logging::DifferentialEvent as RawDifferentialEvent;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::{
@@ -49,6 +49,12 @@ pub(crate) type DifferentialReplaySource = ReplaySource<
     EventReader<Duration, DifferentialLogBundle<usize, RawDifferentialEvent>, TcpStream>,
 >;
 
+pub(crate) type ProgressEventReceivers = Option<Arc<[Receiver<ProgressReplaySource>]>>;
+pub(crate) type ProgressReplaySource = ReplaySource<
+    RkyvEventReader<Duration, ProgressLogBundle, BufReader<File>>,
+    EventReader<Duration, ProgressLogBundle<usize>, TcpStream>,
+>;
+
 #[derive(Debug)]
 pub enum ReplaySource<R, A> {
     Rkyv(Vec<R>),
@@ -73,12 +79,24 @@ impl<R, A> ReplaySource<R, A> {
             ReplaySource::Abomonation(_) => "Abomonation",
         }
     }
+
+    /// Returns `true` if the replay_source is `Abomonation`.
+    pub const fn is_abomonation(&self) -> bool {
+        matches!(self, Self::Abomonation(..))
+    }
 }
 
 #[tracing::instrument(skip(args))]
 pub fn connect_to_sources(
     args: &Args,
-) -> Result<Option<(TimelyEventReceivers, DifferentialEventReceivers, usize)>> {
+) -> Result<
+    Option<(
+        TimelyEventReceivers,
+        DifferentialEventReceivers,
+        ProgressEventReceivers,
+        usize,
+    )>,
+> {
     let mut total_sources = 0;
 
     // Connect to the timely sources
@@ -109,37 +127,31 @@ pub fn connect_to_sources(
         (None, true)
     };
 
-    // Connect to the progress sources
-    // let progress_event_receivers = if args.progress_enabled {
-    //     Some(acquire_replay_sources::<
-    //         _,
-    //         (Duration, WorkerId, TimelyProgressEvent),
-    //         (Duration, WorkerId, TimelyProgressEvent),
-    //     >(
-    //         args.progress_address,
-    //         args.timely_connections,
-    //         args.workers,
-    //         args.replay_logs.as_deref(),
-    //         TIMELY_PROGRESS_LOG_FILE,
-    //         "Progress",
-    //     )?)
-    // } else {
-    //     None
-    // };
-    // let are_progress_sources = progress_event_receivers
-    //     .as_ref()
-    //     .map_or(true, |&(_, are_progress_sources)| are_progress_sources);
+    // Connect to progress sources
+    let (progress_event_receivers, are_progress_sources) = if args.progress_enabled {
+        let (receivers, are_sources, num_sources) = acquire_replay_sources(
+            args.progress_address,
+            args.timely_connections,
+            args.workers,
+            args.replay_logs.as_deref(),
+            TIMELY_PROGRESS_LOG_FILE,
+            "Progress",
+        )?;
+        total_sources += num_sources;
+
+        (Some(receivers), are_sources)
+    } else {
+        (None, true)
+    };
 
     // If no replay sources were provided, exit early
-    if !are_timely_sources || !are_differential_sources
-    /* || !are_progress_sources */
-    {
+    if !are_timely_sources || !are_differential_sources || !are_progress_sources {
         tracing::warn!(
             are_timely_sources = are_timely_sources,
             are_differential_sources = are_differential_sources,
             differential_enabled = args.differential_enabled,
-            // are_progress_sources = are_progress_sources,
-            // progress_enabled = args.progress_enabled,
+            are_progress_sources = are_progress_sources,
+            progress_enabled = args.progress_enabled,
             "no replay sources were provided",
         );
 
@@ -158,6 +170,7 @@ pub fn connect_to_sources(
     Ok(Some((
         timely_event_receivers,
         differential_event_receivers,
+        progress_event_receivers,
         total_sources,
     )))
 }

@@ -18,7 +18,7 @@ mod worker_timeline;
 
 pub use constants::PROGRAM_NS_GRANULARITY;
 pub use operator_stats::OperatorStats;
-pub use progress_stats::Channel;
+pub use progress_stats::{Channel, ProgressInfo};
 pub use send_recv::{DataflowData, DataflowExtractor, DataflowReceivers, DataflowSenders};
 pub use worker::worker_runtime;
 pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
@@ -26,7 +26,7 @@ pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 use crate::{
     args::Args,
     dataflow::{
-        operators::{CrossbeamPusher, FilterMap, JoinArranged, Multiply, SortBy},
+        operators::{FilterMap, JoinArranged, Multiply, SortBy},
         send_recv::ChannelAddrs,
         subgraphs::rewire_channels,
         utils::{
@@ -36,39 +36,22 @@ use crate::{
     },
     ui::{DataflowStats, Lifespan, ProgramStats, WorkerStats},
 };
-use anyhow::{Context, Result};
-use crossbeam_channel::Sender;
-use ddshow_sink::{EventWriter, DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE};
-use ddshow_types::{
-    differential_logging::DifferentialEvent,
-    timely_logging::{OperatesEvent, TimelyEvent},
-    ChannelId, OperatorAddr, OperatorId, WorkerId,
-};
+use anyhow::Result;
+use ddshow_types::{timely_logging::OperatesEvent, ChannelId, OperatorAddr, OperatorId, WorkerId};
 use differential_dataflow::{
     difference::Semigroup,
     lattice::Lattice,
     operators::{
         arrange::{ArrangeByKey, ArrangeBySelf, Arranged, TraceAgent},
-        Consolidate, CountTotal, Join, JoinCore, ThresholdTotal,
+        CountTotal, Join, JoinCore, ThresholdTotal,
     },
     trace::TraceReader,
-    AsCollection, Collection, ExchangeData, Hashable,
+    AsCollection, Collection, ExchangeData,
 };
-use std::{
-    fs::{self, File},
-    io::BufWriter,
-    iter,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{iter, time::Duration};
 use timely::{
     dataflow::{
-        operators::{
-            capture::{Capture, Event},
-            generic::operator,
-            probe::Handle as ProbeHandle,
-            Probe,
-        },
+        operators::{generic::operator, probe::Handle as ProbeHandle},
         Scope, Stream,
     },
     order::TotalOrder,
@@ -118,9 +101,8 @@ where
         timeline_event_stream,
     ) = timely_source::extract_timely_info(scope, timely_stream, args.disable_timeline);
 
-    let total_channel_messages = progress_stream.map(|progress_stream| {
-        progress_stats::aggregate_channel_messages(scope, progress_stream, &raw_channels)
-    });
+    let channel_progress = progress_stream
+        .map(|progress_stream| progress_stats::aggregate_channel_messages(progress_stream));
 
     // FIXME: `invocations` looks off, figure that out
     let operator_stats =
@@ -130,7 +112,6 @@ where
     //        operators/arrangements/channels across workers
     // TODO: This should use a specialized struct to hold relevant things like "total size across workers"
     //       in addition to per-worker stats
-    // TODO: Hierarchical reduce this probably
     let aggregated_operator_stats = operator_stats::aggregate_operator_stats(&operator_stats);
 
     // TODO: Turn these into collections of `(WorkerId, OperatorId)` and arrange them
@@ -197,7 +178,7 @@ where
         timeline_events,
         operator_names,
         operator_ids,
-        total_channel_messages,
+        channel_progress,
     );
 
     // TODO: Save ddflow logs
@@ -217,7 +198,7 @@ where
             },
         );
 
-        logging_event_sink(
+        utils::logging_event_sink(
             save_logs,
             scope,
             timely_stream,
@@ -246,7 +227,7 @@ fn install_data_extraction<S>(
     timeline_events: Option<Collection<S, WorkerTimelineEvent, Diff>>,
     operator_names: ArrangedVal<S, (WorkerId, OperatorId), String, Diff>,
     operator_ids: ArrangedVal<S, (WorkerId, OperatorId), OperatorAddr, Diff>,
-    total_channel_messages: Option<Collection<S, (ChannelId, (usize, usize)), Diff>>,
+    channel_progress: Option<Collection<S, (OperatorAddr, ProgressInfo), Diff>>,
 ) where
     S: Scope<Timestamp = Duration>,
 {
@@ -263,8 +244,7 @@ fn install_data_extraction<S>(
         let timeline_events = timeline_events.map(|events| events.enter_region(region));
         let operator_names = operator_names.enter_region(region);
         let operator_ids = operator_ids.enter_region(region);
-        let total_channel_messages =
-            total_channel_messages.map(|events| events.enter_region(region));
+        let channel_progress = channel_progress.map(|channels| channels.enter_region(region));
 
         let worker_stats = worker_stats
             .map(|(worker, stats)| ((), (worker, stats)))
@@ -301,7 +281,7 @@ fn install_data_extraction<S>(
             (&operator_names, false),
             (&operator_ids, false),
             (
-                &total_channel_messages.unwrap_or_else(|| operator::empty(region).as_collection()),
+                &channel_progress.unwrap_or_else(|| operator::empty(region).as_collection()),
                 true,
             ),
         );
@@ -467,7 +447,6 @@ where
             .map(|(worker, operator)| ((worker, operator.addr.clone()), operator))
             .arrange_by_key_named("ArrangeByKey: Operators by Address");
 
-        // TODO: Delta join this :(
         operators_by_address
             .semijoin_arranged(&leaves)
             .join_map(
@@ -492,94 +471,4 @@ where
             )
             .leave_region()
     })
-}
-
-#[allow(clippy::type_complexity)]
-fn channel_sink<S, D, R>(
-    collection: &Collection<S, D, R>,
-    probe: &mut ProbeHandle<S::Timestamp>,
-    channel: Sender<Event<S::Timestamp, (D, S::Timestamp, R)>>,
-    should_consolidate: bool,
-) where
-    S: Scope,
-    S::Timestamp: Lattice,
-    D: ExchangeData + Hashable,
-    R: Semigroup + ExchangeData,
-{
-    let collection = if should_consolidate {
-        collection.consolidate()
-    } else {
-        collection.clone()
-    };
-
-    collection
-        .inner
-        .probe_with(probe)
-        .capture_into(CrossbeamPusher::new(channel));
-
-    tracing::debug!(
-        "installed channel sink on worker {}",
-        collection.scope().index(),
-    );
-}
-
-/// Store all timely and differential events to disk
-fn logging_event_sink<S>(
-    save_logs: &Path,
-    scope: &mut S,
-    timely_stream: &Stream<S, (Duration, WorkerId, TimelyEvent)>,
-    probe: &mut ProbeHandle<Duration>,
-    differential_stream: Option<&Stream<S, (Duration, WorkerId, DifferentialEvent)>>,
-) -> Result<()>
-where
-    S: Scope<Timestamp = Duration>,
-{
-    // Create the directory for log files to go to
-    fs::create_dir_all(&save_logs).context("failed to create `--save-logs` directory")?;
-
-    let timely_path = log_file_path(TIMELY_LOG_FILE, save_logs, scope.index());
-
-    tracing::debug!(
-        "installing timely file sink on worker {} pointed at {}",
-        scope.index(),
-        timely_path.display(),
-    );
-
-    let timely_file = BufWriter::new(
-        File::create(timely_path).context("failed to create `--save-logs` timely file")?,
-    );
-
-    timely_stream
-        .probe_with(probe)
-        .capture_into(EventWriter::new(timely_file));
-
-    if let Some(differential_stream) = differential_stream {
-        let differential_path =
-            log_file_path(DIFFERENTIAL_ARRANGEMENT_LOG_FILE, save_logs, scope.index());
-
-        tracing::debug!(
-            "installing differential file sink on worker {} pointed at {}",
-            scope.index(),
-            differential_path.display(),
-        );
-
-        let differential_file = BufWriter::new(
-            File::create(differential_path)
-                .context("failed to create `--save-logs` differential file")?,
-        );
-
-        differential_stream
-            .probe_with(probe)
-            .capture_into(EventWriter::new(differential_file));
-    }
-
-    Ok(())
-}
-
-/// Constructs the path to a logging file for the given worker
-fn log_file_path(file_prefix: &str, dir: &Path, worker_id: usize) -> PathBuf {
-    dir.join(format!(
-        "{}.replay-worker-{}.ddshow",
-        file_prefix, worker_id
-    ))
 }

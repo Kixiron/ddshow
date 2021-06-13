@@ -1,16 +1,34 @@
 #[cfg(feature = "timely-next")]
 use crate::dataflow::reachability::TrackerEvent;
-use crate::dataflow::PROGRAM_NS_GRANULARITY;
+use crate::dataflow::{operators::CrossbeamPusher, PROGRAM_NS_GRANULARITY};
+use anyhow::{Context, Result};
+use crossbeam_channel::Sender;
+use ddshow_sink::{EventWriter, DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE};
 use ddshow_types::{
     differential_logging::DifferentialEvent, progress_logging::TimelyProgressEvent,
     timely_logging::TimelyEvent, WorkerId,
 };
 use differential_dataflow::{
-    operators::arrange::{Arranged, TraceAgent},
+    difference::Semigroup,
+    lattice::Lattice,
+    operators::{
+        arrange::{Arranged, TraceAgent},
+        Consolidate,
+    },
     trace::implementations::ord::{OrdKeySpine, OrdValSpine},
+    Collection, ExchangeData, Hashable,
 };
-use std::{convert::TryFrom, time::Duration};
-use timely::dataflow::ScopeParent;
+use std::{
+    convert::TryFrom,
+    fs::{self, File},
+    io::BufWriter,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use timely::dataflow::{
+    operators::{capture::Event, Capture, Probe},
+    ProbeHandle, Scope, ScopeParent, Stream,
+};
 
 pub(crate) type Diff = isize;
 pub(crate) type Time = Duration;
@@ -43,4 +61,94 @@ pub(crate) fn granulate(&time: &Duration) -> Duration {
     debug_assert!(time <= minted);
 
     minted
+}
+
+#[allow(clippy::type_complexity)]
+pub(super) fn channel_sink<S, D, R>(
+    collection: &Collection<S, D, R>,
+    probe: &mut ProbeHandle<S::Timestamp>,
+    channel: Sender<Event<S::Timestamp, (D, S::Timestamp, R)>>,
+    should_consolidate: bool,
+) where
+    S: Scope,
+    S::Timestamp: Lattice,
+    D: ExchangeData + Hashable,
+    R: Semigroup + ExchangeData,
+{
+    let collection = if should_consolidate {
+        collection.consolidate()
+    } else {
+        collection.clone()
+    };
+
+    collection
+        .inner
+        .probe_with(probe)
+        .capture_into(CrossbeamPusher::new(channel));
+
+    tracing::debug!(
+        "installed channel sink on worker {}",
+        collection.scope().index(),
+    );
+}
+
+/// Store all timely and differential events to disk
+pub(super) fn logging_event_sink<S>(
+    save_logs: &Path,
+    scope: &mut S,
+    timely_stream: &Stream<S, (Duration, WorkerId, TimelyEvent)>,
+    probe: &mut ProbeHandle<Duration>,
+    differential_stream: Option<&Stream<S, (Duration, WorkerId, DifferentialEvent)>>,
+) -> Result<()>
+where
+    S: Scope<Timestamp = Duration>,
+{
+    // Create the directory for log files to go to
+    fs::create_dir_all(&save_logs).context("failed to create `--save-logs` directory")?;
+
+    let timely_path = log_file_path(TIMELY_LOG_FILE, save_logs, scope.index());
+
+    tracing::debug!(
+        "installing timely file sink on worker {} pointed at {}",
+        scope.index(),
+        timely_path.display(),
+    );
+
+    let timely_file = BufWriter::new(
+        File::create(timely_path).context("failed to create `--save-logs` timely file")?,
+    );
+
+    timely_stream
+        .probe_with(probe)
+        .capture_into(EventWriter::new(timely_file));
+
+    if let Some(differential_stream) = differential_stream {
+        let differential_path =
+            log_file_path(DIFFERENTIAL_ARRANGEMENT_LOG_FILE, save_logs, scope.index());
+
+        tracing::debug!(
+            "installing differential file sink on worker {} pointed at {}",
+            scope.index(),
+            differential_path.display(),
+        );
+
+        let differential_file = BufWriter::new(
+            File::create(differential_path)
+                .context("failed to create `--save-logs` differential file")?,
+        );
+
+        differential_stream
+            .probe_with(probe)
+            .capture_into(EventWriter::new(differential_file));
+    }
+
+    Ok(())
+}
+
+/// Constructs the path to a logging file for the given worker
+pub(super) fn log_file_path(file_prefix: &str, dir: &Path, worker_id: usize) -> PathBuf {
+    dir.join(format!(
+        "{}.replay-worker-{}.ddshow",
+        file_prefix, worker_id
+    ))
 }

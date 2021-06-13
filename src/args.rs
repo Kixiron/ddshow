@@ -44,14 +44,14 @@ pub struct Args {
     #[structopt(long, default_value = "127.0.0.1:51318")]
     pub differential_address: SocketAddr,
 
-    // /// Whether or not Timely Dataflow progress logs should be read from
-    // #[structopt(short = "p", long = "progress")]
-    // pub progress_enabled: bool,
-    //
-    // /// The address to listen for Timely Dataflow progress messages from
-    // // FIXME: `requires("progress")` makes clap panic
-    // #[structopt(long, default_value = "127.0.0.1:51319")]
-    // pub progress_address: SocketAddr,
+    /// Whether or not Timely Dataflow progress logs should be read from
+    #[structopt(short = "p", long = "progress")]
+    pub progress_enabled: bool,
+
+    /// The address to listen for Timely Dataflow progress messages from
+    // FIXME: `requires("progress")` makes clap panic
+    #[structopt(long, default_value = "127.0.0.1:51319")]
+    pub progress_address: SocketAddr,
 
     /// The color palette to use for the generated graphs
     #[structopt(

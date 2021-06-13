@@ -42,12 +42,16 @@ fn main() -> Result<()> {
 
     let config = args.timely_config();
 
-    let (timely_event_receivers, differential_event_receivers, _total_sources) =
-        if let Some(sources) = connect_to_sources(&args)? {
-            sources
-        } else {
-            return Ok(());
-        };
+    let (
+        timely_event_receivers,
+        differential_event_receivers,
+        progress_event_receivers,
+        _total_sources,
+    ) = if let Some(sources) = connect_to_sources(&args)? {
+        sources
+    } else {
+        return Ok(());
+    };
 
     let (running, workers_finished, progress_bars) = (
         Arc::new(AtomicBool::new(true)),
@@ -76,11 +80,11 @@ fn main() -> Result<()> {
                 .expect("failed to receive differential event traces")
         });
 
-        // let progress_traces = progress_event_receivers.as_ref().map(|(recv, _)| {
-        //     recv[worker.index()]
-        //         .recv()
-        //         .expect("failed to receive progress traces")
-        // });
+        let progress_traces = progress_event_receivers.as_ref().map(|recv| {
+            recv[worker.index()]
+                .recv()
+                .expect("failed to receive progress traces")
+        });
 
         // Start the analysis worker's runtime
         dataflow::worker_runtime(
@@ -92,6 +96,7 @@ fn main() -> Result<()> {
             progress_bars.clone(),
             timely_traces,
             differential_traces,
+            progress_traces,
         )
     })
     .map_err(|err| anyhow::anyhow!("failed to start up timely computation: {}", err))?;
@@ -258,16 +263,7 @@ fn main() -> Result<()> {
         html_edges,
         palette_colors,
         timeline_events,
-        data.channel_messages
-            .iter()
-            .map(
-                |&(channel, (messages, capability_updates))| ui::ChannelMessageStats {
-                    channel,
-                    messages,
-                    capability_updates,
-                },
-            )
-            .collect(),
+        data.channel_progress,
     )?;
 
     println!(" done!");

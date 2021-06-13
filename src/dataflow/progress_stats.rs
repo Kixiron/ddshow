@@ -1,15 +1,19 @@
 use crate::dataflow::{
+    operators::JoinArranged,
     utils::{granulate, ProgressLogBundle},
     Diff,
 };
 use abomonation_derive::Abomonation;
-use ddshow_types::{timely_logging::ChannelsEvent, ChannelId, OperatorAddr, WorkerId};
+use ddshow_types::{ChannelId, OperatorAddr, WorkerId};
 use differential_dataflow::{
-    difference::DiffPair,
-    operators::{CountTotal, Join},
+    operators::{
+        arrange::{ArrangeByKey, ArrangeBySelf},
+        CountTotal, JoinCore, Reduce,
+    },
     AsCollection, Collection,
 };
-use std::time::Duration;
+use serde::{Deserialize, Serialize};
+use std::{iter, time::Duration};
 use timely::dataflow::{operators::Map, Scope, Stream};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
@@ -74,17 +78,62 @@ impl Channel {
     }
 }
 
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Abomonation,
+    Deserialize,
+    Serialize,
+)]
+pub struct ProgressInfo {
+    pub consumed: ProgressStats,
+    pub produced: ProgressStats,
+}
+
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Abomonation,
+    Deserialize,
+    Serialize,
+)]
+pub struct ProgressStats {
+    pub messages: usize,
+    pub capability_updates: usize,
+}
+
+impl ProgressStats {
+    pub const fn new(messages: usize, capability_updates: usize) -> Self {
+        Self {
+            messages,
+            capability_updates,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
-enum ConnectionKind {
+pub enum ConnectionKind {
     Target,
     Source,
 }
 
 pub fn aggregate_channel_messages<S>(
-    _scope: &mut S,
     progress_stream: &Stream<S, ProgressLogBundle>,
-    channel_events: &Collection<S, (WorkerId, ChannelsEvent), Diff>,
-) -> Collection<S, (ChannelId, (usize, usize)), Diff>
+) -> Collection<S, (OperatorAddr, ProgressInfo), Diff>
 where
     S: Scope<Timestamp = Duration>,
 {
@@ -98,27 +147,17 @@ where
                 } else {
                     ConnectionKind::Target
                 };
-
                 let data = (message.node, message.port, addr.clone(), kind);
-                let diff = DiffPair::new(1, message.diff);
 
-                (data, time, diff)
+                (data, time, 1isize)
             })
         })
         .as_collection()
         .delay(granulate)
         .count_total()
-        .map(
-            |(
-                (node, port, addr, kind),
-                DiffPair {
-                    element1: total_messages,
-                    element2: total_diff,
-                },
-            )| { ((node, port, addr, kind), (total_messages, total_diff)) },
-        );
+        .arrange_by_key();
 
-    let _capability_updates = progress_stream
+    let capability_updates = progress_stream
         .flat_map(|(time, _dest_worker, event)| {
             let (addr, is_send) = (event.addr, event.is_send);
 
@@ -128,94 +167,64 @@ where
                 } else {
                     ConnectionKind::Target
                 };
-
                 let data = (capability.node, capability.port, addr.clone(), kind);
-                let diff = DiffPair::new(1, capability.diff);
 
-                (data, time, diff)
+                (data, time, 1isize)
             })
         })
         .as_collection()
         .delay(granulate)
         .count_total()
-        .map(
-            |(
-                (node, port, addr, kind),
-                DiffPair {
-                    element1: total_messages,
-                    element2: total_diff,
-                },
-            )| { ((node, port, addr, kind), (total_messages, total_diff)) },
-        );
+        .arrange_by_key();
 
-    let channels_by_connections = channel_events.flat_map(|(_worker, channel)| {
-        vec![
-            (
-                (
-                    channel.source.0,
-                    channel.source.1,
-                    channel.scope_addr.clone(),
-                    ConnectionKind::Source,
-                ),
-                (),
-            ),
-            (
-                (
-                    channel.target.0,
-                    channel.target.1,
-                    channel.scope_addr,
-                    ConnectionKind::Target,
-                ),
-                (),
-            ),
-        ]
-    });
+    let mut combined_updates = message_updates
+        .join_core(&capability_updates, |key, &messages, &updates| {
+            iter::once((key.clone(), (messages as usize, updates as usize)))
+        });
+    let combined_updates_arranged = combined_updates.map(|(key, _)| key).arrange_by_self();
 
-    message_updates
-        .join(&channels_by_connections)
-        .inspect(|(data, _, _)| println!("{:?}", data));
+    // Add back in any messages or capabilities that only have one side of things
+    // (eg. only messages or only capabilities)
+    combined_updates = combined_updates.concat(
+        &message_updates
+            .antijoin_arranged(&combined_updates_arranged)
+            .map(|(key, messages)| (key, (messages as usize, 0))),
+    );
+    combined_updates = combined_updates.concat(
+        &capability_updates
+            .antijoin_arranged(&combined_updates_arranged)
+            .map(|(key, updates)| (key, (0, updates as usize))),
+    );
 
-    // The total messages sent through a channel, aggregated across workers
-    progress_stream
-        .map(|(time, _worker, progress)| {
-            // println!(
-            //     "channel {}, scope {}, worker {}, source worker {}\n\tmessages {}\n\tcapability updates {}",
-            //     progress.channel, progress.addr, worker, progress.worker,
-            //     progress.messages.iter().map(|message| if progress.is_send {
-            //         format!("send from port {} at port {}", message.node, message.port)
-            //     } else {
-            //         format!("recv from port {} at port {}", message.port, message.node)
-            //     })
-            //     .collect::<Vec<_>>()
-            //     .join(", "),
-            //     progress.internal.iter().map(|message| if progress.is_send {
-            //         format!("send from port {} at port {}", message.node, message.port)
-            //     } else {
-            //         format!("recv from port {} at port {}", message.port, message.node)
-            //     })
-            //     .collect::<Vec<_>>()
-            //     .join(", "),
-            // );
-
-            (
-                progress.channel,
-                time,
-                DiffPair::new(
-                    progress.messages.len() as isize,
-                    progress.internal.len() as isize,
-                ),
-            )
+    combined_updates
+        .map(|((node, port, address, kind), (messages, updates))| {
+            ((node, port, address), (kind, messages, updates))
         })
-        .as_collection()
-        .delay(granulate)
-        .count_total()
-        .map(
-            |(
-                channel,
-                DiffPair {
-                    element1: messages,
-                    element2: internal,
-                },
-            )| (channel, (messages as usize, internal as usize)),
-        )
+        .arrange_by_key_named("ArrangeByKey: Combined Updates")
+        .reduce(|_, inputs, outputs| {
+            let mut info = ProgressInfo::default();
+            for &(&(kind, messages, capability_updates), _diff) in inputs {
+                let stats = ProgressStats::new(messages, capability_updates);
+
+                match kind {
+                    ConnectionKind::Source => info.produced = stats,
+                    ConnectionKind::Target => info.consumed = stats,
+                }
+            }
+
+            // TODO: Should do do something like creating the src/dest addrs here?
+            outputs.push((info, 1));
+        })
+        .flat_map(|((node, port, mut addr), info)| {
+            vec![
+                (addr.push_imm(node), info),
+                (
+                    {
+                        addr.push(port);
+                        addr
+                    },
+                    info,
+                ),
+            ]
+        })
 }

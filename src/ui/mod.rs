@@ -1,6 +1,9 @@
 #![allow(clippy::unused_unit)]
 
-use crate::{args::Args, dataflow::WorkerTimelineEvent};
+use crate::{
+    args::Args,
+    dataflow::{ProgressInfo, WorkerTimelineEvent},
+};
 use abomonation_derive::Abomonation;
 use anyhow::{Context as _, Result};
 use bytecheck::CheckBytes;
@@ -24,7 +27,7 @@ pub fn render(
     edges: Vec<Edge>,
     palette_colors: Vec<String>,
     timeline_events: Vec<WorkerTimelineEvent>,
-    channel_messages: Vec<ChannelMessageStats>,
+    channel_progress: Vec<(OperatorAddr, ProgressInfo)>,
 ) -> Result<()> {
     let output_dir = &args.output_dir;
     tracing::info!(output_dir = ?output_dir, "writing graph files to disk");
@@ -52,7 +55,7 @@ pub fn render(
         edges,
         palette_colors,
         timeline_events,
-        channel_messages,
+        channel_progress,
     };
 
     // // TODO: This shouldn't be here
@@ -513,7 +516,7 @@ pub struct GraphData {
     pub edges: Vec<Edge>,
     pub palette_colors: Vec<String>,
     pub timeline_events: Vec<WorkerTimelineEvent>,
-    pub channel_messages: Vec<ChannelMessageStats>,
+    pub channel_progress: Vec<(OperatorAddr, ProgressInfo)>,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
