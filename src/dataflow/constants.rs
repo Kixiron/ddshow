@@ -26,4 +26,11 @@ pub(crate) const IDLE_EXTRACTION_FUEL: NonZeroUsize =
 pub(crate) const DEFAULT_REACTIVATION_DELAY: Duration = Duration::from_millis(200);
 
 /// The current version of DDShow
-pub const DDSHOW_VERSION: &str = env!("VERGEN_GIT_SEMVER");
+pub const DDSHOW_VERSION: &str = concat!(
+    env!("CARGO_PKG_NAME"),
+    " ",
+    env!("CARGO_PKG_VERSION"),
+    " (rustc ",
+    env!("VERGEN_RUSTC_SEMVER"),
+    ")",
+);

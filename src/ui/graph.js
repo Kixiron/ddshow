@@ -47,7 +47,7 @@ for (const node of raw_nodes) {
     graph.setNode(
         node_id,
         {
-            label: node.name.replaceAll("\\", "\\\\"),
+            label: `${node.name.replaceAll("\\", "\\\\")} @ ${node.id}, [${node.addr.toString().replaceAll(",", ", ")}]`,
             style: `fill: ${node.fill_color}`,
             labelStyle: `fill: ${node.text_color}`,
             data: { kind: "Node", ...node },
@@ -67,7 +67,7 @@ for (const subgraph of raw_subgraphs) {
     graph.setNode(
         subgraph_id,
         {
-            label: subgraph.name.replaceAll("\\", "\\\\"),
+            label: `${subgraph.name.replaceAll("\\", "\\\\")} @ ${subgraph.id}, [${subgraph.addr.toString().replaceAll(",", ", ")}]`,
             style: "fill: #EEEEEE; stroke-dasharray: 5, 2;",
             clusterLabelPos: "top",
             data: { kind: "Subgraph", ...subgraph },

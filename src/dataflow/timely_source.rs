@@ -1,6 +1,8 @@
 use crate::{
     dataflow::{
-        utils::granulate,
+        constants::{DEFAULT_REACTIVATION_DELAY, IDLE_EXTRACTION_FUEL},
+        operators::Fuel,
+        utils::{granulate, Time},
         worker_timeline::{process_timely_event, EventProcessor, TimelineEventStream},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelyLogBundle,
         WorkerId,
@@ -14,13 +16,20 @@ use differential_dataflow::{
     operators::arrange::{Arrange, ArrangeByKey},
     Collection,
 };
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    time::Duration,
+};
 use timely::{
     dataflow::{
         channels::{pact::Exchange, pushers::Tee},
-        operators::generic::{builder_rc::OperatorBuilder, OutputWrapper},
+        operators::{
+            generic::{builder_rc::OperatorBuilder, OutputHandle, OutputWrapper},
+            Capability,
+        },
         Scope, ScopeParent, Stream,
     },
+    progress::{frontier::MutableAntichain, Antichain},
     Data,
 };
 
@@ -70,6 +79,9 @@ where
     );
     builder.set_notify(false);
 
+    let operator_info = builder.operator_info();
+    let activator = scope.activator_for(&operator_info.address);
+
     let mut timely_stream = builder.new_input(
         // TODO: We may be able to get away with only granulating the input stream
         //       as long as we make sure no downstream consumers depend on either
@@ -82,6 +94,9 @@ where
         // and unbalanced numbers of workers to ensure work is fairly divided
         Exchange::new(|&(_, id, _): &(_, WorkerId, _)| id.into_inner() as u64),
     );
+
+    let builder = Builder::new(builder);
+    let (mut outputs, streams) = Outputs::new(&mut builder);
 
     // Create all of the outputs
     let (mut lifespan_out, lifespan_stream, lifespan_idx) =
@@ -115,26 +130,31 @@ where
         (Some(out), Some(stream), Some(idx))
     };
 
-    builder.build_reschedule(move |_capabilities| {
+    builder.build(move |_capabilities| {
+        let mut buffer = Vec::new();
+
+        // TODO: Use stacks for these, migrate to something more like `EventProcessor`
+        let (
+            mut lifespan_map,
+            mut activation_map,
+            mut event_map,
+            mut map_buffer,
+            mut stack_buffer,
+        ) = (
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            Vec::new(),
+        );
+
+        let mut work_list = VecDeque::new();
+        let mut fuel = Fuel::limited(IDLE_EXTRACTION_FUEL);
+
         move |_frontiers| {
-            let mut buffer = Vec::new();
-
-            // TODO: Use stacks for these, migrate to something more like `EventProcessor`
-            let (
-                mut lifespan_map,
-                mut activation_map,
-                mut event_map,
-                mut map_buffer,
-                mut stack_buffer,
-            ) = (
-                HashMap::new(),
-                HashMap::new(),
-                HashMap::new(),
-                HashMap::new(),
-                Vec::new(),
-            );
-
             // Activate all the outputs
+            let handles = outputs.activate();
+
             let mut lifespan_handle = lifespan_out.activate();
             let mut activation_duration_handle = activation_duration_out.activate();
             let mut operator_creation_handle = operator_creation_out.activate();
@@ -152,12 +172,19 @@ where
             timely_stream.for_each(|capability, data| {
                 data.swap(&mut buffer);
 
+                work_list.push_back((
+                    buffer.clone(),
+                    *capability.time(),
+                    capability.delayed_for_output(capability.time(), lifespan_idx),
+                ));
+
                 for (time, worker, event) in buffer.drain(..) {
+
                     // Get the timestamp for the current event
                     let session_time = capability.time().join(&time);
 
                     // Get capabilities for every individual output
-                    let lifespan_cap = capability.delayed_for_output(&session_time, lifespan_idx);
+                    // let lifespan_cap = capability.delayed_for_output(&session_time, lifespan_idx);
                     let activation_duration_cap =
                         capability.delayed_for_output(&session_time, activation_duration_idx);
                     let operator_creation_cap =
@@ -253,16 +280,16 @@ where
                         }
 
                         TimelyEvent::Shutdown(shutdown) => {
-                            if let Some(start_time) = lifespan_map.remove(&(worker, shutdown.id)) {
-                                lifespan_handle.session(&lifespan_cap).give((
-                                    ((worker, shutdown.id), Lifespan::new(start_time, time)),
-                                    session_time,
-                                    1,
-                                ));
-                            }
-
-                            // Remove any dangling activations
-                            activation_map.remove(&(worker, shutdown.id));
+                            // if let Some(start_time) = lifespan_map.remove(&(worker, shutdown.id)) {
+                            //     lifespan_handle.session(&lifespan_cap).give((
+                            //         ((worker, shutdown.id), Lifespan::new(start_time, time)),
+                            //         session_time,
+                            //         1,
+                            //     ));
+                            // }
+                            //
+                            // // Remove any dangling activations
+                            // activation_map.remove(&(worker, shutdown.id));
                         }
 
                         TimelyEvent::Schedule(schedule) => {
@@ -324,13 +351,66 @@ where
                         | TimelyEvent::Text(_) => {}
                     }
                 }
+
+                activator.activate_after(DEFAULT_REACTIVATION_DELAY);
             });
+
+            fuel.reset();
+
+            'work_loop: while !fuel.is_exhausted() {
+                if let Some((mut buffer, capability_time, mut lifespan_cap)) = work_list.pop_front()
+                {
+                    for (time, worker, event) in buffer.drain(..) {
+                        let session_time = capability_time.join(&time);
+
+                        lifespan_cap.downgrade(&session_time);
+
+                        match event {
+                            TimelyEvent::Operates(_) => {}
+                            TimelyEvent::Channels(_) => {}
+                            TimelyEvent::PushProgress(_) => {}
+                            TimelyEvent::Messages(_) => {}
+                            TimelyEvent::Schedule(_) => {}
+
+                            TimelyEvent::Shutdown(shutdown) => {
+                                if let Some(start_time) =
+                                    lifespan_map.remove(&(worker, shutdown.id))
+                                {
+                                    lifespan_handle.session(&lifespan_cap).give((
+                                        ((worker, shutdown.id), Lifespan::new(start_time, time)),
+                                        session_time,
+                                        1,
+                                    ));
+                                    fuel.exert(1);
+                                }
+
+                                // Remove any dangling activations
+                                activation_map.remove(&(worker, shutdown.id));
+                            }
+
+                            TimelyEvent::Application(_) => {}
+                            TimelyEvent::GuardedMessage(_) => {}
+                            TimelyEvent::GuardedProgress(_) => {}
+                            TimelyEvent::CommChannels(_) => {}
+                            TimelyEvent::Input(_) => {}
+                            TimelyEvent::Park(_) => {}
+                            TimelyEvent::Text(_) => {}
+                        }
+                    }
+                } else {
+                    break 'work_loop;
+                }
+            }
+
+            if !work_list.is_empty() {
+                activator.activate_after(DEFAULT_REACTIVATION_DELAY);
+            }
 
             // FIXME: If every data source has completed, cut off any outstanding events to keep
             //        us from getting stuck in an infinite loop
 
             // Return our reactivation status, we want to be reactivated if we have any pending data
-            !activation_map.is_empty() && !lifespan_map.is_empty()
+            // dbg!(!has_been_activated && !work_list.is_empty() && !activation_map.is_empty() && !lifespan_map.is_empty())
         }
     });
 
@@ -379,6 +459,158 @@ where
         // Note: Don't granulate this
         worker_events_stream,
     )
+}
+
+struct Builder<S>
+where
+    S: Scope,
+{
+    builder: OperatorBuilder<S>,
+    output_idx: usize,
+}
+
+impl<S> Builder<S>
+where
+    S: Scope<Timestamp = Time>,
+{
+    fn new(builder: OperatorBuilder<S>) -> Self {
+        Self {
+            builder,
+            output_idx: 0,
+        }
+    }
+
+    fn new_output<T>(&mut self) -> (Output<T>, Stream<S, (T, Time, Diff)>)
+    where
+        T: Data,
+    {
+        let (wrapper, stream) = self.builder.new_output();
+
+        let idx = self.output_idx;
+        self.output_idx += 1;
+
+        let output = Output::new(wrapper, idx);
+        (output, stream)
+    }
+
+    fn build<B, L>(self, constructor: B)
+    where
+        B: FnOnce(Vec<Capability<Time>>) -> L,
+        L: FnMut(&[MutableAntichain<Time>]) + 'static,
+    {
+        self.builder.build(constructor)
+    }
+}
+
+struct Output<T>
+where
+    T: Data,
+{
+    /// The timely output wrapper
+    wrapper: OutputWrapper<Time, (T, Time, Diff), Tee<Time, (T, Time, Diff)>>,
+    /// The output's index
+    idx: usize,
+}
+
+impl<T> Output<T>
+where
+    T: Data,
+{
+    fn new(
+        wrapper: OutputWrapper<Time, (T, Time, Diff), Tee<Time, (T, Time, Diff)>>,
+        idx: usize,
+    ) -> Self {
+        Self { wrapper, idx }
+    }
+
+    fn activate(&mut self) -> ActivatedOutput<'_, T> {
+        ActivatedOutput::new(self.wrapper.activate(), self.idx)
+    }
+}
+
+struct ActivatedOutput<'a, T>
+where
+    T: Data,
+{
+    handle: OutputHandle<'a, Time, (T, Time, Diff), Tee<Time, (T, Time, Diff)>>,
+    idx: usize,
+}
+
+impl<'a, T> ActivatedOutput<'a, T>
+where
+    T: Data,
+{
+    fn new(
+        handle: OutputHandle<'a, Time, (T, Time, Diff), Tee<Time, (T, Time, Diff)>>,
+        idx: usize,
+    ) -> Self {
+        Self { handle, idx }
+    }
+}
+
+macro_rules! timely_source_processor {
+    ($($name:ident: $data:ty $(, if $cond:ident)?),* $(,)?) => {
+        type Streams<S> = ($(Stream<S, ($data, Time, Diff)>,)*);
+
+        struct Outputs {
+            $($name: timely_source_processor!(@output_type $data, $($cond)?),)*
+        }
+
+        impl Outputs {
+            fn new<S>(builder: &mut Builder<S>) -> (Self, Streams<S>)
+            where
+                S: Scope<Timestamp = Time>,
+            {
+                $(let $name = builder.new_output::<$data>();)*
+
+                let streams = ($($name.1,)*);
+                let outputs = Self {
+                    $($name: $name.0,)*
+                };
+
+                (outputs, streams)
+            }
+
+            fn activate(&mut self) -> OutputHandles<'_> {
+                OutputHandles::new($(self.$name.activate(),)*)
+            }
+        }
+
+        struct OutputHandles<'a> {
+            $($name: ActivatedOutput<'a, $data>,)*
+        }
+
+        impl<'a> OutputHandles<'a> {
+            fn new($($name: ActivatedOutput<'a, $data>,)*) -> Self {
+                Self {
+                    $($name,)*
+                }
+            }
+        }
+    };
+
+    (@output_type $data:ty, $cond:ident) => {
+        Option<Output<$data>>
+    };
+
+    (@output_type $data:ty,) => {
+        Output<$data>
+    };
+}
+
+timely_source_processor! {
+    lifespans: ((WorkerId, OperatorId), Lifespan),
+    activation_durations: ((WorkerId, OperatorId), (Duration, Duration)),
+    operator_creations: ((WorkerId, OperatorId), Duration),
+    channel_creations: ((WorkerId, ChannelId), Duration),
+    raw_channels: (WorkerId, ChannelsEvent),
+    raw_operators: (WorkerId, OperatesEvent),
+    operator_names: ((WorkerId, OperatorId), String),
+    operator_ids: ((WorkerId, OperatorId), OperatorAddr),
+    operator_addrs: ((WorkerId, OperatorAddr), OperatorId),
+    operator_addrs_by_self: (WorkerId, ChannelId),
+    channel_scope_addrs: ((WorkerId, ChannelId), OperatorAddr),
+    dataflow_ids: (WorkerId, OperatorId),
 }
 
 type OutputTuple<S, D> = (

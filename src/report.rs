@@ -1,6 +1,6 @@
 use crate::{args::Args, dataflow::DataflowData};
 use anyhow::{Context, Result};
-use comfy_table::{presets::UTF8_FULL, Cell, ColumnConstraint, Table as InnerTable, ToRow};
+use comfy_table::{presets::UTF8_FULL, Cell, ColumnConstraint, Row, Table as InnerTable};
 use ddshow_types::{OperatorAddr, OperatorId, WorkerId};
 use std::{
     cmp::Reverse,
@@ -45,6 +45,29 @@ pub fn build_report(
         program_overview(args, data, &mut file)?;
         worker_stats(args, data, &mut file)?;
         operator_stats(args, data, &mut file, &name_lookup, &addr_lookup)?;
+
+        let mut table = Table::new();
+        table.set_header(vec![
+            "Operator Address",
+            "Channel Id",
+            "Produced Messages",
+            "Consumed Messages",
+            "Produced Capability Updates",
+            "Consumed Capability Updates",
+        ]);
+
+        for (addr, info) in data.channel_progress.iter() {
+            table.add_row(vec![
+                Cell::new(addr),
+                Cell::new(info.channel_id),
+                Cell::new(info.produced.messages),
+                Cell::new(info.consumed.messages),
+                Cell::new(info.produced.capability_updates),
+                Cell::new(info.consumed.capability_updates),
+            ]);
+        }
+
+        writeln!(file, "{}\n", table).context("failed to write to report file")?;
 
         if args.differential_enabled {
             arrangement_stats(data, &mut file, &name_lookup, &addr_lookup)?;
@@ -325,7 +348,7 @@ impl Table {
 
     fn add_row<T>(&mut self, row: T) -> &mut Self
     where
-        T: ToRow,
+        T: Into<Row>,
     {
         self.inner.add_row(row);
         self
