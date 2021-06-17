@@ -95,6 +95,7 @@ impl Channel {
 pub struct ProgressInfo {
     pub consumed: ProgressStats,
     pub produced: ProgressStats,
+    pub channel_id: ChannelId,
 }
 
 #[derive(
@@ -139,7 +140,7 @@ where
 {
     let message_updates = progress_stream
         .flat_map(|(time, _dest_worker, event)| {
-            let (addr, is_send) = (event.addr, event.is_send);
+            let (addr, channel_id, is_send) = (event.addr, event.channel, event.is_send);
 
             event.messages.into_iter().map(move |message| {
                 let kind = if is_send {
@@ -147,7 +148,7 @@ where
                 } else {
                     ConnectionKind::Target
                 };
-                let data = (message.node, message.port, addr.clone(), kind);
+                let data = (message.node, message.port, addr.clone(), channel_id, kind);
 
                 (data, time, 1isize)
             })
@@ -159,7 +160,7 @@ where
 
     let capability_updates = progress_stream
         .flat_map(|(time, _dest_worker, event)| {
-            let (addr, is_send) = (event.addr, event.is_send);
+            let (addr, channel_id, is_send) = (event.addr, event.channel, event.is_send);
 
             event.internal.into_iter().map(move |capability| {
                 let kind = if is_send {
@@ -167,7 +168,13 @@ where
                 } else {
                     ConnectionKind::Target
                 };
-                let data = (capability.node, capability.port, addr.clone(), kind);
+                let data = (
+                    capability.node,
+                    capability.port,
+                    addr.clone(),
+                    channel_id,
+                    kind,
+                );
 
                 (data, time, 1isize)
             })
@@ -197,14 +204,17 @@ where
     );
 
     combined_updates
-        .map(|((node, port, address, kind), (messages, updates))| {
-            ((node, port, address), (kind, messages, updates))
-        })
+        .map(
+            |((node, port, address, channel_id, kind), (messages, updates))| {
+                ((node, port, address), (channel_id, kind, messages, updates))
+            },
+        )
         .arrange_by_key_named("ArrangeByKey: Combined Updates")
         .reduce(|_, inputs, outputs| {
             let mut info = ProgressInfo::default();
-            for &(&(kind, messages, capability_updates), _diff) in inputs {
+            for &(&(channel_id, kind, messages, capability_updates), _diff) in inputs {
                 let stats = ProgressStats::new(messages, capability_updates);
+                info.channel_id = channel_id;
 
                 match kind {
                     ConnectionKind::Source => info.produced = stats,
