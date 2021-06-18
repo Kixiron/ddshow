@@ -4,9 +4,10 @@ mod proptest_utils;
 mod proptests;
 
 use crate::dataflow::{
+    utils::Diff,
     worker_timeline::{
         collect_differential_events, process_timely_event, EventData, EventProcessor,
-        PartialTimelineEvent, TimelineEventStream,
+        PartialTimelineEvent,
     },
     TimelyLogBundle,
 };
@@ -15,6 +16,7 @@ use ddshow_types::{
     timely_logging::{ScheduleEvent, StartStop, TimelyEvent},
     OperatorId, WorkerId,
 };
+use differential_dataflow::{AsCollection, Collection};
 use std::{
     collections::HashMap,
     sync::{mpsc, Arc, Mutex},
@@ -22,7 +24,7 @@ use std::{
 };
 use timely::dataflow::{
     channels::pact::Pipeline,
-    operators::{capture::Extract, Capture, Input, Operator, Probe},
+    operators::{capture::Extract, Capture, Input, Operator},
     Scope, Stream,
 };
 use tracing_subscriber::{
@@ -40,7 +42,9 @@ fn timely_event_association() {
         let (mut input, probe) = worker.dataflow(|scope| {
             let (input, stream) = scope.new_input();
             let partial_events = collect_timely_events(&stream);
-            partial_events.capture_into(send.lock().unwrap().take().unwrap());
+            partial_events
+                .inner
+                .capture_into(send.lock().unwrap().take().unwrap());
 
             (input, partial_events.probe())
         });
@@ -97,7 +101,9 @@ fn differential_event_association() {
         let (mut input, probe) = worker.dataflow(|scope| {
             let (input, stream) = scope.new_input();
             let partial_events = collect_differential_events(&stream);
-            partial_events.capture_into(send.lock().unwrap().take().unwrap());
+            partial_events
+                .inner
+                .capture_into(send.lock().unwrap().take().unwrap());
 
             (input, partial_events.probe())
         });
@@ -209,38 +215,40 @@ pub(crate) fn init_test_logging() {
 
 fn collect_timely_events<'a, 'b, S>(
     event_stream: &'b Stream<S, TimelyLogBundle>,
-) -> TimelineEventStream<S>
+) -> Collection<S, EventData, Diff>
 where
     S: Scope<Timestamp = Duration> + 'a,
 {
-    event_stream.unary(
-        Pipeline,
-        "Gather Timely Event Durations",
-        |_capability, _info| {
-            let mut buffer = Vec::new();
-            let (mut event_map, mut map_buffer, mut stack_buffer) =
-                (HashMap::new(), HashMap::new(), Vec::new());
+    event_stream
+        .unary(
+            Pipeline,
+            "Gather Timely Event Durations",
+            |_capability, _info| {
+                let mut buffer = Vec::new();
+                let (mut event_map, mut map_buffer, mut stack_buffer) =
+                    (HashMap::new(), HashMap::new(), Vec::new());
 
-            move |input, output| {
-                input.for_each(|capability, data| {
-                    let capability = capability.retain();
-                    data.swap(&mut buffer);
+                move |input, output| {
+                    input.for_each(|capability, data| {
+                        let capability = capability.retain();
+                        data.swap(&mut buffer);
 
-                    for (time, worker, event) in buffer.drain(..) {
-                        let mut event_processor = EventProcessor::new(
-                            &mut event_map,
-                            &mut map_buffer,
-                            &mut stack_buffer,
-                            output,
-                            &capability,
-                            worker,
-                            time,
-                        );
+                        for (time, worker, event) in buffer.drain(..) {
+                            let mut event_processor = EventProcessor::new(
+                                &mut event_map,
+                                &mut map_buffer,
+                                &mut stack_buffer,
+                                output,
+                                &capability,
+                                worker,
+                                time,
+                            );
 
-                        process_timely_event(&mut event_processor, event);
-                    }
-                });
-            }
-        },
-    )
+                            process_timely_event(&mut event_processor, event);
+                        }
+                    });
+                }
+            },
+        )
+        .as_collection()
 }

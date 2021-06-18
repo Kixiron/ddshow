@@ -98,7 +98,7 @@ where
         operator_addrs_by_self,
         channel_scopes,
         dataflow_ids,
-        timeline_event_stream,
+        timeline_events,
     ) = timely_source::extract_timely_info(scope, timely_stream, args.disable_timeline);
 
     let channel_progress = progress_stream
@@ -133,10 +133,10 @@ where
     // TODO: Make `extract_timely_info()` get the relevant event information
     // TODO: Grabbing events absolutely shits the bed when it comes to large dataflows,
     //       it needs a serious, intrinsic rework and/or disk backed arrangements
-    let timeline_events = timeline_event_stream.as_ref().map(|timeline_event_stream| {
+    let timeline_events = timeline_events.as_ref().map(|timeline_events| {
         worker_timeline::worker_timeline(
             scope,
-            timeline_event_stream,
+            timeline_events,
             differential_stream,
             &operator_names,
         )

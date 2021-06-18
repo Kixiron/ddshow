@@ -3,7 +3,7 @@ use crate::{
         constants::IDLE_EXTRACTION_FUEL,
         operators::Fuel,
         utils::{granulate, Time},
-        worker_timeline::{process_timely_event, EventData, EventProcessor, TimelineEventStream},
+        worker_timeline::{process_timely_event, EventData, EventProcessor},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelyLogBundle,
         WorkerId,
     },
@@ -65,7 +65,7 @@ type TimelyCollections<S> = (
     // Dataflow operator ids
     ArrangedKey<S, (WorkerId, OperatorId)>,
     // Timely event data, will be `None` if timeline analysis is disabled
-    Option<TimelineEventStream<S>>,
+    Option<Collection<S, EventData, Diff>>,
 );
 
 // TODO: These could all emit `Present` difference types since there's no retractions here
@@ -315,7 +315,7 @@ where
         }
     });
 
-    let Streams {
+    let Collections {
         lifespans,
         activation_durations,
         operator_creations,
@@ -329,44 +329,28 @@ where
         channel_scope_addrs,
         dataflow_ids,
         worker_events,
-    } = streams;
+    } = streams.into_collections();
 
     // TODO: Granulate the times within the operator
-    let operator_names = operator_names
-        .as_collection()
-        .delay(granulate)
-        .arrange_by_key_named("ArrangeByKey: Operator Names");
-    let operator_ids = operator_ids
-        .as_collection()
-        .delay(granulate)
-        .arrange_by_key_named("ArrangeByKey: Operator Ids");
-    let operator_addrs = operator_addrs
-        .as_collection()
-        .delay(granulate)
-        .arrange_by_key_named("ArrangeByKey: Operator Addrs");
-    let operator_addrs_by_self = operator_addrs_by_self
-        .as_collection()
-        .delay(granulate)
-        .arrange_named("Arrange: Operator Addrs by Self");
-    let channel_scope_addrs = channel_scope_addrs
-        .as_collection()
-        .delay(granulate)
-        .arrange_by_key_named("ArrangeByKey: Channel Scope Addrs");
-    let dataflow_ids = dataflow_ids
-        .as_collection()
-        .delay(granulate)
-        .arrange_named("Arrange: Dataflow Ids");
+    let operator_names = operator_names.arrange_by_key_named("ArrangeByKey: Operator Names");
+    let operator_ids = operator_ids.arrange_by_key_named("ArrangeByKey: Operator Ids");
+    let operator_addrs = operator_addrs.arrange_by_key_named("ArrangeByKey: Operator Addrs");
+    let operator_addrs_by_self =
+        operator_addrs_by_self.arrange_named("Arrange: Operator Addrs by Self");
+    let channel_scope_addrs =
+        channel_scope_addrs.arrange_by_key_named("ArrangeByKey: Channel Scope Addrs");
+    let dataflow_ids = dataflow_ids.arrange_named("Arrange: Dataflow Ids");
 
     // Granulate all streams and turn them into collections
     (
-        lifespans.as_collection().delay(granulate),
-        activation_durations.as_collection().delay(granulate),
-        operator_creations.as_collection().delay(granulate),
-        channel_creations.as_collection().delay(granulate),
-        raw_channels.as_collection().delay(granulate),
+        lifespans,
+        activation_durations,
+        operator_creations,
+        channel_creations,
+        raw_channels,
         // FIXME: This isn't granulated since I have no idea what depends
         //       on the timestamp being the event time
-        raw_operators.as_collection(),
+        raw_operators,
         operator_names,
         operator_ids,
         operator_addrs,
@@ -479,6 +463,24 @@ macro_rules! timely_source_processor {
             S: Scope<Timestamp = Time>,
         {
             $($name: timely_source_processor!(@stream $data, $($cond)?),)*
+        }
+
+        impl<S> Streams<S>
+        where
+            S: Scope<Timestamp = Time>,
+        {
+            fn into_collections(self) -> Collections<S> {
+                Collections {
+                    $($name: timely_source_processor!(@as_collection self, $name, $($cond)?),)*
+                }
+            }
+        }
+
+        struct Collections<S>
+        where
+            S: Scope<Timestamp = Time>,
+        {
+            $($name: timely_source_processor!(@collection $data, $($cond)?),)*
         }
 
         struct Outputs {
@@ -615,6 +617,22 @@ macro_rules! timely_source_processor {
 
     (@stream $data:ty,) => {
         Stream<S, ($data, Time, Diff)>
+    };
+
+    (@collection $data:ty, $cond:ident) => {
+        Option<Collection<S, $data, Diff>>
+    };
+
+    (@collection $data:ty,) => {
+        Collection<S, $data, Diff>
+    };
+
+    (@as_collection $self:ident, $name:ident, $cond:ident) => {
+        $self.$name.map(|$name| $name.as_collection().delay(granulate))
+    };
+
+    (@as_collection $self:ident, $name:ident,) => {
+        $self.$name.as_collection().delay(granulate)
     };
 }
 

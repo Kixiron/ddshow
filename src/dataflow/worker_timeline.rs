@@ -33,7 +33,7 @@ use timely::dataflow::{
 
 pub(super) fn worker_timeline<S, Trace>(
     scope: &mut S,
-    timely_events: &Stream<S, (EventData, Duration, Diff)>,
+    timely_events: &Collection<S, EventData, Diff>,
     differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
     operator_names: &Arranged<S, Trace>,
 ) -> Collection<S, WorkerTimelineEvent, Diff>
@@ -60,7 +60,6 @@ where
             .as_ref()
             .map(|differential_events| timely_events.concat(differential_events))
             .unwrap_or(timely_events)
-            .as_collection()
             .distinct_total()
             // TODO: These are expensive and not strictly needed,
             //       they could be replaced by worker id + event timestamp
@@ -110,7 +109,6 @@ where
 }
 
 pub(super) type TimelineStreamEvent = (EventData, Duration, Diff);
-pub(super) type TimelineEventStream<S> = Stream<S, TimelineStreamEvent>;
 type EventMap = HashMap<(WorkerId, EventKind), Vec<(Duration, Capability<Duration>)>>;
 type EventOutput<'a> =
     OutputHandle<'a, Duration, TimelineStreamEvent, Tee<Duration, TimelineStreamEvent>>;
@@ -182,40 +180,42 @@ pub(super) fn process_timely_event(
 // TODO: Wire operator shutdown events into this as well
 pub(super) fn collect_differential_events<S>(
     event_stream: &Stream<S, DifferentialLogBundle>,
-) -> TimelineEventStream<S>
+) -> Collection<S, EventData, Diff>
 where
     S: Scope<Timestamp = Duration>,
 {
-    event_stream.unary(
-        Pipeline,
-        "Gather Differential Event Durations",
-        |_capability, _info| {
-            let mut buffer = Vec::new();
-            let (mut event_map, mut map_buffer, mut stack_buffer) =
-                (HashMap::new(), HashMap::new(), Vec::new());
+    event_stream
+        .unary(
+            Pipeline,
+            "Gather Differential Event Durations",
+            |_capability, _info| {
+                let mut buffer = Vec::new();
+                let (mut event_map, mut map_buffer, mut stack_buffer) =
+                    (HashMap::new(), HashMap::new(), Vec::new());
 
-            move |input, output| {
-                input.for_each(|capability, data| {
-                    let capability = capability.retain();
-                    data.swap(&mut buffer);
+                move |input, output| {
+                    input.for_each(|capability, data| {
+                        let capability = capability.retain();
+                        data.swap(&mut buffer);
 
-                    for (time, worker, event) in buffer.drain(..) {
-                        let mut event_processor = EventProcessor::new(
-                            &mut event_map,
-                            &mut map_buffer,
-                            &mut stack_buffer,
-                            output,
-                            &capability,
-                            worker,
-                            time,
-                        );
+                        for (time, worker, event) in buffer.drain(..) {
+                            let mut event_processor = EventProcessor::new(
+                                &mut event_map,
+                                &mut map_buffer,
+                                &mut stack_buffer,
+                                output,
+                                &capability,
+                                worker,
+                                time,
+                            );
 
-                        process_differential_event(&mut event_processor, event);
-                    }
-                });
-            }
-        },
-    )
+                            process_differential_event(&mut event_processor, event);
+                        }
+                    });
+                }
+            },
+        )
+        .as_collection()
 }
 
 fn process_differential_event(

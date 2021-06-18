@@ -57,22 +57,22 @@ proptest! {
 
     #[test]
     fn timely_events(pair in gen_event_pair(true)) {
-        events_inner::<TimelyEvent, _>(pair, |events| collect_timely_events(events))?;
+        events_inner::<TimelyEvent, _>(pair, |events| collect_timely_events(events).inner)?;
     }
 
     #[test]
     fn timely_events_stress(pairs in propvec(gen_event_pair(true), 1..500)) {
-        events_stress_inner::<TimelyEvent, _>(pairs, |events| collect_timely_events(events))?;
+        events_stress_inner::<TimelyEvent, _>(pairs, |events| collect_timely_events(events).inner)?;
     }
 
     #[test]
     fn differential_events(pair in gen_event_pair(true)) {
-        events_inner::<DifferentialEvent, _>(pair, |events| collect_differential_events(events))?;
+        events_inner::<DifferentialEvent, _>(pair, |events| collect_differential_events(events).inner)?;
     }
 
     #[test]
     fn differential_events_stress(pairs in propvec(gen_event_pair(true), 1..500)) {
-        events_stress_inner::<DifferentialEvent, _>(pairs, |events| collect_differential_events(events))?;
+        events_stress_inner::<DifferentialEvent, _>(pairs, |events| collect_differential_events(events).inner)?;
     }
 }
 
