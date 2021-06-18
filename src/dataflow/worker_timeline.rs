@@ -109,7 +109,7 @@ where
     })
 }
 
-type TimelineStreamEvent = (EventData, Duration, Diff);
+pub(super) type TimelineStreamEvent = (EventData, Duration, Diff);
 pub(super) type TimelineEventStream<S> = Stream<S, TimelineStreamEvent>;
 type EventMap = HashMap<(WorkerId, EventKind), Vec<(Duration, Capability<Duration>)>>;
 type EventOutput<'a> =
