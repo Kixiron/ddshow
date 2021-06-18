@@ -1,21 +1,38 @@
 use crate::dataflow::{
     differential::{self, ArrangementStats},
+    operators::{DiffDuration, Max, Maybe, Min},
     summation::{summation, Summation},
-    utils::{Diff, DifferentialLogBundle},
+    utils::{Diff, DifferentialLogBundle, Time},
     OperatorId, WorkerId,
 };
 use abomonation_derive::Abomonation;
 use differential_dataflow::{
-    operators::{arrange::ArrangeByKey, Join, Reduce},
+    difference::DiffPair,
+    operators::{CountTotal, Join},
     Collection,
 };
-use std::time::Duration;
+use std::{iter, time::Duration};
 use timely::dataflow::{Scope, Stream};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Abomonation)]
 pub struct OperatorStats {
     pub id: OperatorId,
     pub worker: WorkerId,
+    pub max: Duration,
+    pub min: Duration,
+    pub average: Duration,
+    pub total: Duration,
+    pub activations: usize,
+    /// Operator activation times `(start, duration)`
+    pub activation_durations: Vec<(Duration, Duration)>,
+    pub arrangement_size: Option<ArrangementStats>,
+    // pub messages_sent: usize,
+    // pub messages_received: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Abomonation)]
+pub struct AggregatedOperatorStats {
+    pub id: OperatorId,
     pub max: Duration,
     pub min: Duration,
     pub average: Duration,
@@ -137,94 +154,144 @@ where
 
 pub(crate) fn aggregate_operator_stats<S>(
     operator_stats: &Collection<S, ((WorkerId, OperatorId), OperatorStats), Diff>,
-) -> Collection<S, (OperatorId, OperatorStats), Diff>
+) -> Collection<S, (OperatorId, AggregatedOperatorStats), Diff>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
 {
-    let operator_stats_arranged = operator_stats
-        .map(|((_worker, operator), stats)| (operator, stats))
-        .arrange_by_key_named("ArrangeByKey: Aggregate Operator Stats Across Workers");
+    let operator_stats = operator_stats.map(|((_worker, operator), stats)| (operator, stats));
 
-    // FIXME: Almost all of this can be lifted into the difference type
-    operator_stats_arranged.reduce_named(
-        "Reduce: Aggregate Operator Stats Across Workers",
-        |&operator, worker_stats, aggregated| {
-            let mut activation_durations = Vec::new();
-            let mut arrangements = Vec::new();
-            let mut activations = 0;
-            let mut total = Duration::from_secs(0);
+    operator_stats
+        .explode(
+            |(
+                operator,
+                OperatorStats {
+                    max,
+                    min,
+                    average,
+                    total,
+                    activations,
+                    arrangement_size,
+                    ..
+                },
+            )| {
+                let diff = DiffPair::new(
+                    1,
+                    DiffPair::new(
+                        Max::new(DiffDuration::new(max)),
+                        DiffPair::new(
+                            Min::new(DiffDuration::new(min)),
+                            DiffPair::new(
+                                DiffDuration::new(average),
+                                DiffPair::new(
+                                    DiffDuration::new(total),
+                                    DiffPair::new(
+                                        activations as isize,
+                                        DiffPair::new(
+                                            Maybe::from(
+                                                arrangement_size
+                                                    .map(|arr| Max::new(arr.max_size as isize)),
+                                            ),
+                                            DiffPair::new(
+                                                Maybe::from(
+                                                    arrangement_size
+                                                        .map(|arr| Min::new(arr.min_size as isize)),
+                                                ),
+                                                Maybe::from(
+                                                    arrangement_size
+                                                        .map(|arr| arr.batches as isize),
+                                                ),
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                );
 
-            for (stats, _diff) in worker_stats {
-                activation_durations.extend(stats.activation_durations.iter().copied());
+                iter::once((operator, diff))
+            },
+        )
+        .count_total()
+        .map(
+            |(
+                operator,
+                DiffPair {
+                    element1: total_workers,
+                    element2:
+                        DiffPair {
+                            element1:
+                                Max {
+                                    value: max,
+                                },
+                            element2:
+                                DiffPair {
+                                    element1:
+                                        Min {
+                                            value: min,
+                                        },
+                                    element2:
+                                        DiffPair {
+                                            element1: summed_average,
+                                            element2:
+                                                DiffPair {
+                                                    element1: summed_total,
+                                                    element2: DiffPair {
+                                                        element1: activations,
+                                                        element2: DiffPair {
+                                                            element1: arrangement_max_size,
+                                                            element2:
+                                                                DiffPair {
+                                                                    element1: arrangement_min_size,
+                                                                    element2:
+                                                                        arrangement_total_batches,
+                                                                },
+                                                        },
+                                                    },
+                                                },
+                                        },
+                                },
+                        },
+                },
+            )| {
+                let average = summed_average
+                    .to_duration()
+                    .checked_div(total_workers as u32)
+                    .unwrap_or_else(|| Duration::from_secs(0));
+                let total = summed_total
+                    .to_duration()
+                    .checked_div(total_workers as u32)
+                    .unwrap_or_else(|| Duration::from_secs(0));
 
-                if let Some(size) = stats.arrangement_size {
-                    arrangements.push(size);
-                }
+                let arrangement_size = {
+                    let max_size = Option::from(arrangement_max_size);
+                    let min_size = Option::from(arrangement_min_size);
+                    let batches = Option::from(arrangement_total_batches);
 
-                activations += stats.activations;
-                total += stats.total;
-            }
+                    max_size
+                        .zip(min_size)
+                        .zip(batches)
+                        .map(|((Max { value: max_size }, Min { value: min_size }), batches): (_, isize)| {
+                            ArrangementStats {
+                                max_size: max_size as usize,
+                                min_size: min_size as usize,
+                                batches: batches as usize,
+                            }
+                        })
+                };
 
-            let max = activation_durations
-                .iter()
-                .map(|&(duration, _)| duration)
-                .max()
-                .unwrap_or_else(|| Duration::from_secs(0));
+                let stats = AggregatedOperatorStats {
+                    id: operator,
+                    max: max.to_duration(),
+                    min: min.to_duration(),
+                    average,
+                    total,
+                    activations: activations as usize,
+                    activation_durations: Vec::new(),
+                    arrangement_size,
+                };
 
-            let min = activation_durations
-                .iter()
-                .map(|&(duration, _)| duration)
-                .min()
-                .unwrap_or_else(|| Duration::from_secs(0));
-
-            let average = activation_durations
-                .iter()
-                .map(|&(duration, _)| duration)
-                .sum::<Duration>()
-                .checked_div(activation_durations.len() as u32)
-                .unwrap_or_else(|| Duration::from_secs(0));
-
-            let arrangement_size = if arrangements.is_empty() {
-                None
-            } else {
-                let max_size = arrangements
-                    .iter()
-                    .map(|arr| arr.max_size)
-                    .max()
-                    .unwrap_or(0);
-
-                let min_size = arrangements
-                    .iter()
-                    .map(|arr| arr.max_size)
-                    .min()
-                    .unwrap_or(0);
-
-                let batches = arrangements
-                    .iter()
-                    .map(|arr| arr.batches)
-                    .sum::<usize>()
-                    .checked_div(arrangements.len())
-                    .unwrap_or(0);
-
-                Some(ArrangementStats {
-                    max_size,
-                    min_size,
-                    batches,
-                })
-            };
-
-            let aggregate = OperatorStats {
-                id: operator,
-                worker: worker_stats[0].0.worker,
-                max,
-                min,
-                average,
-                total,
-                activations,
-                activation_durations,
-                arrangement_size,
-            };
-            aggregated.push((aggregate, 1))
-        },
-    )
+                (operator, stats)
+            },
+        )
 }

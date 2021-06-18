@@ -4,7 +4,7 @@ use comfy_table::{presets::UTF8_FULL, Cell, ColumnConstraint, Row, Table as Inne
 use ddshow_types::{OperatorAddr, OperatorId, WorkerId};
 use std::{
     cmp::Reverse,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::{self, Display},
     fs::{self, File},
     io::Write,
@@ -42,9 +42,23 @@ pub fn build_report(
         tracing::debug!("creating report file: {}", args.report_file.display());
         let mut file = File::create(&args.report_file).context("failed to create report file")?;
 
+        let all_workers: HashSet<_> = data
+            .worker_stats
+            .iter()
+            .flatten()
+            .map(|&(worker, _)| worker)
+            .collect();
+
         program_overview(args, data, &mut file)?;
         worker_stats(args, data, &mut file)?;
-        operator_stats(args, data, &mut file, &name_lookup, &addr_lookup)?;
+        operator_stats(
+            args,
+            data,
+            &mut file,
+            &name_lookup,
+            &addr_lookup,
+            &all_workers,
+        )?;
 
         let mut table = Table::new();
         table.set_header(vec![
@@ -70,7 +84,7 @@ pub fn build_report(
         writeln!(file, "{}\n", table).context("failed to write to report file")?;
 
         if args.differential_enabled {
-            arrangement_stats(data, &mut file, &name_lookup, &addr_lookup)?;
+            arrangement_stats(data, &mut file, &name_lookup, &addr_lookup, &all_workers)?;
         } else {
             tracing::debug!("differential logging is disabled, skipping arrangement stats table");
         }
@@ -169,6 +183,7 @@ fn operator_stats(
     file: &mut File,
     name_lookup: &HashMap<(WorkerId, OperatorId), String>,
     addr_lookup: &HashMap<(WorkerId, OperatorId), OperatorAddr>,
+    all_workers: &HashSet<WorkerId>,
 ) -> Result<()> {
     tracing::debug!("generating operator stats table");
 
@@ -204,14 +219,16 @@ fn operator_stats(
     for (operator, stats, addr, name) in operators_by_total_runtime
         .iter()
         .filter_map(|&(operator, ref stats)| {
-            addr_lookup
-                .get(&(stats.worker, operator))
-                .map(|addr| (operator, stats, addr))
+            all_workers.iter().find_map(|&worker| {
+                addr_lookup
+                    .get(&(worker, operator))
+                    .map(|addr| (operator, stats, addr))
+            })
         })
         .map(|(operator, stats, addr)| {
-            let name: Option<&str> = name_lookup
-                .get(&(stats.worker, operator))
-                .map(|name| &**name);
+            let name: Option<&str> = all_workers
+                .iter()
+                .find_map(|&worker| name_lookup.get(&(worker, operator)).map(|name| &**name));
 
             (operator, stats, addr, name.unwrap_or("N/A"))
         })
@@ -259,6 +276,7 @@ fn arrangement_stats(
     file: &mut File,
     name_lookup: &HashMap<(WorkerId, OperatorId), String>,
     addr_lookup: &HashMap<(WorkerId, OperatorId), OperatorAddr>,
+    all_workers: &HashSet<WorkerId>,
 ) -> Result<()> {
     tracing::debug!("generating arrangement stats table");
 
@@ -288,14 +306,16 @@ fn arrangement_stats(
     for (operator, stats, arrange, addr, name) in operators_by_arrangement_size
         .iter()
         .filter_map(|&(operator, ref stats, arrange)| {
-            addr_lookup
-                .get(&(stats.worker, operator))
-                .map(|addr| (operator, stats, arrange, addr))
+            all_workers.iter().find_map(|&worker| {
+                addr_lookup
+                    .get(&(worker, operator))
+                    .map(|addr| (operator, stats, arrange, addr))
+            })
         })
         .map(|(operator, stats, arrange, addr)| {
-            let name: Option<&str> = name_lookup
-                .get(&(stats.worker, operator))
-                .map(|name| &**name);
+            let name: Option<&str> = all_workers
+                .iter()
+                .find_map(|&worker| name_lookup.get(&(worker, operator)).map(|name| &**name));
 
             (operator, stats, arrange, addr, name.unwrap_or("N/A"))
         })

@@ -1,7 +1,7 @@
 use crate::{
     dataflow::{
         constants::DEFAULT_EXTRACTOR_CAPACITY,
-        operator_stats::OperatorStats,
+        operator_stats::{AggregatedOperatorStats, OperatorStats},
         operators::{CrossbeamExtractor, Fuel},
         progress_stats::{Channel, ProgressInfo},
         utils::{channel_sink, Diff, Time},
@@ -278,7 +278,7 @@ type EdgeData = (
 );
 type SubgraphData = ((WorkerId, OperatorAddr), OperatesEvent);
 type OperatorStatsData = ((WorkerId, OperatorId), OperatorStats);
-type AggOperatorStatsData = (OperatorId, OperatorStats);
+type AggOperatorStatsData = (OperatorId, AggregatedOperatorStats);
 type TimelineEventData = WorkerTimelineEvent;
 type NameLookupData = ((WorkerId, OperatorId), String);
 type AddrLookupData = ((WorkerId, OperatorId), OperatorAddr);

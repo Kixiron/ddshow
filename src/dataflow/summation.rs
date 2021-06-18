@@ -50,10 +50,13 @@ where
                 (
                     id,
                     Summation::new(
-                        max.value.0,
-                        min.value.0,
-                        total.0,
-                        total.0 / count as u32,
+                        max.value.to_duration(),
+                        min.value.to_duration(),
+                        total.to_duration(),
+                        total
+                            .to_duration()
+                            .checked_div(count as u32)
+                            .unwrap_or_else(|| Duration::from_secs(0)),
                         count as usize,
                     ),
                 )

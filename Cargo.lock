@@ -293,6 +293,7 @@ dependencies = [
  "differential-dataflow",
  "indicatif",
  "num",
+ "ordered-float",
  "proptest",
  "rand",
  "rkyv",
@@ -762,6 +763,15 @@ name = "opaque-debug"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2839e79665f131bdb5782e51f2c6c9599c133c6098982a54c794358bf432529c"
+
+[[package]]
+name = "ordered-float"
+version = "2.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f100fcfb41e5385e0991f74981732049f9b896821542a219420491046baafdc2"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "parking_lot"

@@ -25,7 +25,7 @@ pub use filter_split::FilterSplit;
 pub use inspect::InspectExt;
 pub use iterate_ext::IterateExt;
 pub use map::{MapExt, MapInPlace};
-pub use min_max::{DiffDuration, Max, Min};
+pub use min_max::{DiffDuration, Max, Maybe, Min};
 pub use negate::NegateExt;
 pub use reduce::HierarchicalReduce;
 pub use replay_with_shutdown::{EventIterator, EventReader, ReplayWithShutdown};

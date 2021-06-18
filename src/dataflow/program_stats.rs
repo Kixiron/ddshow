@@ -185,7 +185,8 @@ where
                     runtime,
                 ),
             )| {
-                let runtime = runtime.element1.value.0 - runtime.element2.value.0;
+                let runtime =
+                    runtime.element1.value.to_duration() - runtime.element2.value.to_duration();
 
                 (
                     worker,
@@ -257,12 +258,7 @@ where
                                                                     DiffPair {
                                                                         element1: events,
                                                                         element2:
-                                                                            Max {
-                                                                                value:
-                                                                                    DiffDuration(
-                                                                                        runtime,
-                                                                                    ),
-                                                                            },
+                                                                            Max { value: runtime },
                                                                     },
                                                             },
                                                     },
@@ -278,7 +274,7 @@ where
                     channels: channels as usize,
                     arrangements: arrangements as usize,
                     events: events as usize,
-                    runtime,
+                    runtime: runtime.to_duration(),
                 },
             );
 

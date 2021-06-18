@@ -3,6 +3,7 @@ use abomonation_derive::Abomonation;
 use differential_dataflow::difference::Multiply;
 use differential_dataflow::difference::{Monoid, Semigroup};
 use num::Bounded;
+use ordered_float::OrderedFloat;
 use std::{
     cmp,
     fmt::Debug,
@@ -267,12 +268,20 @@ where
 }
 
 /// A utility type to allow using [`Duration`]s within [`Max`] and [`Min`]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
-pub struct DiffDuration(pub Duration);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DiffDuration(OrderedFloat<f64>);
 
 impl DiffDuration {
-    pub const fn new(duration: Duration) -> Self {
-        Self(duration)
+    pub fn new(duration: Duration) -> Self {
+        Self(OrderedFloat(duration.as_secs_f64()))
+    }
+
+    pub fn to_duration(self) -> Duration {
+        if self.0 .0.is_infinite() || self.0 .0.is_sign_negative() {
+            Duration::from_secs(0)
+        } else {
+            Duration::from_secs_f64(self.0 .0)
+        }
     }
 }
 
@@ -299,8 +308,9 @@ impl AddAssign<&Self> for DiffDuration {
 impl Mul<isize> for DiffDuration {
     type Output = Self;
 
+    // FIXME: This is *super* hacky
     fn mul(self, rhs: isize) -> Self {
-        Self(self.0 * rhs as u32)
+        Self(OrderedFloat(self.0 .0 * rhs as f64))
     }
 }
 
@@ -309,7 +319,7 @@ impl Multiply<isize> for DiffDuration {
     type Output = Self;
 
     fn multiply(self, &rhs: &isize) -> Self::Output {
-        Self(self.0 * rhs as u32)
+        Self(self * rhs)
     }
 }
 
@@ -321,7 +331,7 @@ impl Monoid for DiffDuration {
 
 impl Semigroup for DiffDuration {
     fn is_zero(&self) -> bool {
-        self.0 == Duration::from_secs(0)
+        self == &Self::zero()
     }
 
     #[cfg(feature = "timely-next")]
@@ -339,3 +349,151 @@ impl Bounded for DiffDuration {
         Self::new(Duration::from_secs(u64::max_value()))
     }
 }
+
+/// A utility type to allow using [`Option`]s within differences
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
+pub enum Maybe<T> {
+    Just(T),
+    Nothing,
+}
+
+impl<T> Maybe<T> {
+    pub const fn just(value: T) -> Self {
+        Self::Just(value)
+    }
+
+    pub const fn nothing() -> Self {
+        Self::Nothing
+    }
+
+    /// Returns `true` if the maybe is [`Nothing`].
+    pub const fn is_nothing(&self) -> bool {
+        matches!(self, Self::Nothing)
+    }
+}
+
+impl<T> Add<Self> for Maybe<T>
+where
+    T: Add<T, Output = T>,
+{
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
+        match (self, rhs) {
+            (Self::Just(lhs), Self::Just(rhs)) => Self::Just(lhs + rhs),
+            (Self::Just(val), Self::Nothing) | (Self::Nothing, Self::Just(val)) => Self::Just(val),
+            (Self::Nothing, Self::Nothing) => Self::Nothing,
+        }
+    }
+}
+
+impl<T> AddAssign<Self> for Maybe<T>
+where
+    T: AddAssign<T>,
+{
+    fn add_assign(&mut self, rhs: Self) {
+        match (self, rhs) {
+            (Self::Just(lhs), Self::Just(rhs)) => *lhs += rhs,
+            (this @ Self::Nothing, Self::Just(rhs)) => *this = Self::Just(rhs),
+            (Self::Just(_), Self::Nothing) | (Self::Nothing, Self::Nothing) => {}
+        }
+    }
+}
+
+impl<T> AddAssign<&Self> for Maybe<T>
+where
+    T: for<'a> AddAssign<&'a T> + Clone,
+{
+    fn add_assign(&mut self, rhs: &Self) {
+        match (self, rhs) {
+            (Self::Just(lhs), Self::Just(rhs)) => *lhs += rhs,
+            (this @ Self::Nothing, Self::Just(rhs)) => *this = Self::Just(rhs.clone()),
+            (Self::Just(_), Self::Nothing) | (Self::Nothing, Self::Nothing) => {}
+        }
+    }
+}
+
+impl<T> Mul<isize> for Maybe<T>
+where
+    T: Mul<isize, Output = T>,
+{
+    type Output = Self;
+
+    fn mul(self, rhs: isize) -> Self {
+        match self {
+            Self::Just(val) => Self::Just(val * rhs),
+            Self::Nothing => Self::Nothing,
+        }
+    }
+}
+
+#[cfg(feature = "timely-next")]
+impl<T> Multiply<isize> for Maybe<T>
+where
+    T: Multiply<isize, Output = T>,
+{
+    type Output = Self;
+
+    fn multiply(self, rhs: &isize) -> Self::Output {
+        match self {
+            Self::Just(val) => Self::Just(val.multiply(rhs)),
+            Self::Nothing => Self::Nothing,
+        }
+    }
+}
+
+impl<T> Monoid for Maybe<T>
+where
+    T: Semigroup,
+{
+    fn zero() -> Self {
+        Self::Nothing
+    }
+}
+
+impl<T> Semigroup for Maybe<T>
+where
+    T: Ord + Clone + Debug + for<'a> AddAssign<&'a T> + 'static,
+{
+    fn is_zero(&self) -> bool {
+        self.is_nothing()
+    }
+
+    #[cfg(feature = "timely-next")]
+    fn plus_equals(&mut self, rhs: &Self) {
+        *self += rhs;
+    }
+}
+
+impl<T> Bounded for Maybe<T>
+where
+    T: Bounded,
+{
+    fn min_value() -> Self {
+        Self::Nothing
+    }
+
+    fn max_value() -> Self {
+        Self::Just(T::max_value())
+    }
+}
+
+impl<T> From<Option<T>> for Maybe<T> {
+    fn from(option: Option<T>) -> Self {
+        match option {
+            Some(value) => Self::Just(value),
+            None => Self::Nothing,
+        }
+    }
+}
+
+impl<T> From<Maybe<T>> for Option<T> {
+    fn from(val: Maybe<T>) -> Self {
+        match val {
+            Maybe::Just(value) => Some(value),
+            Maybe::Nothing => None,
+        }
+    }
+}
+
+impl abomonation::Abomonation for DiffDuration {}

@@ -26,6 +26,7 @@ pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
 use crate::{
     args::Args,
     dataflow::{
+        operator_stats::AggregatedOperatorStats,
         operators::{FilterMap, JoinArranged, Multiply, SortBy},
         send_recv::ChannelAddrs,
         subgraphs::rewire_channels,
@@ -222,7 +223,7 @@ fn install_data_extraction<S>(
     subgraphs: ArrangedKey<S, (WorkerId, OperatorAddr), Diff>,
     operator_stats: Collection<S, ((WorkerId, OperatorId), OperatorStats), Diff>,
     addressed_operators: ArrangedVal<S, (WorkerId, OperatorAddr), OperatesEvent, Diff>,
-    aggregated_operator_stats: Collection<S, (OperatorId, OperatorStats), Diff>,
+    aggregated_operator_stats: Collection<S, (OperatorId, AggregatedOperatorStats), Diff>,
     dataflow_stats: Collection<S, DataflowStats, Diff>,
     timeline_events: Option<Collection<S, WorkerTimelineEvent, Diff>>,
     operator_names: ArrangedVal<S, (WorkerId, OperatorId), String, Diff>,
