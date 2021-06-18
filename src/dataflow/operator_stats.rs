@@ -145,21 +145,24 @@ where
         .map(|((_worker, operator), stats)| (operator, stats))
         .arrange_by_key_named("ArrangeByKey: Aggregate Operator Stats Across Workers");
 
+    // FIXME: Almost all of this can be lifted into the difference type
     operator_stats_arranged.reduce_named(
         "Reduce: Aggregate Operator Stats Across Workers",
         |&operator, worker_stats, aggregated| {
-            let activations = worker_stats.len();
             let mut activation_durations = Vec::new();
             let mut arrangements = Vec::new();
-            let mut totals = Vec::new();
+            let mut activations = 0;
+            let mut total = Duration::from_secs(0);
 
             for (stats, _diff) in worker_stats {
-                totals.push(stats.total);
                 activation_durations.extend(stats.activation_durations.iter().copied());
 
                 if let Some(size) = stats.arrangement_size {
                     arrangements.push(size);
                 }
+
+                activations += stats.activations;
+                total += stats.total;
             }
 
             let max = activation_durations
@@ -179,12 +182,6 @@ where
                 .map(|&(duration, _)| duration)
                 .sum::<Duration>()
                 .checked_div(activation_durations.len() as u32)
-                .unwrap_or_else(|| Duration::from_secs(0));
-
-            let total = totals
-                .iter()
-                .sum::<Duration>()
-                .checked_div(totals.len() as u32)
                 .unwrap_or_else(|| Duration::from_secs(0));
 
             let arrangement_size = if arrangements.is_empty() {
