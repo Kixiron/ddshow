@@ -3,7 +3,7 @@ use crate::{
         constants::IDLE_EXTRACTION_FUEL,
         operators::Fuel,
         utils::{granulate, Time},
-        worker_timeline::{process_timely_event, EventData, EventProcessor},
+        worker_timeline::{process_timely_event, EventData, EventMap, EventProcessor},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelyLogBundle,
         WorkerId,
     },
@@ -18,7 +18,6 @@ use differential_dataflow::{
 };
 use std::{
     collections::{HashMap, VecDeque},
-    mem,
     time::Duration,
 };
 use timely::{
@@ -36,6 +35,8 @@ use timely::{
     progress::frontier::MutableAntichain,
     Data,
 };
+
+// TODO: So much refactoring
 
 type TimelyCollections<S> = (
     // Operator lifespans
@@ -67,6 +68,12 @@ type TimelyCollections<S> = (
     // Timely event data, will be `None` if timeline analysis is disabled
     Option<Collection<S, EventData, Diff>>,
 );
+
+type WorkList = VecDeque<(
+    Vec<(Time, WorkerId, TimelyEvent)>,
+    Duration,
+    OutputCapabilities,
+)>;
 
 // TODO: These could all emit `Present` difference types since there's no retractions here
 pub(super) fn extract_timely_info<S>(
@@ -100,8 +107,6 @@ where
     let (mut outputs, streams) = Outputs::new(&mut builder, !disable_timeline);
 
     builder.build(move |_capabilities| {
-        let mut buffer = Vec::new();
-
         // TODO: Use stacks for these, migrate to something more like `EventProcessor`
         let (
             mut lifespan_map,
@@ -118,6 +123,7 @@ where
         );
 
         let mut work_list = VecDeque::new();
+        let mut work_list_buffers = Vec::new();
         let mut fuel = Fuel::limited(IDLE_EXTRACTION_FUEL);
 
         move |_frontiers| {
@@ -125,193 +131,36 @@ where
             let mut handles = outputs.activate();
 
             timely_stream.for_each(|capability, data| {
+                let mut buffer = work_list_buffers.pop().unwrap_or_default();
                 data.swap(&mut buffer);
 
                 work_list.push_back((
                     // TODO: Keep some extra buffers around
-                    mem::take(&mut buffer),
+                    buffer,
                     *capability.time(),
                     handles.retain(capability),
                 ));
             });
 
-            fuel.reset();
+            work_loop(
+                &mut fuel,
+                &mut handles,
+                &mut lifespan_map,
+                &mut activation_map,
+                &mut work_list,
+                &mut work_list_buffers,
+                &mut event_map,
+                &mut map_buffer,
+                &mut stack_buffer,
+            );
 
-            'work_loop: while !fuel.is_exhausted() {
-                if let Some((mut buffer, capability_time, mut capabilities)) = work_list.pop_front()
-                {
-                    for (time, worker, event) in buffer.drain(..) {
-                        // Get the timestamp for the current event
-                        let session_time = capability_time.join(&time);
-                        capabilities.downgrade(&session_time);
-
-                        if let (Some(worker_events), Some(capability)) = (handles.worker_events.as_mut(), capabilities.worker_events.as_ref()) {
-                            let mut event_processor = EventProcessor::new(
-                                &mut event_map,
-                                &mut map_buffer,
-                                &mut stack_buffer,
-                                &mut worker_events.handle,
-                                capability,
-                                worker,
-                                time,
-                            );
-
-                            process_timely_event(&mut event_processor, event.clone());
-                            fuel.exert(1);
-                        }
-
-                        match event {
-                            TimelyEvent::Operates(operates) => {
-                                lifespan_map.insert((worker, operates.id), time);
-
-                                // Emit raw operator events
-                                handles.raw_operators.session(&capabilities.raw_operators).give((
-                                    (worker, operates.clone()),
-                                    session_time,
-                                    1,
-                                ));
-
-                                // Emit operator creation times
-                                handles.operator_creations
-                                    .session(&capabilities.operator_creations)
-                                    .give((((worker, operates.id), time), session_time, 1));
-
-                                // Emit operator names
-                                handles.operator_names.session(&capabilities.operator_names).give((
-                                    ((worker, operates.id), operates.name),
-                                    session_time,
-                                    1,
-                                ));
-
-                                // Emit dataflow ids
-                                let is_top_level = operates.addr.is_top_level();
-                                if is_top_level {
-                                    handles.dataflow_ids.session(&capabilities.dataflow_ids).give((
-                                        ((worker, operates.id), ()),
-                                        session_time,
-                                        1,
-                                    ));
-                                }
-
-                                // Emit operator ids
-                                handles.operator_ids.session(&capabilities.operator_ids).give((
-                                    ((worker, operates.id), operates.addr.clone()),
-                                    session_time,
-                                    1,
-                                ));
-
-                                // Emit operator addresses
-                                handles.operator_addrs.session(&capabilities.operator_addrs).give((
-                                    ((worker, operates.addr.clone()), operates.id),
-                                    session_time,
-                                    1,
-                                ));
-                                handles.operator_addrs_by_self
-                                    .session(&capabilities.operator_addrs_by_self)
-                                    .give((((worker, operates.addr), ()), session_time, 1));
-
-                                fuel.exert(6 + is_top_level as usize);
-                            }
-
-                            TimelyEvent::Shutdown(shutdown) => {
-                                if let Some(start_time) =
-                                    lifespan_map.remove(&(worker, shutdown.id))
-                                {
-                                    handles.lifespans.session(&capabilities.lifespans).give((
-                                        ((worker, shutdown.id), Lifespan::new(start_time, time)),
-                                        session_time,
-                                        1,
-                                    ));
-
-                                    fuel.exert(1);
-                                }
-
-                                // Remove any dangling activations
-                                activation_map.remove(&(worker, shutdown.id));
-                            }
-
-                            TimelyEvent::Schedule(schedule) => {
-                                let operator = schedule.id;
-
-                                match schedule.start_stop {
-                                    StartStop::Start => {
-                                        activation_map.insert((worker, operator), time);
-                                    }
-
-                                    StartStop::Stop => {
-                                        if let Some(start_time) =
-                                            activation_map.remove(&(worker, operator))
-                                        {
-                                            let duration = time - start_time;
-                                            handles
-                                                .activation_durations
-                                                .session(&capabilities.activation_durations)
-                                                .give((
-                                                    ((worker, operator), (start_time, duration)),
-                                                    session_time,
-                                                    1,
-                                                ));
-
-                                            fuel.exert(1);
-                                        }
-                                    }
-                                }
-                            }
-
-                            TimelyEvent::Channels(channel) => {
-                                // Emit raw channels
-                                handles.
-                                    raw_channels
-                                    .session(&capabilities.raw_channels).give((
-                                        (worker, channel.clone()),
-                                        session_time,
-                                        1,
-                                    ));
-
-                                // Emit channel creation times
-                                handles
-                                    .channel_creations
-                                    .session(&capabilities.channel_creations)
-                                    .give((((worker, channel.id), time), session_time, 1));
-
-                                // Emit channel scope addresses
-                                handles
-                                    .channel_scope_addrs
-                                    .session(&capabilities.channel_scope_addrs)
-                                    .give((
-                                        ((worker, channel.id), channel.scope_addr),
-                                        session_time,
-                                        1,
-                                    ));
-
-                                fuel.exert(3);
-                            }
-
-                            TimelyEvent::PushProgress(_)
-                            | TimelyEvent::Messages(_)
-                            | TimelyEvent::Application(_)
-                            | TimelyEvent::GuardedMessage(_)
-                            | TimelyEvent::GuardedProgress(_)
-                            | TimelyEvent::CommChannels(_)
-                            | TimelyEvent::Input(_)
-                            | TimelyEvent::Park(_)
-                            | TimelyEvent::Text(_) => {}
-                        }
-                    }
-                } else {
-                    break 'work_loop;
-                }
-            }
-
+            // If we have any work left to do, reactivate ourselves
             if !work_list.is_empty() {
                 activator.activate();
             }
 
             // FIXME: If every data source has completed, cut off any outstanding events to keep
             //        us from getting stuck in an infinite loop
-
-            // Return our reactivation status, we want to be reactivated if we have any pending data
-            // dbg!(!has_been_activated && !work_list.is_empty() && !activation_map.is_empty() && !lifespan_map.is_empty())
         }
     });
 
@@ -360,6 +209,282 @@ where
         // Note: Don't granulate this
         worker_events,
     )
+}
+#[allow(clippy::too_many_arguments)]
+fn work_loop(
+    fuel: &mut Fuel,
+    handles: &mut OutputHandles,
+    lifespan_map: &mut HashMap<(WorkerId, OperatorId), Duration>,
+    activation_map: &mut HashMap<(WorkerId, OperatorId), Duration>,
+    work_list: &mut WorkList,
+    work_list_buffers: &mut Vec<Vec<(Time, WorkerId, TimelyEvent)>>,
+    event_map: &mut EventMap,
+    map_buffer: &mut EventMap,
+    stack_buffer: &mut Vec<Vec<(Duration, Capability<Duration>)>>,
+) {
+    // Reset our fuel on each activation
+    fuel.reset();
+
+    'work_loop: while !fuel.is_exhausted() {
+        if let Some((mut buffer, capability_time, mut capabilities)) = work_list.pop_front() {
+            for (time, worker, event) in buffer.drain(..) {
+                // Get the timestamp for the current event
+                let session_time = capability_time.join(&time);
+                capabilities.downgrade(&session_time);
+
+                if let (Some(worker_events), Some(capability)) = (
+                    handles.worker_events.as_mut(),
+                    capabilities.worker_events.as_ref(),
+                ) {
+                    let mut event_processor = EventProcessor::new(
+                        event_map,
+                        map_buffer,
+                        stack_buffer,
+                        &mut worker_events.handle,
+                        capability,
+                        worker,
+                        time,
+                    );
+
+                    process_timely_event(&mut event_processor, event.clone());
+                }
+
+                ingest_event(
+                    time,
+                    worker,
+                    event,
+                    session_time,
+                    handles,
+                    &capabilities,
+                    lifespan_map,
+                    activation_map,
+                );
+
+                fuel.exert(1);
+            }
+
+            // If we didn't have enough fuel to fully deplete the buffer, push it back onto the work list
+            if !buffer.is_empty() {
+                work_list.push_front((buffer, capability_time, capabilities));
+
+            // Otherwise add it to the extra buffers we maintain
+            } else {
+                work_list_buffers.push(buffer);
+            }
+        } else {
+            break 'work_loop;
+        }
+    }
+
+    // Keep our memory usage somewhat under control
+    // TODO: Factor out into a function or method
+    {
+        if lifespan_map.capacity() > lifespan_map.len() * 4 {
+            tracing::trace!(
+                "shrank lifespan map from a capacity of {} to {}",
+                lifespan_map.capacity(),
+                lifespan_map.len(),
+            );
+
+            lifespan_map.shrink_to_fit();
+        }
+
+        if activation_map.capacity() > activation_map.len() * 4 {
+            tracing::trace!(
+                "shrank activation map from a capacity of {} to {}",
+                activation_map.capacity(),
+                activation_map.len(),
+            );
+
+            activation_map.shrink_to_fit();
+        }
+
+        if work_list.capacity() > work_list.len() * 4 {
+            tracing::trace!(
+                "shrank work list from a capacity of {} to {}",
+                work_list.capacity(),
+                work_list.len(),
+            );
+
+            work_list.shrink_to_fit();
+        }
+
+        if work_list_buffers.capacity() > work_list_buffers.len() * 4 {
+            tracing::trace!(
+                "shrank work list buffers from a capacity of {} to {}",
+                work_list_buffers.capacity(),
+                work_list_buffers.len(),
+            );
+
+            work_list_buffers.shrink_to_fit();
+        }
+
+        if event_map.capacity() > event_map.len() * 4 {
+            tracing::trace!(
+                "shrank event map from a capacity of {} to {}",
+                event_map.capacity(),
+                event_map.len(),
+            );
+
+            event_map.shrink_to_fit();
+        }
+
+        if map_buffer.capacity() > map_buffer.len() * 4 {
+            tracing::trace!(
+                "shrank map buffer from a capacity of {} to {}",
+                map_buffer.capacity(),
+                map_buffer.len(),
+            );
+
+            map_buffer.shrink_to_fit();
+        }
+
+        stack_buffer.truncate(5);
+        if stack_buffer.capacity() > stack_buffer.len() * 4 {
+            tracing::trace!(
+                "shrank stack buffer from a capacity of {} to {}",
+                stack_buffer.capacity(),
+                stack_buffer.len(),
+            );
+
+            stack_buffer.shrink_to_fit();
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ingest_event(
+    time: Duration,
+    worker: WorkerId,
+    event: TimelyEvent,
+    session_time: Duration,
+    handles: &mut OutputHandles,
+    capabilities: &OutputCapabilities,
+    lifespan_map: &mut HashMap<(WorkerId, OperatorId), Duration>,
+    activation_map: &mut HashMap<(WorkerId, OperatorId), Duration>,
+) {
+    match event {
+        TimelyEvent::Operates(operates) => {
+            lifespan_map.insert((worker, operates.id), time);
+
+            // Emit raw operator events
+            handles
+                .raw_operators
+                .session(&capabilities.raw_operators)
+                .give(((worker, operates.clone()), session_time, 1));
+
+            // Emit operator creation times
+            handles
+                .operator_creations
+                .session(&capabilities.operator_creations)
+                .give((((worker, operates.id), time), session_time, 1));
+
+            // Emit operator names
+            handles
+                .operator_names
+                .session(&capabilities.operator_names)
+                .give((((worker, operates.id), operates.name), session_time, 1));
+
+            // Emit dataflow ids
+            if operates.addr.is_top_level() {
+                handles
+                    .dataflow_ids
+                    .session(&capabilities.dataflow_ids)
+                    .give((((worker, operates.id), ()), session_time, 1));
+            }
+
+            // Emit operator ids
+            handles
+                .operator_ids
+                .session(&capabilities.operator_ids)
+                .give((
+                    ((worker, operates.id), operates.addr.clone()),
+                    session_time,
+                    1,
+                ));
+
+            // Emit operator addresses
+            handles
+                .operator_addrs
+                .session(&capabilities.operator_addrs)
+                .give((
+                    ((worker, operates.addr.clone()), operates.id),
+                    session_time,
+                    1,
+                ));
+            handles
+                .operator_addrs_by_self
+                .session(&capabilities.operator_addrs_by_self)
+                .give((((worker, operates.addr), ()), session_time, 1));
+        }
+
+        TimelyEvent::Shutdown(shutdown) => {
+            if let Some(start_time) = lifespan_map.remove(&(worker, shutdown.id)) {
+                handles.lifespans.session(&capabilities.lifespans).give((
+                    ((worker, shutdown.id), Lifespan::new(start_time, time)),
+                    session_time,
+                    1,
+                ));
+            }
+
+            // Remove any dangling activations
+            activation_map.remove(&(worker, shutdown.id));
+        }
+
+        TimelyEvent::Schedule(schedule) => {
+            let operator = schedule.id;
+
+            match schedule.start_stop {
+                StartStop::Start => {
+                    activation_map.insert((worker, operator), time);
+                }
+
+                StartStop::Stop => {
+                    if let Some(start_time) = activation_map.remove(&(worker, operator)) {
+                        let duration = time - start_time;
+                        handles
+                            .activation_durations
+                            .session(&capabilities.activation_durations)
+                            .give((
+                                ((worker, operator), (start_time, duration)),
+                                session_time,
+                                1,
+                            ));
+                    }
+                }
+            }
+        }
+
+        TimelyEvent::Channels(channel) => {
+            // Emit raw channels
+            handles
+                .raw_channels
+                .session(&capabilities.raw_channels)
+                .give(((worker, channel.clone()), session_time, 1));
+
+            // Emit channel creation times
+            handles
+                .channel_creations
+                .session(&capabilities.channel_creations)
+                .give((((worker, channel.id), time), session_time, 1));
+
+            // Emit channel scope addresses
+            handles
+                .channel_scope_addrs
+                .session(&capabilities.channel_scope_addrs)
+                .give((((worker, channel.id), channel.scope_addr), session_time, 1));
+        }
+
+        TimelyEvent::PushProgress(_)
+        | TimelyEvent::Messages(_)
+        | TimelyEvent::Application(_)
+        | TimelyEvent::GuardedMessage(_)
+        | TimelyEvent::GuardedProgress(_)
+        | TimelyEvent::CommChannels(_)
+        | TimelyEvent::Input(_)
+        | TimelyEvent::Park(_)
+        | TimelyEvent::Text(_) => {}
+    }
 }
 
 type Bundle<T> = (T, Time, Diff);

@@ -109,7 +109,7 @@ where
 }
 
 pub(super) type TimelineStreamEvent = (EventData, Duration, Diff);
-type EventMap = HashMap<(WorkerId, EventKind), Vec<(Duration, Capability<Duration>)>>;
+pub(super) type EventMap = HashMap<(WorkerId, EventKind), Vec<(Duration, Capability<Duration>)>>;
 type EventOutput<'a> =
     OutputHandle<'a, Duration, TimelineStreamEvent, Tee<Duration, TimelineStreamEvent>>;
 
@@ -210,6 +210,7 @@ where
                             );
 
                             process_differential_event(&mut event_processor, event);
+                            event_processor.maintain();
                         }
                     });
                 }
@@ -273,6 +274,39 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
             capability,
             worker,
             time,
+        }
+    }
+
+    pub(super) fn maintain(&mut self) {
+        if self.event_map.capacity() > self.event_map.len() * 4 {
+            tracing::trace!(
+                "shrank event map from a capacity of {} to {}",
+                self.event_map.capacity(),
+                self.event_map.len(),
+            );
+
+            self.event_map.shrink_to_fit();
+        }
+
+        if self.map_buffer.capacity() > self.map_buffer.len() * 4 {
+            tracing::trace!(
+                "shrank map buffer from a capacity of {} to {}",
+                self.map_buffer.capacity(),
+                self.map_buffer.len(),
+            );
+
+            self.map_buffer.shrink_to_fit();
+        }
+
+        self.stack_buffer.truncate(5);
+        if self.stack_buffer.capacity() > self.stack_buffer.len() * 4 {
+            tracing::trace!(
+                "shrank stack buffer from a capacity of {} to {}",
+                self.stack_buffer.capacity(),
+                self.stack_buffer.len(),
+            );
+
+            self.stack_buffer.shrink_to_fit();
         }
     }
 
