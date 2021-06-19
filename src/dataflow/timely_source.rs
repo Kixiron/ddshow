@@ -1,7 +1,7 @@
 use crate::{
     dataflow::{
         constants::IDLE_EXTRACTION_FUEL,
-        operators::Fuel,
+        operators::{DelayExt, Fuel},
         utils::{granulate, Time},
         worker_timeline::{process_timely_event, EventData, EventMap, EventProcessor},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelyLogBundle,
@@ -753,11 +753,11 @@ macro_rules! timely_source_processor {
     };
 
     (@as_collection $self:ident, $name:ident, $cond:ident) => {
-        $self.$name.map(|$name| $name.as_collection().delay(granulate))
+        $self.$name.map(|$name| $name.as_collection().delay_fast(granulate))
     };
 
     (@as_collection $self:ident, $name:ident,) => {
-        $self.$name.as_collection().delay(granulate)
+        $self.$name.as_collection().delay_fast(granulate)
     };
 }
 

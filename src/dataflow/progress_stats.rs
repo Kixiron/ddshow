@@ -1,5 +1,5 @@
 use crate::dataflow::{
-    operators::JoinArranged,
+    operators::{DelayExt, JoinArranged},
     utils::{granulate, ProgressLogBundle},
     Diff,
 };
@@ -154,7 +154,7 @@ where
             })
         })
         .as_collection()
-        .delay(granulate)
+        .delay_fast(granulate)
         .count_total()
         .arrange_by_key();
 
@@ -180,7 +180,7 @@ where
             })
         })
         .as_collection()
-        .delay(granulate)
+        .delay_fast(granulate)
         .count_total()
         .arrange_by_key();
 

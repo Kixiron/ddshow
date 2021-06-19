@@ -1,6 +1,6 @@
 use crate::{
     dataflow::{
-        operators::{DiffDuration, JoinArranged, MapExt, Max, Min},
+        operators::{DelayExt, DiffDuration, JoinArranged, MapExt, Max, Min},
         send_recv::ChannelAddrs,
         utils::{granulate, ArrangedKey, DifferentialLogBundle, TimelyLogBundle},
         Channel, Diff, OperatorAddr,
@@ -131,7 +131,7 @@ where
         |(time, worker, _)| (worker, time, 1),
     )
     .as_collection()
-    .delay(granulate)
+    .delay_fast(granulate)
     .count_total();
 
     let create_timestamps = |time, worker| {
@@ -150,7 +150,7 @@ where
         move |(time, worker, _)| create_timestamps(time, worker),
     )
     .as_collection()
-    .delay(granulate)
+    .delay_fast(granulate)
     .count_total();
 
     // TODO: For whatever reason this part of the dataflow graph is de-prioritized,

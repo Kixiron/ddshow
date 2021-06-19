@@ -22,6 +22,8 @@ use std::{
     convert::TryFrom,
     fs::{self, File},
     io::BufWriter,
+    num::Wrapping,
+    ops::Range,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -151,4 +153,48 @@ pub(super) fn log_file_path(file_prefix: &str, dir: &Path, worker_id: usize) -> 
         "{}.replay-worker-{}.ddshow",
         file_prefix, worker_id
     ))
+}
+
+pub(crate) struct Pcg64 {
+    state: Wrapping<u128>,
+    increment: Wrapping<u128>,
+}
+
+impl Pcg64 {
+    const MULTIPLIER: Wrapping<u128> = Wrapping(6_364_136_223_846_793_005);
+
+    pub fn new(seed: u64, mut increment: u64) -> Self {
+        if increment % 2 != 0 {
+            increment += 1;
+        }
+        let (seed, increment) = (Wrapping(seed as u128), Wrapping(increment as u128));
+
+        let mut gen = Self {
+            state: seed + increment,
+            increment,
+        };
+        gen.next_u64();
+
+        gen
+    }
+
+    pub fn advance(&mut self, n: usize) {
+        for _ in 0..n {
+            self.next_u64();
+        }
+    }
+
+    pub fn next_u64(&mut self) -> u64 {
+        let x = self.state;
+        let count = (x >> 122).0 as u32;
+
+        self.state = x * Self::MULTIPLIER + self.increment;
+        let x = (x ^ (x >> 64)).0 as u64;
+
+        x.rotate_right(count)
+    }
+
+    pub fn gen_range(&mut self, range: Range<u64>) -> u64 {
+        range.start + self.next_u64() % (range.end - range.start)
+    }
 }

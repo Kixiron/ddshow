@@ -1,4 +1,6 @@
-use crate::{args::Args, dataflow::DataflowData};
+mod tree;
+
+use crate::{args::Args, dataflow::DataflowData, report::tree::Tree};
 use anyhow::{Context, Result};
 use comfy_table::{presets::UTF8_FULL, Cell, ColumnConstraint, Row, Table as InnerTable};
 use ddshow_types::{OperatorAddr, OperatorId, WorkerId};
@@ -49,6 +51,33 @@ pub fn build_report(
             .map(|&(worker, _)| worker)
             .collect();
 
+        let mut tree = Tree::new();
+        for &(operator, ref stats) in data.aggregated_operator_stats.iter() {
+            let addr = all_workers
+                .iter()
+                .find_map(|&worker| addr_lookup.get(&(worker, operator)))
+                .unwrap();
+            let name = all_workers
+                .iter()
+                .find_map(|&worker| name_lookup.get(&(worker, operator)))
+                .unwrap();
+
+            tree.insert(addr.as_slice(), format!("{:#?}, {}", stats.total, name));
+        }
+
+        // FIXME: This is a crime against everything I know and love
+        let total_runtime = |needle| {
+            data.aggregated_operator_stats
+                .iter()
+                .find(|(id, _)| id == needle)
+                .map(|(_, stats)| stats.total)
+        };
+
+        // FIXME: Things aren't actually getting sorted for some reason
+        tree.sort_unstable_by(|&left, &right| total_runtime(left).cmp(&total_runtime(right)));
+
+        println!("{}", tree);
+
         program_overview(args, data, &mut file)?;
         worker_stats(args, data, &mut file)?;
         operator_stats(
@@ -60,33 +89,37 @@ pub fn build_report(
             &all_workers,
         )?;
 
-        let mut table = Table::new();
-        table.set_header(vec![
-            "Operator Address",
-            "Channel Id",
-            "Produced Messages",
-            "Consumed Messages",
-            "Produced Capability Updates",
-            "Consumed Capability Updates",
-        ]);
-
-        for (addr, info) in data.channel_progress.iter() {
-            table.add_row(vec![
-                Cell::new(addr),
-                Cell::new(info.channel_id),
-                Cell::new(info.produced.messages),
-                Cell::new(info.consumed.messages),
-                Cell::new(info.produced.capability_updates),
-                Cell::new(info.consumed.capability_updates),
-            ]);
-        }
-
-        writeln!(file, "{}\n", table).context("failed to write to report file")?;
-
         if args.differential_enabled {
             arrangement_stats(data, &mut file, &name_lookup, &addr_lookup, &all_workers)?;
         } else {
             tracing::debug!("differential logging is disabled, skipping arrangement stats table");
+        }
+
+        if args.progress_enabled {
+            let mut table = Table::new();
+            table.set_header(vec![
+                "Operator Address",
+                "Channel Id",
+                "Produced Messages",
+                "Consumed Messages",
+                "Produced Capability Updates",
+                "Consumed Capability Updates",
+            ]);
+
+            for (addr, info) in data.channel_progress.iter() {
+                table.add_row(vec![
+                    Cell::new(addr),
+                    Cell::new(info.channel_id),
+                    Cell::new(info.produced.messages),
+                    Cell::new(info.consumed.messages),
+                    Cell::new(info.produced.capability_updates),
+                    Cell::new(info.consumed.capability_updates),
+                ]);
+            }
+
+            writeln!(file, "{}\n", table).context("failed to write to report file")?;
+        } else {
+            tracing::debug!("progress logging is disabled, skipping channel stats table");
         }
     } else {
         tracing::debug!("report files are disabled, skipping generation");

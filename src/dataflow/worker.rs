@@ -3,6 +3,7 @@ use crate::{
     dataflow::{
         self,
         operators::{EventIterator, Fuel, InspectExt, ReplayWithShutdown},
+        utils::Pcg64,
         DataflowSenders,
     },
     logging,
@@ -24,7 +25,7 @@ use std::{
         Arc,
     },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use timely::{
     communication::Allocate,
@@ -66,8 +67,8 @@ where
     let dataflow_id = worker.next_dataflow_index();
     let (mut progress_bars, mut source_counter, total_sources) = (
         Vec::new(),
-        (worker.index() * (args.differential_enabled as usize + 1))
-            + (worker.index() * (args.progress_enabled as usize + 1))
+        (worker.index() * (args.differential_enabled as usize))
+            + (worker.index() * (args.progress_enabled as usize))
             + 1,
         worker.peers()
             + if args.differential_enabled {
@@ -250,9 +251,7 @@ where
 
     let style = ProgressStyle::default_spinner()
         .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-        .template(
-            "[{prefix}, {elapsed}] {spinner} {msg}: {len} events, {per_sec} events per second",
-        )
+        .template("[{prefix}, {elapsed}] {spinner} {msg}: {len} events, {per_sec}")
         .on_finish(ProgressFinish::WithMessage(
             format!("Finished replaying {} events", source.to_lowercase()).into(),
         ));
@@ -276,11 +275,15 @@ where
         )))
         .with_message(format!("Replaying {} events", source.to_lowercase()));
 
+    let time = SystemTime::UNIX_EPOCH.elapsed().unwrap().as_nanos() as u64;
+    let mut rng = Pcg64::new(time, 3);
+    rng.advance(*source_counter + 1);
+
     // I'm a genius, giving every bar the same tick speed looks weird
     // and artificial (almost like the spinners don't actually mean anything),
     // so each spinner gets a little of an offset so that all of them are
     // slightly out of sync
-    progress.enable_steady_tick(100 + (100 / (*source_counter as u64 + 1)));
+    progress.enable_steady_tick(rng.gen_range(50..500));
 
     progress_bars.push((progress.clone(), finished_style));
     *source_counter += 1;
