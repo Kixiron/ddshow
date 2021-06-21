@@ -165,9 +165,7 @@ fn main() -> Result<()> {
         raw_timings.iter().min().copied().unwrap_or_default(),
     );
 
-    let mut timeline_events = data.timeline_events;
-    timeline_events.sort_unstable_by_key(|event| (event.worker, event.start_time));
-
+    let timeline_events = data.timeline_events;
     tracing::debug!(
         "finished extracting {} timeline events",
         timeline_events.len(),

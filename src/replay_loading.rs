@@ -1,5 +1,5 @@
 use crate::{
-    args::Args,
+    args::{Args, StreamEncoding},
     dataflow::{
         constants::{IDLE_EXTRACTION_FUEL, TCP_READ_TIMEOUT},
         operators::{EventReader, Fuel, RkyvEventReader},
@@ -9,12 +9,17 @@ use crate::{
 };
 use abomonation::Abomonation;
 use anyhow::{Context, Result};
+use bytecheck::CheckBytes;
 use crossbeam_channel::Receiver;
 use ddshow_sink::{DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE, TIMELY_PROGRESS_LOG_FILE};
 use differential_dataflow::logging::DifferentialEvent as RawDifferentialEvent;
 use indicatif::{ProgressBar, ProgressStyle};
+use rkyv::{
+    de::deserializers::AllocDeserializer, validation::DefaultArchiveValidator, Archive, Deserialize,
+};
 use std::{
     ffi::OsStr,
+    fmt::Debug,
     fs::{self, File},
     hint,
     io::{self, BufReader, Read, Write},
@@ -34,24 +39,26 @@ use timely::{
     logging::TimelyEvent as RawTimelyEvent,
 };
 
-type AcquiredStreams<T, D1, D2> =
-    EventReceivers<RkyvEventReader<T, D1, BufReader<File>>, EventReader<T, D2, TcpStream>>;
+type AcquiredStreams<T, D1, D2> = EventReceivers<
+    RkyvEventReader<T, D1, Box<dyn Read + Send + 'static>>,
+    EventReader<T, D2, TcpStream>,
+>;
 
 pub(crate) type TimelyEventReceivers = Arc<[Receiver<TimelyReplaySource>]>;
 pub(crate) type TimelyReplaySource = ReplaySource<
-    RkyvEventReader<Duration, TimelyLogBundle, BufReader<File>>,
+    RkyvEventReader<Duration, TimelyLogBundle, Box<dyn Read + Send + 'static>>,
     EventReader<Duration, TimelyLogBundle<usize, RawTimelyEvent>, TcpStream>,
 >;
 
 pub(crate) type DifferentialEventReceivers = Option<Arc<[Receiver<DifferentialReplaySource>]>>;
 pub(crate) type DifferentialReplaySource = ReplaySource<
-    RkyvEventReader<Duration, DifferentialLogBundle, BufReader<File>>,
+    RkyvEventReader<Duration, DifferentialLogBundle, Box<dyn Read + Send + 'static>>,
     EventReader<Duration, DifferentialLogBundle<usize, RawDifferentialEvent>, TcpStream>,
 >;
 
 pub(crate) type ProgressEventReceivers = Option<Arc<[Receiver<ProgressReplaySource>]>>;
 pub(crate) type ProgressReplaySource = ReplaySource<
-    RkyvEventReader<Duration, ProgressLogBundle, BufReader<File>>,
+    RkyvEventReader<Duration, ProgressLogBundle, Box<dyn Read + Send + 'static>>,
     EventReader<Duration, ProgressLogBundle<usize>, TcpStream>,
 >;
 
@@ -101,6 +108,7 @@ pub fn connect_to_sources(
 
     // Connect to the timely sources
     let (timely_event_receivers, are_timely_sources, num_sources) = acquire_replay_sources(
+        &args,
         args.timely_address,
         args.timely_connections,
         args.workers,
@@ -113,6 +121,7 @@ pub fn connect_to_sources(
     // Connect to the differential sources
     let (differential_event_receivers, are_differential_sources) = if args.differential_enabled {
         let (receivers, are_sources, num_sources) = acquire_replay_sources(
+            &args,
             args.differential_address,
             args.timely_connections,
             args.workers,
@@ -130,6 +139,7 @@ pub fn connect_to_sources(
     // Connect to progress sources
     let (progress_event_receivers, are_progress_sources) = if args.progress_enabled {
         let (receivers, are_sources, num_sources) = acquire_replay_sources(
+            &args,
             args.progress_address,
             args.timely_connections,
             args.workers,
@@ -176,8 +186,9 @@ pub fn connect_to_sources(
 }
 
 /// Connect to and prepare the replay sources
-#[tracing::instrument]
+#[tracing::instrument(skip(args))]
 pub fn acquire_replay_sources<T, D1, D2>(
+    args: &Args,
     address: SocketAddr,
     connections: NonZeroUsize,
     workers: NonZeroUsize,
@@ -187,8 +198,11 @@ pub fn acquire_replay_sources<T, D1, D2>(
 ) -> Result<(AcquiredStreams<T, D1, D2>, bool, usize)>
 where
     Event<T, D2>: Clone,
-    T: Abomonation + Send + 'static,
     D2: Abomonation + Send + 'static,
+    T: Archive + Abomonation + Debug + Send + 'static,
+    T::Archived: Deserialize<T, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
+    D1: Archive + Debug + Send + 'static,
+    D1::Archived: Deserialize<D1, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
 {
     let mut num_sources = 0;
 
@@ -250,7 +264,9 @@ where
                     format!("failed to open {} log file within replay directory", target)
                 })?;
 
-                replays.push(RkyvEventReader::new(BufReader::new(timely_file)));
+                replays.push(RkyvEventReader::new(
+                    Box::new(BufReader::new(timely_file)) as Box<dyn Read + Send + 'static>
+                ));
 
                 progress.inc(1);
                 num_sources += 1;
@@ -268,7 +284,12 @@ where
 
         ReplaySource::Rkyv(replays)
     } else {
-        let source = wait_for_connections(address, connections, &progress)?;
+        let source = match args.stream_encoding {
+            StreamEncoding::Abomonation => {
+                wait_for_abominated_connections(address, connections, &progress)?
+            }
+            StreamEncoding::Rkyv => wait_for_rkyv_connections(address, connections, &progress)?,
+        };
 
         num_sources += connections.get();
 
@@ -360,8 +381,8 @@ pub fn make_streams<R, A>(
 
 /// Connect to the given address and collect `connections` streams, returning all of them
 /// in non-blocking mode
-#[tracing::instrument]
-pub fn wait_for_connections<T, D, R>(
+#[tracing::instrument(skip(progress))]
+pub fn wait_for_abominated_connections<T, D, R>(
     timely_addr: SocketAddr,
     connections: NonZeroUsize,
     progress: &ProgressBar,
@@ -412,6 +433,68 @@ where
         .collect::<Result<Vec<_>>>()?;
 
     Ok(ReplaySource::Abomonation(timely_conns))
+}
+
+type ConnectedRkyvSource<T, D, A> =
+    ReplaySource<RkyvEventReader<T, D, Box<dyn Read + Send + 'static>>, A>;
+
+/// Connect to the given address and collect `connections` streams, returning all of them
+/// in non-blocking mode
+#[tracing::instrument(skip(progress))]
+pub fn wait_for_rkyv_connections<T, D, A>(
+    timely_addr: SocketAddr,
+    connections: NonZeroUsize,
+    progress: &ProgressBar,
+) -> Result<ConnectedRkyvSource<T, D, A>>
+where
+    T: Archive + Debug,
+    T::Archived: Deserialize<T, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
+    D: Archive + Debug,
+    D::Archived: Deserialize<D, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
+{
+    let timely_listener =
+        TcpListener::bind(timely_addr).context("failed to bind to socket address")?;
+    progress.set_message(format!("connected to {}", timely_addr));
+
+    let timely_conns = (0..connections.get())
+        .zip(timely_listener.incoming())
+        .map(|(idx, socket)| {
+            let socket = socket.context("failed to accept socket connection")?;
+
+            socket
+                .set_nonblocking(true)
+                .context("failed to set socket to non-blocking mode")?;
+
+            if let Err(err) = socket.set_read_timeout(TCP_READ_TIMEOUT) {
+                tracing::error!(
+                    "failed to set socket to a read timeout of {:?}: {:?}",
+                    TCP_READ_TIMEOUT,
+                    err,
+                );
+            };
+
+            tracing::info!(
+                socket = ?socket,
+                "connected to socket {}/{}",
+                idx + 1,
+                connections,
+            );
+
+            progress.set_message(format!(
+                "connected to {}/{} socket{}",
+                idx + 1,
+                connections,
+                if connections.get() == 1 { "" } else { "s" }
+            ));
+            progress.inc(1);
+
+            Ok(RkyvEventReader::new(
+                Box::new(socket) as Box<dyn Read + Send + 'static>
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(ReplaySource::Rkyv(timely_conns))
 }
 
 /// Wait for user input to terminate the trace replay and wait for all timely

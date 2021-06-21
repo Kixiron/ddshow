@@ -103,6 +103,62 @@ pub struct Args {
     /// and memory usage on very large target dataflows
     #[structopt(long)]
     pub disable_timeline: bool,
+
+    #[structopt(
+        long,
+        default_value = "abomonation",
+        possible_values = &["abomonation", "rkyv"],
+    )]
+    pub stream_encoding: StreamEncoding,
+}
+
+impl Args {
+    pub fn timely_config(&self) -> (CommunicationConfig, WorkerConfig) {
+        let communication = if self.workers.get() == 1 {
+            CommunicationConfig::Thread
+        } else {
+            CommunicationConfig::Process(self.workers.get())
+        };
+        let worker_config = WorkerConfig::default();
+
+        // TODO: Implement `Debug` for `timely::Config`
+        tracing::trace!("created timely config");
+
+        (communication, worker_config)
+    }
+
+    /// Returns `true` if the program is replaying logs from a file
+    pub const fn is_file_sourced(&self) -> bool {
+        self.replay_logs.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StreamEncoding {
+    Abomonation,
+    Rkyv,
+}
+
+impl FromStr for StreamEncoding {
+    type Err = String;
+
+    fn from_str(string: &str) -> Result<Self, Self::Err> {
+        let lowercase = string.to_lowercase();
+        match lowercase.as_str() {
+            "abomonation" => Ok(Self::Abomonation),
+            "rkyv" => Ok(Self::Rkyv),
+            _ => Err(format!(
+                "invalid terminal color {:?}, only `rkyv` and `abomonation` are supported",
+                string,
+            )),
+        }
+    }
+}
+
+impl Default for StreamEncoding {
+    fn default() -> Self {
+        Self::Abomonation
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -149,27 +205,6 @@ impl FromStr for TerminalColor {
 impl Default for TerminalColor {
     fn default() -> Self {
         Self::Auto
-    }
-}
-
-impl Args {
-    pub fn timely_config(&self) -> (CommunicationConfig, WorkerConfig) {
-        let communication = if self.workers.get() == 1 {
-            CommunicationConfig::Thread
-        } else {
-            CommunicationConfig::Process(self.workers.get())
-        };
-        let worker_config = WorkerConfig::default();
-
-        // TODO: Implement `Debug` for `timely::Config`
-        tracing::trace!("created timely config");
-
-        (communication, worker_config)
-    }
-
-    /// Returns `true` if the program is replaying logs from a file
-    pub const fn is_file_sourced(&self) -> bool {
-        self.replay_logs.is_some()
     }
 }
 

@@ -1,8 +1,91 @@
+/**
+ * {#
+ * @typedef {{
+ *     id: number;
+ *     worker: number;
+ *     addr: number[];
+ *     name: string;
+ *     max_activation_time: string;
+ *     min_activation_time: string;
+ *     average_activation_time: string;
+ *     total_activation_time: string;
+ *     invocations: number;
+ *     fill_color: string;
+ *     text_color: string;
+ *     activation_durations: ActivationDuration[];
+ *     max_arrangement_size: number | null;
+ *     min_arrangement_size: number | null;
+ * }} RawNode
+ *
+ * @typedef {{ activation_time: number, activated_at: number }} ActivationDuration
+ * 
+ * @typedef {{
+ *    id: number;
+ *    worker: number;
+ *    addr: number[];
+ *    name: string;
+ *    max_activation_time: string;
+ *    min_activation_time: string;
+ *    average_activation_time: string;
+ *    total_activation_time: string;
+ *    invocations: number;
+ *    fill_color: string;
+ *    text_color: string;
+ * }} Subgraph
+ * 
+ * @typedef {{
+ *     src: number[];
+ *     dest: number[];
+ *     worker: number;
+ *     channel_id: number;
+ *     edge_kind: EdgeKind;
+ * }} Edge
+ * 
+ * @typedef {"Normal" | "Crossing"} EdgeKind
+ * 
+ * @typedef {{
+ *     worker: number;
+ *     event: EventKind;
+ *     start_time: number;
+ *     duration: number;
+ *     collapsed_events: number;
+ * }} TimelineEvent
+ * 
+ * @typedef {Activation | Application | "Parked" | "Input" | "Message" | "Progress" | Merge} EventKind
+ * 
+ * @typedef {{ OperatorActivation: { operator_id: number } }} Activation
+ * @typedef {{ Application: { id: number } }} Application
+ * @typedef {{ Merge: { operator_id: number } }} Merge
+ * 
+ * @typedef {{
+ *     consumed: ProgressStats;
+ *     produced: ProgressStats;
+ *     channel_id: number;
+ * }} ProgressInfo
+ * 
+ * @typedef {{
+ *     messages: number;
+ *     capability_updates: number;
+ * }} ProgressStats
+ * #}
+ */
+
+/** @type {RawNode[]} */
 const raw_nodes = {{ nodes | json_encode() }};
+
+/** @type {Subgraph[]} */
 const raw_subgraphs = {{ subgraphs | json_encode() }};
+
+/** @type {Edge[]} */
 const raw_edges = {{ edges | json_encode() }};
+
+/** @type {string[]} */
 const palette_colors = {{ palette_colors | json_encode() }};
+
+/** @type {TimelineEvent[]} */
 const timeline_events = {{ timeline_events | json_encode() }};
+
+/** @type {[number[], ProgressInfo][]} */
 const channel_progress = {{ channel_progress | json_encode() }};
 
 const dataflow_svg = d3.select("#dataflow-graph");
@@ -19,22 +102,30 @@ graph.setGraph({ nodesep: 50, ranksep: 50 });
 
 const render = new dagreD3.render();
 
-let error_nodes = {};
+/** @type {Set<number[]>} */
+let error_nodes = new Set();
+/** @type {Set<number>} */
+let worker_ids = new Set();
+/** @type {Set<number>} */
+let operator_addrs = new Set();
+/** @type {Map<number, string>} */
+let operator_names = new Map();
 
 const node_id_exists = target_addr => {
-    return raw_nodes.some(node => node.addr.toString() === target_addr)
-        || raw_subgraphs.some(subgraph => subgraph.addr.toString() === target_addr)
-        || Object.prototype.hasOwnProperty(error_nodes, target_addr);
+    return error_nodes.has(target_addr)
+        || operator_addrs.has(target_addr)
+        || raw_nodes.some(node => format_addr(node.addr) === target_addr)
+        || raw_subgraphs.some(subgraph => format_addr(subgraph.addr) === target_addr);
 };
 
 const create_error_node = target_addr => {
     console.error(`created error node ${target_addr}`);
-    error_nodes[target_addr] = 0;
+    error_nodes.add(target_addr);
 
     graph.setNode(
         target_addr,
         {
-            label: `Error: ${target_addr}`,
+            label: `Error: ${format_addr(target_addr)}`,
             style: "",
             labelStyle: "",
             data: { kind: "Error" },
@@ -42,19 +133,27 @@ const create_error_node = target_addr => {
     );
 };
 
+const slash_regexp = new RegExp("\\\\", "g");
+
 for (const node of raw_nodes) {
-    const node_id = node.addr.toString();
+    worker_ids.add(node.worker);
+    operator_addrs.add(node.addr);
+    
+    const node_name = node.name;
+    operator_names.set(node.id, node_name);
+
+    const node_id = format_addr(node.addr);
     graph.setNode(
         node_id,
         {
-            label: `${node.name.replaceAll("\\", "\\\\")} @ ${node.id}, [${node.addr.toString().replaceAll(",", ", ")}]`,
+            label: `${node_name.replace(slash_regexp, "\\\\")} @ ${node.id}, ${format_addr(node_id)}`,
             style: `fill: ${node.fill_color}`,
             labelStyle: `fill: ${node.text_color}`,
             data: { kind: "Node", ...node },
         },
     );
 
-    const parent_addr = node.addr.slice(0, node.addr.length - 1).toString();
+    const parent_addr = format_addr(node.addr.slice(0, node.addr.length - 1));
     if (!node_id_exists(parent_addr)) {
         create_error_node(parent_addr);
     }
@@ -63,11 +162,17 @@ for (const node of raw_nodes) {
 }
 
 for (const subgraph of raw_subgraphs) {
-    const subgraph_id = subgraph.addr.toString();
+    worker_ids.add(subgraph.worker);
+    operator_addrs.add(subgraph.addr);
+    
+    const subgraph_name = subgraph.name;
+    operator_names.set(subgraph.id, subgraph_name);
+
+    const subgraph_id = format_addr(subgraph.addr);
     graph.setNode(
         subgraph_id,
         {
-            label: `${subgraph.name.replaceAll("\\", "\\\\")} @ ${subgraph.id}, [${subgraph.addr.toString().replaceAll(",", ", ")}]`,
+            label: `${subgraph_name.replace(slash_regexp, "\\\\")} @ ${subgraph.id}, ${subgraph_id}`,
             style: "fill: #EEEEEE; stroke-dasharray: 5, 2;",
             clusterLabelPos: "top",
             data: { kind: "Subgraph", ...subgraph },
@@ -75,7 +180,7 @@ for (const subgraph of raw_subgraphs) {
     );
 
     if (subgraph.addr.length > 1) {
-        const parent_addr = subgraph.addr.slice(0, subgraph.addr.length - 1).toString();
+        const parent_addr = format_addr(subgraph.addr.slice(0, subgraph.addr.length - 1));
         if (!node_id_exists(parent_addr)) {
             create_error_node(parent_addr);
         }
@@ -100,8 +205,8 @@ for (const edge of raw_edges) {
             break;
     }
 
-    const src_id = edge.src.toString();
-    const dest_id = edge.dest.toString();
+    const src_id = format_addr(edge.src);
+    const dest_id = format_addr(edge.dest);
 
     if (!node_id_exists(src_id)) {
         create_error_node(src_id);
@@ -258,77 +363,124 @@ d3.zoomIdentity
     .scale(initial_scale);
 dataflow_svg.attr("height", graph.graph().height * initial_scale + 40);
 
-function worker_timeline(timeline_events) {
+/**
+ * @param {TimelineEvent[]} timeline_events
+ * @param {number} total_workers
+ * @param {number} current_worker
+ * @param {Map<number, string>} operator_names
+ */
+function worker_timeline(chart, timeline_events, current_worker, operator_names) {
+    /**
+     * {#
+     * @typedef {{ group: string; data: GroupData[] }} TimelineData
+     * @typedef {{ label: string; data: EventData[] }} GroupData
+     * @typedef {{ timeRange: [Date, Date]; val: number }} EventData
+     * #}
+     */
+
+    /** @type {TimelineData[]} */
     let data = [];
 
     for (const event of timeline_events) {
-        let group = data.find(group => group.group === `Worker ${event.worker}`);
-        if (!group) {
-            data.push({
-                group: `Worker ${event.worker}`,
-                data: [],
+        if (event.worker === current_worker) {
+            const worker_group = `Worker ${event.worker}`;
+
+            let group = data.find(group => group.group === worker_group);
+            if (!group) {
+                data.push({
+                    group: worker_group,
+                    data: [],
+                });
+
+                group = data[data.length - 1];
+            }
+
+
+            // TODO: Calculate this in timely?
+            let label = "";
+            if (event.event === "Parked"
+                || event.event === "Input"
+                || event.event === "Message"
+                || event.event === "Progress"
+            ) {
+                label = event.event;
+
+            } else if ("Application" in event.event) {
+                label = "Application";
+
+            } else if ("OperatorActivation" in event.event) {
+                const operator_id = event.event["OperatorActivation"].operator_id;
+                const operator_name = operator_names.get(operator_id);
+
+                label = `Operator ${operator_id}: ${operator_name}`;
+
+            } else if ("Merge" in event.event) {
+                const operator_id = event.event["Merge"].operator_id;
+                const operator_name = operator_names.get(operator_id);
+
+                label = `Merge ${operator_id}: ${operator_name}`;
+
+            } else {
+                console.error("created invalid timeline event", event.event);
+                continue;
+            }
+
+            let group_data = group.data.find(item => item.label === label);
+            if (!group_data) {
+                group.data.push({
+                    label: label,
+                    data: [],
+                });
+                group_data = group.data[group.data.length - 1];
+            }
+
+            group_data.data.push({
+                timeRange: [new Date(event.start_time), new Date(event.start_time + event.duration)],
+                val: event.duration,
             });
-            group = data.find(group => group.group === `Worker ${event.worker}`);
         }
-
-        // TODO: Calculate this in timely
-        let label = "";
-        if (event.event === "Parked"
-            || event.event === "Application"
-            || event.event === "Input"
-            || event.event === "Message"
-            || event.event === "Progress"
-        ) {
-            label = event.event;
-
-        } else if (event.event.OperatorActivation) {
-            label = `Operator ${event.event.OperatorActivation.operator_id}: ${event.event.OperatorActivation.operator_name}`;
-
-        } else if (event.event.Merge) {
-            label = `Merge ${event.event.Merge.operator_id}: ${event.event.Merge.operator_name}`;
-
-        } else {
-            console.log("created invalid timeline event", event.event);
-            continue;
-        }
-
-        let group_data = group.data.find(item => item.label === label);
-        if (!group_data) {
-            group.data.push({
-                label: label,
-                data: [],
-            });
-            group_data = group.data.find(item => item.label === label);
-        }
-
-        group_data.data.push({
-            timeRange: [new Date(event.start_time), new Date(event.start_time + event.duration)],
-            val: event.duration,
-        });
     }
 
-    TimelinesChart()(document.getElementById("worker-timeline"))
-        .xTickFormat(n => +n)
-        .timeFormat("%Q")
-        .rightMargin(500)
-        .topMargin(100)
-        .bottomMargin(50)
-        .zQualitative(true)
-        .xTickFormat(format_duration)
-        .sortAlpha(true)
-        .maxHeight(4096)
-        .data(data);
+    chart.data(data);
+    chart.refresh();
 }
 
-worker_timeline(timeline_events);
+const chart = TimelinesChart()(document.getElementById("worker-timeline"))
+    .xTickFormat(n => +n)
+    .timeFormat("%Q")
+    .rightMargin(500)
+    .topMargin(100)
+    .bottomMargin(50)
+    .zQualitative(true)
+    .xTickFormat(format_duration)
+    .sortAlpha(true)
+    .maxHeight(4096);
 
-function format_id(id) {
+/** @type {HTMLInputElement} */
+const worker_selector = document.getElementById("timeline-worker-selection");
+worker_selector.max = worker_ids.length;
+
+worker_timeline(chart, timeline_events, Number(worker_selector.value), operator_names);
+
+worker_selector.onchange = (_event) => {
+    /** @type {HTMLInputElement} */
+    const worker_selector = document.getElementById("timeline-worker-selection");
+    worker_timeline(chart, timeline_events, Number(worker_selector.value), operator_names);
+};
+
+/**
+ * Formats an operator address into a human-readable string
+ * @param {number[]} addr The operator address to format
+ * @returns string
+ */
+function format_addr(addr) {
     let buf = "[";
     let started = false;
 
-    for (const segment of id) {
+    for (const segment of addr) {
         if (started) {
             buf += `, ${segment}`;
+            started = true;
         } else {
             buf += `${segment}`;
         }
@@ -338,7 +490,19 @@ function format_id(id) {
     return buf;
 }
 
+/**
+ * Formats a duration into a human-readable string
+ * @param {number} input_nanos The input time to format
+ * @returns string The formatted duration
+ */
 function format_duration(input_nanos) {
+
+    /**
+     * @param {string} buf The buffer to write info
+     * @param {boolean} started Whether or not this is the first in the series
+     * @param {string} name The name of the time unit
+     * @param {number} value The value of the time unit
+     */
     function item_plural(buf, started, name, value) {
         if (value > 0) {
             buf += `${value}${name}`;
@@ -352,6 +516,12 @@ function format_duration(input_nanos) {
         }
     }
 
+    /**
+     * @param {string} buf The buffer to write info
+     * @param {boolean} started Whether or not this is the first in the series
+     * @param {string} name The name of the time unit
+     * @param {number} value The value of the time unit
+     */
     function item(buf, started, name, value) {
         if (value > 0) {
             if (started) {
@@ -403,7 +573,12 @@ function format_duration(input_nanos) {
     return buf;
 }
 
+/**
+ * Creates a radar chart from the given events
+ * @param {TimelineEvent[]} events The timeline events to make into a radar
+ */
 function time_sink_radar(events) {
+    /** @type {HTMLCanvasElement} */
     const operator_graph_div = document.getElementById("operator-graph");
     const chart = echarts.init(operator_graph_div);
 

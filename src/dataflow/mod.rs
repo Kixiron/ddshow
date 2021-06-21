@@ -272,7 +272,7 @@ fn install_data_extraction<S>(
             (&dataflow_stats, true),
             (
                 &timeline_events.unwrap_or_else(|| operator::empty(region).as_collection()),
-                true,
+                false,
             ),
             (&operator_names, false),
             (&operator_ids, false),

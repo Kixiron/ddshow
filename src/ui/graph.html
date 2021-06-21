@@ -10,7 +10,7 @@
         <!-- TODO: Maybe name this by the targeted project? -->
         <title>Dataflow Graph</title>
 
-        <link rel="stylesheet" type="text/css" href="./graph.css">
+        <link rel="stylesheet" type="text/css" href="./graph.css" />
     </head>
 
     <!-- Load d3.js and dagre d3 -->
@@ -26,9 +26,10 @@
             <svg id="dataflow-graph"></svg>
         </div>
 
+        <input type="range" id="timeline-worker-selection" name="Worker" min="0" max="0" step="1" value="0" />
         <div id="worker-timeline"></div>
 
-        <canvas id="operator-graph" width="1920" height="1080" style="z-index: 100; position: absolute;"></canvas>
+        <canvas id="operator-graph" width="1920" height="1080" style="z-index: 100; position: absolute"></canvas>
 
         <script type="text/javascript" src="./graph.js"></script>
     </body>

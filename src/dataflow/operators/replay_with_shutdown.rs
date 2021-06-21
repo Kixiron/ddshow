@@ -18,6 +18,10 @@ use timely::{
         operators::{capture::event::Event, generic::builder_raw::OperatorBuilder},
     },
     dataflow::{Scope, Stream},
+    logging::{
+        InputEvent as RawInputEvent, StartStop as RawStartStop, TimelyEvent as RawTimelyEvent,
+        TimelyLogger,
+    },
     progress::{frontier::MutableAntichain, Timestamp},
     Data,
 };
@@ -233,11 +237,15 @@ where
         let mut antichain = MutableAntichain::new();
         let (mut started, mut streams_finished) = (false, vec![false; event_streams.len()]);
 
-        if let Some(bar) = progress_bar.as_ref() {
-            bar.tick();
-        }
+        let logger: Option<TimelyLogger> = scope.log_register().get("timely");
 
         builder.build(move |progress| {
+            if let Some(logger) = logger.as_ref() {
+                logger.log(RawTimelyEvent::Input(RawInputEvent {
+                    start_stop: RawStartStop::Start,
+                }));
+            }
+
             if !started {
                 tracing::debug!(
                     "acquired {} capabilities from within `.replay_with_shutdown_into_core()`",
@@ -318,7 +326,8 @@ where
 
             // If we're supposed to be running and haven't completed our input streams,
             // flush the output & re-activate ourselves after a delay
-            if is_running.load(Ordering::Acquire) && !all_streams_finished {
+            let needs_reactivation = if is_running.load(Ordering::Acquire) && !all_streams_finished
+            {
                 output.cease();
                 output
                     .inner()
@@ -376,7 +385,15 @@ where
 
                 // Tell timely we're completely done
                 false
+            };
+
+            if let Some(logger) = logger.as_ref() {
+                logger.log(RawTimelyEvent::Input(RawInputEvent {
+                    start_stop: RawStartStop::Stop,
+                }));
             }
+
+            needs_reactivation
         });
 
         stream

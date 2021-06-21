@@ -114,6 +114,9 @@ fn program_overview(args: &Args, data: &DataflowData, file: &mut File) -> Result
         writeln!(file, "{}\n", table).context("failed to write to report file")?;
     } else {
         tracing::error!("didn't receive a program stats entry");
+
+        writeln!(file, "No Program Statistics were received\n")
+            .context("failed to write to report file")?;
     }
 
     Ok(())
@@ -133,34 +136,39 @@ fn worker_stats(args: &Args, data: &DataflowData, file: &mut File) -> Result<()>
 
     table.set_header(headers);
 
-    // Ensure that we received exactly one entry
-    debug_assert_eq!(worker_stats.len(), 1);
-    // Ensure the vector is sorted
-    debug_assert!(worker_stats[0].windows(2).all(|x| x[0] <= x[1]));
+    if let Some(stats) = worker_stats.first() {
+        // There should only be one entry
+        debug_assert_eq!(worker_stats.len(), 1);
 
-    for (worker, stats) in worker_stats.first().expect("the length is equal to one") {
-        let mut row = vec![
-            Cell::new(format!("Worker {}", worker.into_inner())),
-            Cell::new(stats.dataflows),
-            Cell::new(stats.operators),
-            Cell::new(stats.subgraphs),
-            Cell::new(stats.channels),
-        ];
+        for (worker, stats) in stats {
+            let mut row = vec![
+                Cell::new(format!("Worker {}", worker.into_inner())),
+                Cell::new(stats.dataflows),
+                Cell::new(stats.operators),
+                Cell::new(stats.subgraphs),
+                Cell::new(stats.channels),
+            ];
 
-        if args.differential_enabled {
-            row.push(Cell::new(stats.arrangements));
+            if args.differential_enabled {
+                row.push(Cell::new(stats.arrangements));
+            }
+
+            row.extend(vec![
+                Cell::new(stats.events),
+                Cell::new(format!("{:#?}", stats.runtime)),
+            ]);
+
+            table.add_row(row);
         }
 
-        row.extend(vec![
-            Cell::new(stats.events),
-            Cell::new(format!("{:#?}", stats.runtime)),
-        ]);
+        writeln!(file, "Per-Worker Statistics\n{}\n", table)
+            .context("failed to write to report file")?;
+    } else {
+        tracing::warn!("didn't receive any worker stats entries");
 
-        table.add_row(row);
+        writeln!(file, "No Per-Worker Statistics were received\n")
+            .context("failed to write to report file")?;
     }
-
-    writeln!(file, "Per-Worker Statistics\n{}\n", table)
-        .context("failed to write to report file")?;
 
     Ok(())
 }
