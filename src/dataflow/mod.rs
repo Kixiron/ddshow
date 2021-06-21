@@ -21,7 +21,7 @@ pub use operator_stats::OperatorStats;
 pub use progress_stats::{Channel, ProgressInfo};
 pub use send_recv::{DataflowData, DataflowExtractor, DataflowReceivers, DataflowSenders};
 pub use worker::worker_runtime;
-pub use worker_timeline::{TimelineEvent, WorkerTimelineEvent};
+pub use worker_timeline::{EventKind, TimelineEvent};
 
 use crate::{
     args::Args,
@@ -40,7 +40,7 @@ use crate::{
 use anyhow::Result;
 use ddshow_types::{timely_logging::OperatesEvent, ChannelId, OperatorAddr, OperatorId, WorkerId};
 use differential_dataflow::{
-    difference::Semigroup,
+    difference::{Present, Semigroup},
     lattice::Lattice,
     operators::{
         arrange::{ArrangeByKey, ArrangeBySelf, Arranged, TraceAgent},
@@ -135,12 +135,7 @@ where
     // TODO: Grabbing events absolutely shits the bed when it comes to large dataflows,
     //       it needs a serious, intrinsic rework and/or disk backed arrangements
     let timeline_events = timeline_events.as_ref().map(|timeline_events| {
-        worker_timeline::worker_timeline(
-            scope,
-            timeline_events,
-            differential_stream,
-            &operator_names,
-        )
+        worker_timeline::worker_timeline(scope, timeline_events, differential_stream)
     });
 
     let addressed_operators = raw_operators
@@ -225,7 +220,7 @@ fn install_data_extraction<S>(
     addressed_operators: ArrangedVal<S, (WorkerId, OperatorAddr), OperatesEvent, Diff>,
     aggregated_operator_stats: Collection<S, (OperatorId, AggregatedOperatorStats), Diff>,
     dataflow_stats: Collection<S, DataflowStats, Diff>,
-    timeline_events: Option<Collection<S, WorkerTimelineEvent, Diff>>,
+    timeline_events: Option<Collection<S, TimelineEvent, Present>>,
     operator_names: ArrangedVal<S, (WorkerId, OperatorId), String, Diff>,
     operator_ids: ArrangedVal<S, (WorkerId, OperatorId), OperatorAddr, Diff>,
     channel_progress: Option<Collection<S, (OperatorAddr, ProgressInfo), Diff>>,

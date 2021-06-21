@@ -3,15 +3,16 @@ use crate::{
         constants::IDLE_EXTRACTION_FUEL,
         operators::{DelayExt, Fuel},
         utils::{granulate, Time},
-        worker_timeline::{process_timely_event, EventData, EventMap, EventProcessor},
-        ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelyLogBundle,
-        WorkerId,
+        worker_timeline::{process_timely_event, EventMap, EventProcessor},
+        ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelineEvent,
+        TimelyLogBundle, WorkerId,
     },
     ui::Lifespan,
 };
 use ddshow_types::timely_logging::{ChannelsEvent, OperatesEvent, StartStop, TimelyEvent};
 use differential_dataflow::{
     collection::AsCollection,
+    difference::{Present, Semigroup},
     lattice::Lattice,
     operators::arrange::{Arrange, ArrangeByKey},
     Collection,
@@ -66,7 +67,7 @@ type TimelyCollections<S> = (
     // Dataflow operator ids
     ArrangedKey<S, (WorkerId, OperatorId)>,
     // Timely event data, will be `None` if timeline analysis is disabled
-    Option<Collection<S, EventData, Diff>>,
+    Option<Collection<S, TimelineEvent, Present>>,
 );
 
 type WorkList = VecDeque<(
@@ -228,10 +229,6 @@ fn work_loop(
     'work_loop: while !fuel.is_exhausted() {
         if let Some((mut buffer, capability_time, mut capabilities)) = work_list.pop_front() {
             for (time, worker, event) in buffer.drain(..) {
-                // Get the timestamp for the current event
-                let session_time = capability_time.join(&time);
-                capabilities.downgrade(&session_time);
-
                 if let (Some(worker_events), Some(capability)) = (
                     handles.worker_events.as_mut(),
                     capabilities.worker_events.as_ref(),
@@ -248,6 +245,10 @@ fn work_loop(
 
                     process_timely_event(&mut event_processor, event.clone());
                 }
+
+                // Get the timestamp for the current event
+                let session_time = capability_time.join(&time);
+                capabilities.downgrade(&session_time);
 
                 ingest_event(
                     time,
@@ -487,8 +488,10 @@ fn ingest_event(
     }
 }
 
-type Bundle<T> = (T, Time, Diff);
-type SessionPusher<T> = PushCounter<Time, Bundle<T>, Tee<Time, Bundle<T>>>;
+type Bundle<T, R = Diff> = (T, Time, R);
+type SessionPusher<T, R = Diff> = PushCounter<Time, Bundle<T, R>, Tee<Time, Bundle<T, R>>>;
+type OutWrap<T, R> = OutputWrapper<Time, Bundle<T, R>, Tee<Time, Bundle<T, R>>>;
+type OutHandle<'a, T, R> = OutputHandle<'a, Time, Bundle<T, R>, Tee<Time, Bundle<T, R>>>;
 
 struct Builder<S>
 where
@@ -509,9 +512,10 @@ where
         }
     }
 
-    fn new_output<T>(&mut self) -> (Output<T>, Stream<S, Bundle<T>>)
+    fn new_output<T, R>(&mut self) -> (Output<T, R>, Stream<S, Bundle<T, R>>)
     where
         T: Data,
+        R: Semigroup,
     {
         let (wrapper, stream) = self.builder.new_output();
 
@@ -531,49 +535,53 @@ where
     }
 }
 
-struct Output<T>
+struct Output<T, R = Diff>
 where
     T: Data,
+    R: Semigroup,
 {
     /// The timely output wrapper
-    wrapper: OutputWrapper<Time, Bundle<T>, Tee<Time, Bundle<T>>>,
+    wrapper: OutWrap<T, R>,
     /// The output's index
     idx: usize,
 }
 
-impl<T> Output<T>
+impl<T, R> Output<T, R>
 where
     T: Data,
+    R: Semigroup,
 {
-    fn new(wrapper: OutputWrapper<Time, Bundle<T>, Tee<Time, Bundle<T>>>, idx: usize) -> Self {
+    fn new(wrapper: OutWrap<T, R>, idx: usize) -> Self {
         Self { wrapper, idx }
     }
 
-    fn activate(&mut self) -> ActivatedOutput<'_, T> {
+    fn activate(&mut self) -> ActivatedOutput<'_, T, R> {
         ActivatedOutput::new(self.wrapper.activate(), self.idx)
     }
 }
 
-struct ActivatedOutput<'a, T>
+struct ActivatedOutput<'a, T, R = Diff>
 where
     T: Data,
+    R: Semigroup,
 {
-    handle: OutputHandle<'a, Time, Bundle<T>, Tee<Time, Bundle<T>>>,
+    handle: OutHandle<'a, T, R>,
     idx: usize,
 }
 
-impl<'a, T> ActivatedOutput<'a, T>
+impl<'a, T, R> ActivatedOutput<'a, T, R>
 where
     T: Data,
+    R: Semigroup,
 {
-    fn new(handle: OutputHandle<'a, Time, Bundle<T>, Tee<Time, Bundle<T>>>, idx: usize) -> Self {
+    fn new(handle: OutHandle<'a, T, R>, idx: usize) -> Self {
         Self { handle, idx }
     }
 
     pub fn session<'b>(
         &'b mut self,
         capability: &'b Capability<Time>,
-    ) -> Session<'b, Time, Bundle<T>, SessionPusher<T>>
+    ) -> Session<'b, Time, Bundle<T, R>, SessionPusher<T, R>>
     where
         'a: 'b,
     {
@@ -582,12 +590,12 @@ where
 }
 
 macro_rules! timely_source_processor {
-    ($($name:ident: $data:ty $(; if $cond:ident)?),* $(,)?) => {
+    ($($name:ident: $data:ty $(; if $cond:ident)? $(= $diff:ty)?),* $(,)?) => {
         struct Streams<S>
         where
             S: Scope<Timestamp = Time>,
         {
-            $($name: timely_source_processor!(@stream $data, $($cond)?),)*
+            $($name: timely_source_processor!(@stream $data, timely_source_processor!(@diff $($diff)?), $($cond)?),)*
         }
 
         impl<S> Streams<S>
@@ -605,11 +613,11 @@ macro_rules! timely_source_processor {
         where
             S: Scope<Timestamp = Time>,
         {
-            $($name: timely_source_processor!(@collection $data, $($cond)?),)*
+            $($name: timely_source_processor!(@collection $data, timely_source_processor!(@diff $($diff)?), $($cond)?),)*
         }
 
         struct Outputs {
-            $($name: timely_source_processor!(@output_type $data, $($cond)?),)*
+            $($name: timely_source_processor!(@output_type $data, timely_source_processor!(@diff $($diff)?), $($cond)?),)*
         }
 
         impl Outputs {
@@ -617,7 +625,7 @@ macro_rules! timely_source_processor {
             where
                 S: Scope<Timestamp = Time>,
             {
-                $(timely_source_processor!(@make_output builder, $name, $data, $($cond)?);)*
+                $(timely_source_processor!(@make_output builder, $name, $data, timely_source_processor!(@diff $($diff)?), $($cond)?);)*
 
                 let streams = Streams {
                     $($name: $name.1,)*
@@ -635,12 +643,12 @@ macro_rules! timely_source_processor {
         }
 
         struct OutputHandles<'a> {
-            $($name: timely_source_processor!(@handle $data, $($cond)?),)*
+            $($name: timely_source_processor!(@handle $data, timely_source_processor!(@diff $($diff)?), $($cond)?),)*
         }
 
         impl<'a> OutputHandles<'a> {
             #[allow(clippy::too_many_arguments)]
-            fn new($($name: timely_source_processor!(@handle $data, $($cond)?),)*) -> Self {
+            fn new($($name: timely_source_processor!(@handle $data, timely_source_processor!(@diff $($diff)?), $($cond)?),)*) -> Self {
                 Self {
                     $($name,)*
                 }
@@ -669,17 +677,20 @@ macro_rules! timely_source_processor {
         }
     };
 
-    (@output_type $data:ty, $cond:ident) => {
-        Option<Output<$data>>
+    (@diff) => { Diff };
+    (@diff $diff:ty) => { $diff };
+
+    (@output_type $data:ty, $diff:ty, $cond:ident) => {
+        Option<Output<$data, $diff>>
     };
 
-    (@output_type $data:ty,) => {
-        Output<$data>
+    (@output_type $data:ty, $diff:ty,) => {
+        Output<$data, $diff>
     };
 
-    (@make_output $builder:ident, $name:ident, $data:ty, $cond:ident) => {
+    (@make_output $builder:ident, $name:ident, $data:ty, $diff:ty, $cond:ident) => {
         let $name = if $cond {
-            let (output, stream) = $builder.new_output::<$data>();
+            let (output, stream) = $builder.new_output::<$data, $diff>();
 
             (Some(output), Some(stream))
         } else {
@@ -687,8 +698,8 @@ macro_rules! timely_source_processor {
         };
     };
 
-    (@make_output $builder:ident, $name:ident, $data:ty,) => {
-        let $name = $builder.new_output::<$data>();
+    (@make_output $builder:ident, $name:ident, $data:ty, $diff:ty,) => {
+        let $name = $builder.new_output::<$data, $diff>();
     };
 
     (@capability $data:ty, $cond:ident) => {
@@ -720,12 +731,12 @@ macro_rules! timely_source_processor {
         $self.$name.downgrade($time);
     };
 
-    (@handle $data:ty, $cond:ident) => {
-        Option<ActivatedOutput<'a, $data>>
+    (@handle $data:ty, $diff:ty, $cond:ident) => {
+        Option<ActivatedOutput<'a, $data, $diff>>
     };
 
-    (@handle $data:ty,) => {
-        ActivatedOutput<'a, $data>
+    (@handle $data:ty, $diff:ty,) => {
+        ActivatedOutput<'a, $data, $diff>
     };
 
     (@activate $self:ident, $name:ident, $cond:ident) => {
@@ -736,20 +747,20 @@ macro_rules! timely_source_processor {
         $self.$name.activate()
     };
 
-    (@stream $data:ty, $cond:ident) => {
-        Option<Stream<S, ($data, Time, Diff)>>
+    (@stream $data:ty, $diff:ty, $cond:ident) => {
+        Option<Stream<S, ($data, Time, $diff)>>
     };
 
-    (@stream $data:ty,) => {
-        Stream<S, ($data, Time, Diff)>
+    (@stream $data:ty, $diff:ty,) => {
+        Stream<S, ($data, Time, $diff)>
     };
 
-    (@collection $data:ty, $cond:ident) => {
-        Option<Collection<S, $data, Diff>>
+    (@collection $data:ty, $diff:ty, $cond:ident) => {
+        Option<Collection<S, $data, $diff>>
     };
 
-    (@collection $data:ty,) => {
-        Collection<S, $data, Diff>
+    (@collection $data:ty, $diff:ty,) => {
+        Collection<S, $data, $diff>
     };
 
     (@as_collection $self:ident, $name:ident, $cond:ident) => {
@@ -774,5 +785,5 @@ timely_source_processor! {
     operator_addrs_by_self: ((WorkerId, OperatorAddr), ()),
     channel_scope_addrs: ((WorkerId, ChannelId), OperatorAddr),
     dataflow_ids: ((WorkerId, OperatorId), ()),
-    worker_events: EventData; if timeline_enabled,
+    worker_events: TimelineEvent; if timeline_enabled = Present,
 }

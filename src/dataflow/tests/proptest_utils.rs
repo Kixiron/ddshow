@@ -1,13 +1,14 @@
 use crate::dataflow::{
     operators::ActivateCapabilitySet,
-    worker_timeline::{EventData, PartialTimelineEvent},
-    Diff,
+    utils::granulate,
+    worker_timeline::{EventKind, TimelineEvent},
 };
 use ddshow_types::{
     differential_logging::{DifferentialEvent, DropEvent, MergeEvent, MergeShortfall},
     timely_logging::{ScheduleEvent, ShutdownEvent, StartStop, TimelyEvent},
     OperatorId, WorkerId,
 };
+use differential_dataflow::difference::Present;
 use proptest::{
     arbitrary::any,
     prelude::Rng,
@@ -21,7 +22,7 @@ use timely::{
     logging::WorkerIdentifier,
 };
 
-type ExpectedEvent = (Duration, (EventData, Duration, Diff));
+type ExpectedEvent = (Duration, (TimelineEvent, Duration, Present));
 
 #[derive(Debug, Clone)]
 pub struct EventPair<E> {
@@ -31,18 +32,18 @@ pub struct EventPair<E> {
 }
 
 impl<E> EventPair<E> {
-    fn build_expected(&self, event: PartialTimelineEvent) -> ExpectedEvent {
+    fn build_expected(&self, event: EventKind) -> ExpectedEvent {
         (
-            self.end.recv_timestamp,
+            granulate(&self.end.recv_timestamp),
             (
-                EventData::new(
+                TimelineEvent::new(
                     self.worker,
                     event,
                     self.start.timestamp,
                     self.end.timestamp - self.start.timestamp,
                 ),
-                self.end.recv_timestamp,
-                1,
+                granulate(&self.end.recv_timestamp),
+                Present,
             ),
         )
     }
@@ -99,7 +100,7 @@ pub(super) trait Expected {
 impl Expected for EventPair<TimelyEvent> {
     fn expected(&self) -> ExpectedEvent {
         let event = match &self.start.event {
-            TimelyEvent::Schedule(schedule) => PartialTimelineEvent::OperatorActivation {
+            TimelyEvent::Schedule(schedule) => EventKind::OperatorActivation {
                 operator_id: schedule.id,
             },
 
@@ -124,7 +125,7 @@ impl Expected for EventPair<TimelyEvent> {
 impl Expected for EventPair<DifferentialEvent> {
     fn expected(&self) -> ExpectedEvent {
         let event = match &self.start.event {
-            DifferentialEvent::Merge(merge) => PartialTimelineEvent::Merge {
+            DifferentialEvent::Merge(merge) => EventKind::Merge {
                 operator_id: merge.operator,
             },
 

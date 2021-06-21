@@ -4,10 +4,10 @@ mod proptest_utils;
 mod proptests;
 
 use crate::dataflow::{
-    utils::Diff,
+    operators::DelayExt,
+    utils::granulate,
     worker_timeline::{
-        collect_differential_events, process_timely_event, EventData, EventProcessor,
-        PartialTimelineEvent,
+        collect_differential_events, process_timely_event, EventKind, EventProcessor, TimelineEvent,
     },
     TimelyLogBundle,
 };
@@ -16,7 +16,7 @@ use ddshow_types::{
     timely_logging::{ScheduleEvent, StartStop, TimelyEvent},
     OperatorId, WorkerId,
 };
-use differential_dataflow::{AsCollection, Collection};
+use differential_dataflow::{difference::Present, AsCollection, Collection};
 use std::{
     collections::HashMap,
     sync::{mpsc, Arc, Mutex},
@@ -29,6 +29,7 @@ use timely::dataflow::{
 };
 use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
+    EnvFilter,
 };
 
 #[test]
@@ -75,16 +76,16 @@ fn timely_event_association() {
 
     let data = recv.extract();
     let expected = vec![(
-        Duration::from_nanos(2),
+        granulate(&Duration::from_nanos(2)),
         vec![(
-            EventData::new(
+            TimelineEvent::new(
                 WorkerId::new(0),
-                PartialTimelineEvent::activation(OperatorId::new(0)),
+                EventKind::activation(OperatorId::new(0)),
                 Duration::from_nanos(1000),
                 Duration::from_nanos(9000),
             ),
-            Duration::from_nanos(2),
-            1,
+            granulate(&Duration::from_nanos(2)),
+            Present,
         )],
     )];
     assert_eq!(data, expected);
@@ -162,39 +163,43 @@ fn differential_event_association() {
         worker.step_or_park_while(None, || probe.less_than(input.time()));
     });
 
-    let data = recv.extract();
-    let expected = vec![
-        (
-            Duration::from_nanos(2),
-            vec![(
-                EventData::new(
+    assert_eq!(
+        granulate(&Duration::from_nanos(2)),
+        granulate(&Duration::from_nanos(4)),
+        "need to update the layout of ddflow tests",
+    );
+    let expected = vec![(
+        granulate(&Duration::from_nanos(2)),
+        vec![
+            (
+                TimelineEvent::new(
                     WorkerId::new(0),
-                    PartialTimelineEvent::merge(OperatorId::new(0)),
+                    EventKind::merge(OperatorId::new(0)),
                     Duration::from_nanos(1000),
                     Duration::from_nanos(9000),
                 ),
-                Duration::from_nanos(2),
-                1,
-            )],
-        ),
-        (
-            Duration::from_nanos(4),
-            vec![(
-                EventData::new(
+                granulate(&Duration::from_nanos(2)),
+                Present,
+            ),
+            (
+                TimelineEvent::new(
                     WorkerId::new(0),
-                    PartialTimelineEvent::merge(OperatorId::new(1)),
+                    EventKind::merge(OperatorId::new(1)),
                     Duration::from_nanos(20_000),
                     Duration::from_nanos(1000),
                 ),
-                Duration::from_nanos(4),
-                1,
-            )],
-        ),
-    ];
+                granulate(&Duration::from_nanos(4)),
+                Present,
+            ),
+        ],
+    )];
+
+    let data = recv.extract();
     assert_eq!(data, expected);
 }
 
 pub(crate) fn init_test_logging() {
+    let env_layer = EnvFilter::new("debug,ddshow::dataflow::worker_timeline=error");
     let fmt_layer = tracing_subscriber::fmt::layer()
         .pretty()
         .with_test_writer()
@@ -203,19 +208,18 @@ pub(crate) fn init_test_logging() {
         .with_ansi(true);
 
     if tracing_subscriber::registry()
+        .with(env_layer)
         .with(fmt_layer)
         .try_init()
         .is_ok()
     {
         tracing::info!("initialized logging");
-    } else {
-        tracing::info!("logging was already initialized");
     }
 }
 
 fn collect_timely_events<'a, 'b, S>(
     event_stream: &'b Stream<S, TimelyLogBundle>,
-) -> Collection<S, EventData, Diff>
+) -> Collection<S, TimelineEvent, Present>
 where
     S: Scope<Timestamp = Duration> + 'a,
 {
@@ -251,4 +255,5 @@ where
             },
         )
         .as_collection()
+        .delay_fast(granulate)
 }

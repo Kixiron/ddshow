@@ -3,7 +3,7 @@ use crate::{
     dataflow::{
         constants::{IDLE_EXTRACTION_FUEL, TCP_READ_TIMEOUT},
         operators::{EventReader, Fuel, RkyvEventReader},
-        utils::{DifferentialLogBundle, ProgressLogBundle, TimelyLogBundle},
+        utils::{self, DifferentialLogBundle, ProgressLogBundle, TimelyLogBundle},
         DataflowData, DataflowReceivers,
     },
 };
@@ -220,7 +220,8 @@ where
     let progress = ProgressBar::new(connections.get() as u64)
         .with_style(progress_style)
         .with_prefix(prefix);
-    progress.tick();
+
+    utils::set_steady_tick(&progress, connections.get());
 
     let replay_sources = if let Some(log_dir) = log_dir {
         let mut replays = Vec::with_capacity(connections.get());

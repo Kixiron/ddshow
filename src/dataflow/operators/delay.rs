@@ -37,9 +37,15 @@ where
         );
 
         let mut elements = HashMap::new();
+        let mut idle_buffers = Vec::new();
+
         self.inner
             .unary_notify(Pipeline, &name, None, move |input, output, notificator| {
                 input.for_each(|time, data| {
+                    let mut buffer = idle_buffers.pop().unwrap_or_default();
+                    data.swap(&mut buffer);
+
+                    // Apply the delay to the timely stream's timestamp
                     let new_time = delay(&time);
                     assert!(time.time().less_equal(&new_time));
 
@@ -49,20 +55,39 @@ where
                             notificator.notify_at(time.delayed(&new_time));
                             Vec::new()
                         })
-                        .push(data.replace(Vec::new()));
+                        .push(buffer);
                 });
 
                 // for each available notification, send corresponding set
                 notificator.for_each(|time, _, _| {
-                    if let Some(mut buffer) = elements.remove(&time) {
-                        for data in buffer.drain(..) {
-                            output.session(&time).give_iterator(
-                                data.into_iter()
-                                    .map(|(data, time, diff)| (data, delay(&time), diff)),
-                            );
+                    if let Some(mut buffers) = elements.remove(&time) {
+                        for mut data in buffers.drain(..) {
+                            // Apply the delay to the ddflow collection's timestamps
+                            for (_data, time, _diff) in data.iter_mut() {
+                                let new_time = delay(&*time);
+                                debug_assert!(time.less_equal(&new_time));
+
+                                *time = new_time;
+                            }
+
+                            output.session(&time).give_vec(&mut data);
+
+                            // Give the freshly empty buffer back to the list of
+                            // idle buffers we maintain
+                            idle_buffers.push(data);
                         }
                     }
                 });
+
+                if elements.capacity() > elements.len() * 4 {
+                    elements.shrink_to_fit();
+                }
+
+                // Limit the number of extra buffers we keep lying around
+                idle_buffers.truncate(16);
+                if idle_buffers.capacity() > idle_buffers.len() * 4 {
+                    idle_buffers.shrink_to_fit();
+                }
             })
             .as_collection()
     }

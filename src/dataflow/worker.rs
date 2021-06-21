@@ -3,8 +3,7 @@ use crate::{
     dataflow::{
         self,
         operators::{EventIterator, Fuel, InspectExt, ReplayWithShutdown},
-        utils::Pcg64,
-        DataflowSenders,
+        utils, DataflowSenders,
     },
     logging,
     replay_loading::{
@@ -25,7 +24,7 @@ use std::{
         Arc,
     },
     thread,
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 use timely::{
     communication::Allocate,
@@ -275,15 +274,11 @@ where
         )))
         .with_message(format!("Replaying {} events", source.to_lowercase()));
 
-    let time = SystemTime::UNIX_EPOCH.elapsed().unwrap().as_nanos() as u64;
-    let mut rng = Pcg64::new(time, 3);
-    rng.advance(*source_counter + 1);
-
     // I'm a genius, giving every bar the same tick speed looks weird
     // and artificial (almost like the spinners don't actually mean anything),
     // so each spinner gets a little of an offset so that all of them are
     // slightly out of sync
-    progress.enable_steady_tick(rng.gen_range(50..500));
+    utils::set_steady_tick(&progress, *source_counter + 1);
 
     progress_bars.push((progress.clone(), finished_style));
     *source_counter += 1;

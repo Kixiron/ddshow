@@ -18,6 +18,7 @@ use differential_dataflow::{
     trace::implementations::ord::{OrdKeySpine, OrdValSpine},
     Collection, ExchangeData, Hashable,
 };
+use indicatif::ProgressBar;
 use std::{
     convert::TryFrom,
     fs::{self, File},
@@ -25,7 +26,7 @@ use std::{
     num::Wrapping,
     ops::Range,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use timely::dataflow::{
     operators::{capture::Event, Capture, Probe},
@@ -155,6 +156,21 @@ pub(super) fn log_file_path(file_prefix: &str, dir: &Path, worker_id: usize) -> 
     ))
 }
 
+pub(crate) fn set_steady_tick(progress: &ProgressBar, delta: usize) {
+    let time = SystemTime::UNIX_EPOCH.elapsed().map_or_else(
+        |err| {
+            tracing::error!("failed to get system time for seeding generator: {:?}", err);
+            Pcg64::new(delta as u128).next_u64() as u128
+        },
+        |time| time.as_nanos(),
+    );
+
+    let mut rng = Pcg64::new(time);
+    rng.advance(delta as u128);
+
+    progress.enable_steady_tick(rng.gen_range(50..500));
+}
+
 pub(crate) struct Pcg64 {
     state: Wrapping<u128>,
     increment: Wrapping<u128>,
@@ -162,12 +178,16 @@ pub(crate) struct Pcg64 {
 
 impl Pcg64 {
     const MULTIPLIER: Wrapping<u128> = Wrapping(6_364_136_223_846_793_005);
+    const DEFAULT_INCREMENT: Wrapping<u128> = Wrapping(1_442_695_040_888_963_407);
 
-    pub fn new(seed: u64, mut increment: u64) -> Self {
-        if increment % 2 != 0 {
-            increment += 1;
+    pub fn new(seed: u128) -> Self {
+        Self::with_increment(Wrapping(seed), Self::DEFAULT_INCREMENT)
+    }
+
+    pub fn with_increment(seed: Wrapping<u128>, mut increment: Wrapping<u128>) -> Self {
+        if increment % Wrapping(2) != Wrapping(0) {
+            increment += Wrapping(1);
         }
-        let (seed, increment) = (Wrapping(seed as u128), Wrapping(increment as u128));
 
         let mut gen = Self {
             state: seed + increment,
@@ -178,10 +198,30 @@ impl Pcg64 {
         gen
     }
 
-    pub fn advance(&mut self, n: usize) {
-        for _ in 0..n {
-            self.next_u64();
+    /// Advances the generator `delta` steps in `log(delta)` time
+    pub fn advance(&mut self, delta: u128) {
+        self.state = self.jump_lcg128(delta);
+    }
+
+    fn jump_lcg128(&self, mut delta: u128) -> Wrapping<u128> {
+        let mut current_multiplier = Self::MULTIPLIER;
+        let mut current_plus = self.increment;
+        let mut accumulated_multiplier = Wrapping(1);
+        let mut accumulated_plus = Wrapping(0);
+
+        while delta > 0 {
+            if (delta & 1) > 0 {
+                accumulated_multiplier *= current_multiplier;
+                accumulated_plus = (accumulated_plus * current_multiplier) + current_plus;
+            }
+
+            current_plus = (current_multiplier + Wrapping(1)) * current_plus;
+            current_multiplier *= current_multiplier;
+
+            delta /= 2;
         }
+
+        (accumulated_multiplier * self.state) + accumulated_plus
     }
 
     pub fn next_u64(&mut self) -> u64 {

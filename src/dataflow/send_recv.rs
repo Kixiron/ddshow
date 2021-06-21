@@ -5,13 +5,14 @@ use crate::{
         operators::{CrossbeamExtractor, Fuel},
         progress_stats::{Channel, ProgressInfo},
         utils::{channel_sink, Diff, Time},
-        worker_timeline::WorkerTimelineEvent,
+        worker_timeline::TimelineEvent,
     },
     ui::{DataflowStats, ProgramStats, WorkerStats},
 };
 use crossbeam_channel::{Receiver, Sender};
 use ddshow_types::{timely_logging::OperatesEvent, OperatorAddr, OperatorId, WorkerId};
 use differential_dataflow::{
+    difference::{Present, Semigroup},
     operators::arrange::{Arranged, TraceAgent},
     trace::implementations::ord::OrdKeySpine,
     Collection,
@@ -30,22 +31,22 @@ pub(crate) type ChannelAddrs<S, D> = Arranged<
     S,
     TraceAgent<OrdKeySpine<(WorkerId, OperatorAddr), <S as ScopeParent>::Timestamp, D>>,
 >;
-type Bundled<D> = (D, Time, Diff);
-type ESender<D> = Sender<Event<Time, Bundled<D>>>;
-type EReceiver<D> = Receiver<Event<Time, Bundled<D>>>;
-type Extractor<D> = CrossbeamExtractor<Event<Time, Bundled<D>>>;
+type Bundled<D, R = Diff> = (D, Time, R);
+type ESender<D, R = Diff> = Sender<Event<Time, Bundled<D, R>>>;
+type EReceiver<D, R = Diff> = Receiver<Event<Time, Bundled<D, R>>>;
+type Extractor<D, R = Diff> = CrossbeamExtractor<Event<Time, Bundled<D, R>>>;
 
 macro_rules! make_send_recv {
-    ($($name:ident : $ty:ty),* $(,)?) => {
+    ($($name:ident : $ty:ty $(= $diff:ty)?),* $(,)?) => {
         #[derive(Clone, Debug)]
         pub struct DataflowSenders {
-            $($name: (ESender<$ty>, bool),)*
+            $($name: (ESender<$ty, $($diff)?>, bool),)*
         }
 
         impl DataflowSenders {
             #[allow(clippy::too_many_arguments)]
             pub fn new(
-                $($name: ESender<$ty>,)*
+                $($name: ESender<$ty, $($diff)?>,)*
             ) -> Self {
                 Self {
                     $($name: ($name, false),)*
@@ -74,7 +75,7 @@ macro_rules! make_send_recv {
             pub fn install_sinks<S>(
                 mut self,
                 probe: &mut ProbeHandle<Duration>,
-                $($name: (&Collection<S, $ty, Diff>, bool),)*
+                $($name: (&Collection<S, $ty, make_send_recv!(@diff $($diff)?)>, bool),)*
             )
             where
                 S: Scope<Timestamp = Duration>,
@@ -91,7 +92,7 @@ macro_rules! make_send_recv {
             }
 
             $(
-                pub fn $name(&mut self) -> ESender<$ty> {
+                pub fn $name(&mut self) -> ESender<$ty, $($diff)?> {
                     tracing::debug!("sent to dataflow sender {}", stringify!($name));
 
                     self.$name.1 = true;
@@ -113,14 +114,14 @@ macro_rules! make_send_recv {
 
         #[derive(Clone, Debug)]
         pub struct DataflowReceivers {
-            $(pub $name: EReceiver<$ty>,)*
+            $(pub $name: EReceiver<$ty, $($diff)?>,)*
         }
 
         impl DataflowReceivers {
             /// Create a new dataflow receiver from the given channels
             #[allow(clippy::too_many_arguments)]
             pub fn new(
-                $($name: EReceiver<$ty>,)*
+                $($name: EReceiver<$ty, $($diff)?>,)*
             ) -> Self {
                 Self {
                     $($name,)*
@@ -141,7 +142,7 @@ macro_rules! make_send_recv {
 
         #[derive(Clone)]
         pub struct DataflowExtractor {
-            $(pub $name: (Extractor<$ty>, HashMap<$ty, Diff>),)*
+            $(pub $name: (Extractor<$ty, $($diff)?>, HashMap<$ty, make_send_recv!(@diff $($diff)?)>),)*
             step: Cycle<DataflowStepIter>,
             consumed: ChangeBatch<Duration>,
             last_consumed: Duration,
@@ -150,7 +151,7 @@ macro_rules! make_send_recv {
         impl DataflowExtractor {
             #[allow(clippy::too_many_arguments)]
             pub fn new(
-                $($name: EReceiver<$ty>,)*
+                $($name: EReceiver<$ty, $($diff)?>,)*
             ) -> Self {
                 Self {
                     $($name: (
@@ -226,10 +227,7 @@ macro_rules! make_send_recv {
                 $(
                     let $name: Vec<_> = self.$name.1
                         .into_iter()
-                        // Note: No filtering is needed here since `0..-N` produces no
-                        //       outputs and neither does `0..0` which ensures that only
-                        //       values with a difference of `diff >= 1` are produced
-                        .flat_map(|(data, diff)| (0..diff).map(move |_| data.clone()))
+                        .filter_map(|(data, diff)| if !diff.is_zero() { Some(data) } else { None })
                         .collect();
 
                     tracing::debug!(
@@ -265,6 +263,9 @@ macro_rules! make_send_recv {
             $($name,)*
         }
     };
+
+    (@diff) => { Diff };
+    (@diff $diff:ty) => { $diff };
 }
 
 type WorkerStatsData = Vec<(WorkerId, WorkerStats)>;
@@ -279,7 +280,7 @@ type EdgeData = (
 type SubgraphData = ((WorkerId, OperatorAddr), OperatesEvent);
 type OperatorStatsData = ((WorkerId, OperatorId), OperatorStats);
 type AggOperatorStatsData = (OperatorId, AggregatedOperatorStats);
-type TimelineEventData = WorkerTimelineEvent;
+type TimelineEventData = TimelineEvent;
 type NameLookupData = ((WorkerId, OperatorId), String);
 type AddrLookupData = ((WorkerId, OperatorId), OperatorAddr);
 type ChannelProgressData = (OperatorAddr, ProgressInfo);
@@ -293,7 +294,7 @@ make_send_recv! {
     operator_stats: OperatorStatsData,
     aggregated_operator_stats: AggOperatorStatsData,
     dataflow_stats: DataflowStats,
-    timeline_events: TimelineEventData,
+    timeline_events: TimelineEventData = Present,
     name_lookup: NameLookupData,
     addr_lookup: AddrLookupData,
     channel_progress: ChannelProgressData,

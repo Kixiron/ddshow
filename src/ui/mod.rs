@@ -2,7 +2,7 @@
 
 use crate::{
     args::Args,
-    dataflow::{ProgressInfo, WorkerTimelineEvent},
+    dataflow::{ProgressInfo, TimelineEvent as RawTimelineEvent},
 };
 use abomonation_derive::Abomonation;
 use anyhow::{Context as _, Result};
@@ -26,7 +26,7 @@ pub fn render(
     subgraphs: Vec<Subgraph>,
     edges: Vec<Edge>,
     palette_colors: Vec<String>,
-    timeline_events: Vec<WorkerTimelineEvent>,
+    timeline_events: Vec<RawTimelineEvent>,
     channel_progress: Vec<(OperatorAddr, ProgressInfo)>,
 ) -> Result<()> {
     let output_dir = &args.output_dir;
@@ -515,7 +515,7 @@ pub struct GraphData {
     pub subgraphs: Vec<Subgraph>,
     pub edges: Vec<Edge>,
     pub palette_colors: Vec<String>,
-    pub timeline_events: Vec<WorkerTimelineEvent>,
+    pub timeline_events: Vec<RawTimelineEvent>,
     pub channel_progress: Vec<(OperatorAddr, ProgressInfo)>,
 }
 

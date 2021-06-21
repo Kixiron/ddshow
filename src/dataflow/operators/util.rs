@@ -1,4 +1,3 @@
-use crate::dataflow::Diff;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use differential_dataflow::{
     difference::{Abelian, Semigroup},
@@ -55,10 +54,11 @@ impl<T> CrossbeamExtractor<T> {
     }
 }
 
-impl<T, D> CrossbeamExtractor<Event<T, (D, T, Diff)>>
+impl<T, D, R> CrossbeamExtractor<Event<T, (D, T, R)>>
 where
     T: Debug + Ord + Hash + Clone,
     D: Ord + Hash + Clone,
+    R: Semigroup,
 {
     /// Extracts in a non-blocking manner, exerting fuel for any data pulled from the channel
     /// and returning when the fuel is exhausted or the channel is empty. Returns `true` if
@@ -66,7 +66,7 @@ where
     pub fn extract_with_fuel(
         &self,
         fuel: &mut Fuel,
-        sink: &mut HashMap<D, Diff>,
+        sink: &mut HashMap<D, R>,
         consumed: &mut ChangeBatch<T>,
     ) -> bool {
         while !fuel.is_exhausted() {
@@ -92,7 +92,7 @@ where
 
                     // Add all the data to the given sink
                     for (data, _time, diff) in data {
-                        *sink.entry(data).or_insert(0) += diff;
+                        sink.entry(data).and_modify(|d| *d += &diff).or_insert(diff);
                     }
                 }
 
@@ -117,7 +117,7 @@ where
             fuel.exert(sink.len());
 
             // Only retain entries where the weight is zero
-            sink.retain(|_, &mut diff| diff != 0);
+            sink.retain(|_, diff| !diff.is_zero());
 
             // If we've got a bunch of extra allocated capacity, drop it all
             // to keep our memory usage from exploding. This is overly
@@ -135,12 +135,13 @@ where
     pub fn extract_all(self) -> Vec<D> {
         let mut data = HashMap::new();
         for (event, _time, diff) in self.extract().into_iter().flat_map(|(_, data)| data) {
-            *data.entry(event).or_insert(0) += diff;
+            data.entry(event)
+                .and_modify(|d| *d += &diff)
+                .or_insert(diff);
         }
 
         data.into_iter()
-            .filter(|&(_, diff)| diff >= 1)
-            .flat_map(|(data, diff)| (0..diff).map(move |_| data.clone()))
+            .filter_map(|(data, diff)| if !diff.is_zero() { Some(data) } else { None })
             .collect()
     }
 }
