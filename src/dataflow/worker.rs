@@ -67,8 +67,8 @@ where
     let dataflow_id = worker.next_dataflow_index();
     let (mut progress_bars, mut source_counter, total_sources) = (
         Vec::new(),
-        (worker.index() * (args.differential_enabled as usize))
-            + (worker.index() * (args.progress_enabled as usize))
+        (worker.index() * args.differential_enabled as usize + args.differential_enabled as usize)
+            + (worker.index() * args.progress_enabled as usize + args.progress_enabled as usize)
             + 1,
         worker.peers()
             + if args.differential_enabled {

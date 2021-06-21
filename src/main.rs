@@ -40,7 +40,7 @@ fn main() -> Result<()> {
 
     tracing::trace!("initialized and received cli args: {:?}", args);
 
-    let config = args.timely_config();
+    let (communication_config, worker_config) = args.timely_config();
 
     let (
         timely_event_receivers,
@@ -66,40 +66,52 @@ fn main() -> Result<()> {
 
     tracing::info!("starting compute dataflow");
 
+    // Build the timely allocators and loggers
+    let (builders, others) = communication_config
+        .try_build()
+        .map_err(|err| anyhow::anyhow!("failed to build timely communication config: {}", err))?;
+
     // Spin up the timely computation
-    let worker_guards = timely::execute(config, move |worker| {
-        // Distribute the tcp streams across workers, converting each of them into an event reader
-        let timely_traces = timely_event_receivers[worker.index()]
-            .clone()
-            .recv()
-            .expect("failed to receive timely event traces");
-
-        let differential_traces = differential_event_receivers.as_ref().map(|recv| {
-            recv[worker.index()]
+    // Note: We use `execute_from()` instead of `timely::execute()` because
+    //       `execute()` automatically sets log hooks that connect to
+    //       `TIMELY_WORKER_LOG_ADDR`, meaning that no matter what we do
+    //        our dataflow will always attempt to connect to that address
+    //       if it's present in the env, causing things like ddshow/#7.
+    //       See https://github.com/Kixiron/ddshow/issues/7
+    let worker_guards =
+        timely::execute::execute_from(builders, others, worker_config, move |worker| {
+            // Distribute the tcp streams across workers, converting each of them into an event reader
+            let timely_traces = timely_event_receivers[worker.index()]
+                .clone()
                 .recv()
-                .expect("failed to receive differential event traces")
-        });
+                .expect("failed to receive timely event traces");
 
-        let progress_traces = progress_event_receivers.as_ref().map(|recv| {
-            recv[worker.index()]
-                .recv()
-                .expect("failed to receive progress traces")
-        });
+            let differential_traces = differential_event_receivers.as_ref().map(|recv| {
+                recv[worker.index()]
+                    .recv()
+                    .expect("failed to receive differential event traces")
+            });
 
-        // Start the analysis worker's runtime
-        dataflow::worker_runtime(
-            worker,
-            moved_args.clone(),
-            senders.clone(),
-            replay_shutdown.clone(),
-            moved_workers_finished.clone(),
-            progress_bars.clone(),
-            timely_traces,
-            differential_traces,
-            progress_traces,
-        )
-    })
-    .map_err(|err| anyhow::anyhow!("failed to start up timely computation: {}", err))?;
+            let progress_traces = progress_event_receivers.as_ref().map(|recv| {
+                recv[worker.index()]
+                    .recv()
+                    .expect("failed to receive progress traces")
+            });
+
+            // Start the analysis worker's runtime
+            dataflow::worker_runtime(
+                worker,
+                moved_args.clone(),
+                senders.clone(),
+                replay_shutdown.clone(),
+                moved_workers_finished.clone(),
+                progress_bars.clone(),
+                timely_traces,
+                differential_traces,
+                progress_traces,
+            )
+        })
+        .map_err(|err| anyhow::anyhow!("failed to start up timely computation: {}", err))?;
 
     // Wait for the user's prompt
     let data = wait_for_input(&args, &running, &workers_finished, worker_guards, receivers)?;

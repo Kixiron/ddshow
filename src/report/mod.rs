@@ -51,33 +51,6 @@ pub fn build_report(
             .map(|&(worker, _)| worker)
             .collect();
 
-        let mut tree = Tree::new();
-        for &(operator, ref stats) in data.aggregated_operator_stats.iter() {
-            let addr = all_workers
-                .iter()
-                .find_map(|&worker| addr_lookup.get(&(worker, operator)))
-                .unwrap();
-            let name = all_workers
-                .iter()
-                .find_map(|&worker| name_lookup.get(&(worker, operator)))
-                .unwrap();
-
-            tree.insert(addr.as_slice(), format!("{:#?}, {}", stats.total, name));
-        }
-
-        // FIXME: This is a crime against everything I know and love
-        let total_runtime = |needle| {
-            data.aggregated_operator_stats
-                .iter()
-                .find(|(id, _)| id == needle)
-                .map(|(_, stats)| stats.total)
-        };
-
-        // FIXME: Things aren't actually getting sorted for some reason
-        tree.sort_unstable_by(|&left, &right| total_runtime(left).cmp(&total_runtime(right)));
-
-        println!("{}", tree);
-
         program_overview(args, data, &mut file)?;
         worker_stats(args, data, &mut file)?;
         operator_stats(
@@ -95,29 +68,11 @@ pub fn build_report(
             tracing::debug!("differential logging is disabled, skipping arrangement stats table");
         }
 
+        operator_tree(data, &mut file, &name_lookup, &addr_lookup, &all_workers)?;
+
         if args.progress_enabled {
-            let mut table = Table::new();
-            table.set_header(vec![
-                "Operator Address",
-                "Channel Id",
-                "Produced Messages",
-                "Consumed Messages",
-                "Produced Capability Updates",
-                "Consumed Capability Updates",
-            ]);
-
-            for (addr, info) in data.channel_progress.iter() {
-                table.add_row(vec![
-                    Cell::new(addr),
-                    Cell::new(info.channel_id),
-                    Cell::new(info.produced.messages),
-                    Cell::new(info.consumed.messages),
-                    Cell::new(info.produced.capability_updates),
-                    Cell::new(info.consumed.capability_updates),
-                ]);
-            }
-
-            writeln!(file, "{}\n", table).context("failed to write to report file")?;
+            writeln!(&mut file)?;
+            channel_traffic(data, &mut file)?;
         } else {
             tracing::debug!("progress logging is disabled, skipping channel stats table");
         }
@@ -374,6 +329,67 @@ fn arrangement_stats(
         .context("failed to write to report file")?;
 
     Ok(())
+}
+
+fn operator_tree(
+    data: &DataflowData,
+    file: &mut File,
+    name_lookup: &&HashMap<(WorkerId, OperatorId), String>,
+    addr_lookup: &&HashMap<(WorkerId, OperatorId), OperatorAddr>,
+    all_workers: &HashSet<WorkerId>,
+) -> Result<()> {
+    tracing::debug!("generating operator tree");
+
+    let mut tree = Tree::new(|writer, _, (total, name, addr)| {
+        writeln!(writer, "{:#?}, {}, {}", total, name, addr)
+    });
+
+    for &(operator, ref stats) in data.aggregated_operator_stats.iter() {
+        let addr = all_workers
+            .iter()
+            .find_map(|&worker| addr_lookup.get(&(worker, operator)))
+            .expect("missing operator addr");
+        let name = all_workers
+            .iter()
+            .find_map(|&worker| name_lookup.get(&(worker, operator)))
+            .expect("missing operator name");
+
+        let displaced = tree.insert(addr.as_slice(), (stats.total, name, addr));
+        debug_assert_eq!(displaced, None);
+    }
+
+    // FIXME: Things aren't actually getting sorted for some reason
+    tree.sort_unstable_by(|(_, left), (_, right)| {
+        left.map(|&(total, _, _)| Reverse(total))
+            .cmp(&right.map(|&(total, _, _)| Reverse(total)))
+    });
+
+    write!(file, "Operator Tree\n{}", tree).context("failed to write to report file")
+}
+
+fn channel_traffic(data: &DataflowData, file: &mut File) -> Result<()> {
+    let mut table = Table::new();
+    table.set_header(vec![
+        "Operator Address",
+        "Channel Id",
+        "Produced Messages",
+        "Consumed Messages",
+        "Produced Capability Updates",
+        "Consumed Capability Updates",
+    ]);
+
+    for (addr, info) in data.channel_progress.iter() {
+        table.add_row(vec![
+            Cell::new(addr),
+            Cell::new(info.channel_id),
+            Cell::new(info.produced.messages),
+            Cell::new(info.consumed.messages),
+            Cell::new(info.produced.capability_updates),
+            Cell::new(info.consumed.capability_updates),
+        ]);
+    }
+
+    writeln!(file, "{}", table).context("failed to write to report file")
 }
 
 struct Table {

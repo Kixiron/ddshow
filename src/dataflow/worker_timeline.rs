@@ -31,6 +31,7 @@ use timely::dataflow::{
     Scope, Stream,
 };
 
+// TODO: This uses *vastly* too much memory
 pub(super) fn worker_timeline<S, Trace>(
     scope: &mut S,
     timely_events: &Collection<S, EventData, Diff>,

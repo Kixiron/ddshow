@@ -1,7 +1,7 @@
 use colorous::Gradient;
 use std::{net::SocketAddr, num::NonZeroUsize, ops::Deref, path::PathBuf, str::FromStr};
 use structopt::StructOpt;
-use timely::{CommunicationConfig, Config};
+use timely::{CommunicationConfig, WorkerConfig};
 
 /// Tools for profiling and visualizing Timely Dataflow & Differential Dataflow Programs
 ///
@@ -153,24 +153,18 @@ impl Default for TerminalColor {
 }
 
 impl Args {
-    pub fn timely_config(&self) -> Config {
-        let config = {
-            let communication = if self.workers.get() == 1 {
-                CommunicationConfig::Thread
-            } else {
-                CommunicationConfig::Process(self.workers.get())
-            };
-
-            Config {
-                communication,
-                worker: Default::default(),
-            }
+    pub fn timely_config(&self) -> (CommunicationConfig, WorkerConfig) {
+        let communication = if self.workers.get() == 1 {
+            CommunicationConfig::Thread
+        } else {
+            CommunicationConfig::Process(self.workers.get())
         };
+        let worker_config = WorkerConfig::default();
 
         // TODO: Implement `Debug` for `timely::Config`
         tracing::trace!("created timely config");
 
-        config
+        (communication, worker_config)
     }
 
     /// Returns `true` if the program is replaying logs from a file

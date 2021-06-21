@@ -12,7 +12,7 @@ use differential_dataflow::{
     Collection,
 };
 use std::{iter, time::Duration};
-use timely::dataflow::{Scope, Stream};
+use timely::dataflow::{operators::Enter, Scope, Stream};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Abomonation)]
 pub struct OperatorStats {
@@ -55,101 +55,64 @@ pub fn operator_stats<S>(
 where
     S: Scope<Timestamp = Duration>,
 {
-    let operator_stats = scope.region_named("Build Operator Stats", |region| {
-        let activation_times = activation_times.enter(region);
-
-        // TODO: This is a super intensive reduce
-        // let aggregated_durations = activation_times.reduce(|_id, durations, output| {
-        //     let durations: Vec<_> = durations
-        //         .iter()
-        //         .flat_map(|&(&duration, diff)| (0..diff).map(move |_| duration))
-        //         .collect();
-        //
-        //     output.push((durations, 1));
-        // });
+    scope.region_named("Build Operator Stats", |region| {
+        let (activation_times, differential_stream) = (
+            activation_times.enter_region(region),
+            differential_stream.map(|stream| stream.enter(region)),
+        );
 
         let execution_statistics =
             summation(&activation_times.map(|(operator, (_start, duration))| (operator, duration)));
 
-        // aggregated_durations
-        //     .join_map(
-        //         &execution_statistics,
-        //         |&(worker, id),
-        //          activation_durations,
-        //          &Summation {
-        //              max,
-        //              min,
-        //              total,
-        //              average,
-        //              count: activations,
-        //          }| {
-        //             let stats = OperatorStats {
-        //                 id,
-        //                 worker,
-        //                 max,
-        //                 min,
-        //                 average,
-        //                 total,
-        //                 activations,
-        //                 activation_durations: activation_durations.to_owned(),
-        //                 arrangement_size: None,
-        //             };
-        //
-        //             ((worker, id), stats)
-        //         },
-        //     )
-        //     .leave_region()
+        let operator_stats = execution_statistics.map(
+            |(
+                (worker, id),
+                Summation {
+                    max,
+                    min,
+                    total,
+                    average,
+                    count: activations,
+                },
+            )| {
+                let stats = OperatorStats {
+                    id,
+                    worker,
+                    max,
+                    min,
+                    average,
+                    total,
+                    activations,
+                    activation_durations: Vec::new(),
+                    arrangement_size: None,
+                };
 
-        execution_statistics
-            .map(
-                |(
-                    (worker, id),
-                    Summation {
-                        max,
-                        min,
-                        total,
-                        average,
-                        count: activations,
+                ((worker, id), stats)
+            },
+        );
+
+        differential_stream
+            .as_ref()
+            .map(|stream| {
+                let arrangement_stats = differential::arrangement_stats(region, stream);
+
+                let modified_stats = operator_stats.join_map(
+                    &arrangement_stats,
+                    |&operator, stats, &arrangement_stats| {
+                        let mut stats = stats.clone();
+                        stats.arrangement_size = Some(arrangement_stats);
+
+                        (operator, stats)
                     },
-                )| {
-                    let stats = OperatorStats {
-                        id,
-                        worker,
-                        max,
-                        min,
-                        average,
-                        total,
-                        activations,
-                        activation_durations: Vec::new(),
-                        arrangement_size: None,
-                    };
+                );
 
-                    ((worker, id), stats)
-                },
-            )
+                operator_stats
+                    .antijoin(&modified_stats.map(|(operator, _)| operator))
+                    .concat(&modified_stats)
+            })
+            .unwrap_or(operator_stats)
             .leave_region()
-    });
-
-    differential_stream
-        .as_ref()
-        .map(|stream| {
-            let arrangement_stats = differential::arrangement_stats(scope, stream);
-
-            let modified_stats = operator_stats.join_map(
-                &arrangement_stats,
-                |&operator, stats, &arrangement_stats| {
-                    let mut stats = stats.clone();
-                    stats.arrangement_size = Some(arrangement_stats);
-
-                    (operator, stats)
-                },
-            );
-
-            operator_stats
-                .antijoin(&modified_stats.map(|(operator, _)| operator))
-                .concat(&modified_stats)
-        })
-        .unwrap_or(operator_stats)
+    })
 }
 
 pub(crate) fn aggregate_operator_stats<S>(
