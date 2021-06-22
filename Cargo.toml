@@ -67,12 +67,10 @@ features = ["build", "cargo", "rustc"]
 debug = 0
 lto = false
 opt-level = 0
-incremental = true
 
 [profile.release]
 debug = 2
 lto = "thin"
 opt-level = 3
 codegen-units = 24
-incremental = true
 debug-assertions = false

@@ -3,6 +3,7 @@ use abomonation::Abomonation;
 use indicatif::ProgressBar;
 use std::{
     convert::identity,
+    fmt::Debug,
     io::{self, Read, Write},
     marker::PhantomData,
     mem,
@@ -202,7 +203,7 @@ where
 impl<T, D, I> ReplayWithShutdown<T, D> for I
 where
     T: Timestamp + Default,
-    D: Data,
+    D: Debug + Data,
     I: IntoIterator,
     <I as IntoIterator>::Item: EventIterator<T, D> + 'static,
 {

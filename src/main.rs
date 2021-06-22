@@ -75,7 +75,7 @@ fn main() -> Result<()> {
     // Note: We use `execute_from()` instead of `timely::execute()` because
     //       `execute()` automatically sets log hooks that connect to
     //       `TIMELY_WORKER_LOG_ADDR`, meaning that no matter what we do
-    //        our dataflow will always attempt to connect to that address
+    //       our dataflow will always attempt to connect to that address
     //       if it's present in the env, causing things like ddshow/#7.
     //       See https://github.com/Kixiron/ddshow/issues/7
     let worker_guards =

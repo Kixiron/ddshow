@@ -152,7 +152,7 @@ where
 pub(super) fn log_file_path(file_prefix: &str, dir: &Path, worker_id: usize) -> PathBuf {
     dir.join(format!(
         "{}.replay-worker-{}.ddshow",
-        file_prefix, worker_id
+        file_prefix, worker_id,
     ))
 }
 

@@ -107,9 +107,13 @@ pub fn connect_to_sources(
 > {
     let mut total_sources = 0;
 
-    let timely_listener = TcpListener::bind(args.timely_address).with_context(|| {
-        anyhow::anyhow!("failed to bind to timely socket {}", args.timely_address)
-    })?;
+    let timely_listener = if !args.is_file_sourced() {
+        Some(TcpListener::bind(args.timely_address).with_context(|| {
+            anyhow::anyhow!("failed to bind to timely socket {}", args.timely_address)
+        })?)
+    } else {
+        None
+    };
     let differential_listener = if args.differential_enabled && !args.is_file_sourced() {
         Some(
             TcpListener::bind(args.differential_address).with_context(|| {
@@ -148,10 +152,6 @@ pub fn connect_to_sources(
 
     // Connect to the differential sources
     let (differential_event_receivers, are_differential_sources) = if args.differential_enabled {
-        let differential_listener = differential_listener.expect(
-            "the differential listener should be created when `args.differential_enabled` is true",
-        );
-
         let (receivers, are_sources, num_sources) = acquire_replay_sources(
             &args,
             args.differential_address,
@@ -171,9 +171,6 @@ pub fn connect_to_sources(
 
     // Connect to progress sources
     let (progress_event_receivers, are_progress_sources) = if args.progress_enabled {
-        let progress_listener = progress_listener
-            .expect("the progress listener should be created when `args.progress_enabled` is true");
-
         let (receivers, are_sources, num_sources) = acquire_replay_sources(
             &args,
             args.progress_address,
@@ -218,7 +215,7 @@ pub fn connect_to_sources(
 pub fn acquire_replay_sources<T, D1, D2>(
     args: &Args,
     address: SocketAddr,
-    listener: TcpListener,
+    listener: Option<TcpListener>,
     connections: NonZeroUsize,
     workers: NonZeroUsize,
     log_dir: Option<&Path>,
@@ -349,6 +346,8 @@ where
 
         ReplaySource::Rkyv(replays)
     } else {
+        let listener = listener.expect("a listener must be supplied for stream sources");
+
         let source = match args.stream_encoding {
             StreamEncoding::Abomonation => {
                 wait_for_abominated_connections(listener, &address, connections, &progress)?
@@ -460,7 +459,12 @@ where
     T: Abomonation + Send + 'static,
     D: Abomonation + Send + 'static,
 {
-    progress.set_message(format!("connected to {:?}", addr));
+    progress.set_message(format!(
+        "connected to 0/{} socket{}",
+        connections,
+        if connections.get() == 1 { "" } else { "s" },
+    ));
+    progress.set_length(connections.get() as u64);
 
     let timely_conns = (0..connections.get())
         .zip(listener.incoming())
@@ -490,7 +494,7 @@ where
                 "connected to {}/{} socket{}",
                 idx + 1,
                 connections,
-                if connections.get() == 1 { "" } else { "s" }
+                if connections.get() == 1 { "" } else { "s" },
             ));
             progress.inc(1);
 
@@ -519,7 +523,12 @@ where
     D: Archive,
     D::Archived: Deserialize<D, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
 {
-    progress.set_message(format!("connected to {}", addr));
+    progress.set_message(format!(
+        "connected to 0/{} socket{}",
+        connections,
+        if connections.get() == 1 { "" } else { "s" },
+    ));
+    progress.set_length(connections.get() as u64);
 
     let timely_conns = (0..connections.get())
         .zip(listener.incoming())
@@ -549,7 +558,7 @@ where
                 "connected to {}/{} socket{}",
                 idx + 1,
                 connections,
-                if connections.get() == 1 { "" } else { "s" }
+                if connections.get() == 1 { "" } else { "s" },
             ));
             progress.inc(1);
 
@@ -577,7 +586,7 @@ pub fn wait_for_input(
     worker_guards: WorkerGuards<Result<()>>,
     receivers: DataflowReceivers,
 ) -> Result<DataflowData> {
-    let (mut stdin, mut stdout) = (io::stdin(), io::stdout());
+    let mut stdin = io::stdin();
 
     let (send, recv) = crossbeam_channel::bounded(1);
     let barrier = Arc::new(Barrier::new(2));
@@ -600,12 +609,7 @@ pub fn wait_for_input(
         "Press enter to finish collecting trace data (this will crash the source computation \
             if it's currently running and cause data to not be fully processed)..."
     };
-    stdout
-        .write_all(message.as_bytes())
-        .context("failed to write termination message to stdout")?;
-
-    stdout.flush().context("failed to flush stdout")?;
-    drop(stdout);
+    println!("{}", message);
 
     // Sync up with the user input thread
     barrier.wait();

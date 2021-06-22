@@ -18,6 +18,7 @@ use ddshow_types::{
 use differential_dataflow::{logging::DifferentialEvent as RawDifferentialEvent, Data};
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
 use std::{
+    fmt::Debug,
     num::NonZeroUsize,
     panic::Location,
     sync::{
@@ -75,7 +76,7 @@ where
     );
 
     let mut source_counter = {
-        let timely_offset = index + 1;
+        let timely_offset = index;
         let differential_offset = (index * differential) + differential;
         let progress_offset = (index * progress) + progress;
 
@@ -259,7 +260,7 @@ fn replay_traces<S, Event, RawEvent, R, A>(
 where
     S: Scope<Timestamp = Duration>,
     Event: Data + From<RawEvent>,
-    RawEvent: Clone + 'static,
+    RawEvent: Debug + Clone + 'static,
     R: EventIterator<Duration, (Duration, WorkerId, Event)> + 'static,
     A: EventIterator<Duration, (Duration, usize, RawEvent)> + 'static,
 {
