@@ -199,19 +199,9 @@ pub fn connect_to_sources(
             differential_enabled = args.differential_enabled,
             are_progress_sources = are_progress_sources,
             progress_enabled = args.progress_enabled,
+            total_sources = total_sources,
             "no replay sources were provided",
         );
-
-        let source = if !are_timely_sources {
-            "timely"
-        } else if !are_differential_sources {
-            "differential"
-        } else {
-            "progress"
-        };
-        println!("No {} replay sources were provided, exiting", source);
-
-        return Ok(None);
     }
 
     Ok(Some((
@@ -285,16 +275,28 @@ where
         //       different runs saved to the same folder
         // TODO: Add support for decompressing archived log files
         let dir = fs::read_dir(log_dir).context("failed to read log directory")?;
-        for entry in dir.into_iter().filter_map(Result::ok) {
+        for entry in dir.into_iter().filter_map(|entry| {
+            entry.map_or_else(
+                |err| {
+                    tracing::error!(dir = ?log_dir, "failed to open file: {:?}", err);
+                    eprintln!("failed to open file: {:?}", err);
+
+                    None
+                },
+                Some,
+            )
+        }) {
             let replay_file = entry.path();
-            if entry.file_type().map_or(false, |file| file.is_file())
-                && replay_file.extension() == Some(OsStr::new("ddshow"))
-                && replay_file
-                    .file_name()
-                    .and_then(OsStr::to_str)
-                    .and_then(|file| file.split('.').next())
-                    .map_or(false, |prefix| prefix == file_prefix)
-            {
+
+            let is_file = entry.file_type().map_or(false, |file| file.is_file());
+            let ends_with_ddshow = replay_file.extension() == Some(OsStr::new("ddshow"));
+            let starts_with_prefix = replay_file
+                .file_name()
+                .and_then(OsStr::to_str)
+                .and_then(|file| file.split('.').next())
+                .map_or(false, |prefix| prefix == file_prefix);
+
+            if is_file && ends_with_ddshow && starts_with_prefix {
                 progress.set_message(replay_file.display().to_string());
                 progress.inc_length(1);
 
@@ -309,6 +311,32 @@ where
 
                 progress.inc(1);
                 num_sources += 1;
+            } else {
+                tracing::warn!(
+                    dir = ?log_dir,
+                    file = ?replay_file,
+                    is_file = is_file,
+                    ends_with_ddshow = ends_with_ddshow,
+                    starts_with_prefix = starts_with_prefix,
+                    "the file {} didn't match replay file criteria",
+                    replay_file.display(),
+                );
+
+                let reason = if is_file {
+                    "replay files must be files".to_owned()
+                } else if ends_with_ddshow {
+                    "did not end with the `.ddshow` extension".to_owned()
+                } else if starts_with_prefix {
+                    format!("did not start with the prefix {}", file_prefix)
+                } else {
+                    "unknown error".to_owned()
+                };
+
+                progress.set_message(format!(
+                    "skipped {}, reason: {}",
+                    replay_file.display(),
+                    reason,
+                ));
             }
         }
 

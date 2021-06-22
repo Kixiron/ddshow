@@ -88,7 +88,6 @@ where
                 // self.consumed += alignment_offset + archive_length + mem::size_of::<u128>();
                 // return Ok(Some(event.into()));
 
-                println!("{:?}", slice);
                 match check_archived_root::<Event<T, D>>(slice) {
                     Ok(archive) => {
                         let event = archive
