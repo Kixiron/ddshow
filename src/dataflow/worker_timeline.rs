@@ -225,7 +225,8 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
     }
 
     pub(super) fn maintain(&mut self) {
-        if self.event_map.capacity() > self.event_map.len() * 4 {
+        if self.event_map.capacity() >= 256 && self.event_map.capacity() > self.event_map.len() * 4
+        {
             tracing::trace!(
                 "shrank event map from a capacity of {} to {}",
                 self.event_map.capacity(),
@@ -235,7 +236,9 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
             self.event_map.shrink_to_fit();
         }
 
-        if self.map_buffer.capacity() > self.map_buffer.len() * 4 {
+        if self.map_buffer.capacity() >= 256
+            && self.map_buffer.capacity() > self.map_buffer.len() * 4
+        {
             tracing::trace!(
                 "shrank map buffer from a capacity of {} to {}",
                 self.map_buffer.capacity(),
@@ -245,8 +248,10 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
             self.map_buffer.shrink_to_fit();
         }
 
-        self.stack_buffer.truncate(5);
-        if self.stack_buffer.capacity() > self.stack_buffer.len() * 4 {
+        self.stack_buffer.retain(|buffer| buffer.capacity() >= 128);
+        if self.stack_buffer.capacity() >= 256
+            && self.stack_buffer.capacity() > self.stack_buffer.len() * 4
+        {
             tracing::trace!(
                 "shrank stack buffer from a capacity of {} to {}",
                 self.stack_buffer.capacity(),

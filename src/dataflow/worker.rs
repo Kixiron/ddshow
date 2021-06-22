@@ -19,6 +19,7 @@ use differential_dataflow::{logging::DifferentialEvent as RawDifferentialEvent, 
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
 use std::{
     num::NonZeroUsize,
+    panic::Location,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
@@ -64,22 +65,37 @@ where
     }
 
     let dataflow_id = worker.next_dataflow_index();
-    let (mut progress_bars, mut source_counter, total_sources) = (
-        Vec::new(),
-        (worker.index() * args.differential_enabled as usize + args.differential_enabled as usize)
-            + (worker.index() * args.progress_enabled as usize + args.progress_enabled as usize)
-            + 1,
-        worker.peers()
-            + if args.differential_enabled {
-                worker.peers()
-            } else {
-                0
-            }
-            + if args.progress_enabled {
-                worker.peers()
-            } else {
-                0
-            },
+    let mut progress_bars = Vec::new();
+
+    let (index, peers, differential, progress) = (
+        worker.index(),
+        worker.peers(),
+        args.differential_enabled as usize,
+        args.progress_enabled as usize,
+    );
+
+    let mut source_counter = {
+        let timely_offset = index + 1;
+        let differential_offset = (index * differential) + differential;
+        let progress_offset = (index * progress) + progress;
+
+        timely_offset + differential_offset + progress_offset
+    };
+    let total_sources = {
+        let timely_sources = worker.peers();
+        let differential_sources = peers * differential;
+        let progress_sources = peers * progress;
+
+        timely_sources + differential_sources + progress_sources
+    };
+
+    tracing::debug!(
+        worker = index,
+        peers = peers,
+        differential = differential,
+        progress = progress,
+        source_counter = source_counter,
+        total_sources = total_sources,
     );
 
     let probe = worker.dataflow_named("DDShow Analysis Dataflow", |scope| {
@@ -227,6 +243,7 @@ where
     Ok(())
 }
 
+#[track_caller]
 #[allow(clippy::too_many_arguments)]
 fn replay_traces<S, Event, RawEvent, R, A>(
     scope: &mut S,
@@ -246,7 +263,14 @@ where
     R: EventIterator<Duration, (Duration, WorkerId, Event)> + 'static,
     A: EventIterator<Duration, (Duration, usize, RawEvent)> + 'static,
 {
-    let name = format!("{} Replay", source);
+    let caller = Location::caller();
+    let name = format!(
+        "{} Replay @ {}:{}:{}",
+        source,
+        caller.file(),
+        caller.line(),
+        caller.column(),
+    );
 
     let style = ProgressStyle::default_spinner()
         .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
@@ -282,6 +306,13 @@ where
 
     progress_bars.push((progress.clone(), finished_style));
     *source_counter += 1;
+
+    tracing::debug!(
+        "replaying {} {} {} traces",
+        traces.len(),
+        traces.kind().to_lowercase(),
+        source.to_lowercase(),
+    );
 
     match traces {
         ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(

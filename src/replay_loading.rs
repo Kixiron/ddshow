@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use bytecheck::CheckBytes;
 use crossbeam_channel::Receiver;
 use ddshow_sink::{DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE, TIMELY_PROGRESS_LOG_FILE};
+use ddshow_types::progress_logging::TimelyProgressEvent;
 use differential_dataflow::logging::DifferentialEvent as RawDifferentialEvent;
 use indicatif::{ProgressBar, ProgressStyle};
 use rkyv::{
@@ -47,19 +48,19 @@ type AcquiredStreams<T, D1, D2> = EventReceivers<
 pub(crate) type TimelyEventReceivers = Arc<[Receiver<TimelyReplaySource>]>;
 pub(crate) type TimelyReplaySource = ReplaySource<
     RkyvEventReader<Duration, TimelyLogBundle, Box<dyn Read + Send + 'static>>,
-    EventReader<Duration, TimelyLogBundle<usize, RawTimelyEvent>, TcpStream>,
+    EventReader<Duration, (Duration, usize, RawTimelyEvent), TcpStream>,
 >;
 
 pub(crate) type DifferentialEventReceivers = Option<Arc<[Receiver<DifferentialReplaySource>]>>;
 pub(crate) type DifferentialReplaySource = ReplaySource<
     RkyvEventReader<Duration, DifferentialLogBundle, Box<dyn Read + Send + 'static>>,
-    EventReader<Duration, DifferentialLogBundle<usize, RawDifferentialEvent>, TcpStream>,
+    EventReader<Duration, (Duration, usize, RawDifferentialEvent), TcpStream>,
 >;
 
 pub(crate) type ProgressEventReceivers = Option<Arc<[Receiver<ProgressReplaySource>]>>;
 pub(crate) type ProgressReplaySource = ReplaySource<
     RkyvEventReader<Duration, ProgressLogBundle, Box<dyn Read + Send + 'static>>,
-    EventReader<Duration, ProgressLogBundle<usize>, TcpStream>,
+    EventReader<Duration, (Duration, usize, TimelyProgressEvent), TcpStream>,
 >;
 
 #[derive(Debug)]
@@ -106,10 +107,37 @@ pub fn connect_to_sources(
 > {
     let mut total_sources = 0;
 
+    let timely_listener = TcpListener::bind(args.timely_address).with_context(|| {
+        anyhow::anyhow!("failed to bind to timely socket {}", args.timely_address)
+    })?;
+    let differential_listener = if args.differential_enabled && !args.is_file_sourced() {
+        Some(
+            TcpListener::bind(args.differential_address).with_context(|| {
+                anyhow::anyhow!(
+                    "failed to bind to differential socket {}",
+                    args.differential_address,
+                )
+            })?,
+        )
+    } else {
+        None
+    };
+    let progress_listener = if args.progress_enabled && !args.is_file_sourced() {
+        Some(TcpListener::bind(args.progress_address).with_context(|| {
+            anyhow::anyhow!(
+                "failed to bind to progress socket {}",
+                args.progress_address,
+            )
+        })?)
+    } else {
+        None
+    };
+
     // Connect to the timely sources
     let (timely_event_receivers, are_timely_sources, num_sources) = acquire_replay_sources(
         &args,
         args.timely_address,
+        timely_listener,
         args.timely_connections,
         args.workers,
         args.replay_logs.as_deref(),
@@ -120,9 +148,14 @@ pub fn connect_to_sources(
 
     // Connect to the differential sources
     let (differential_event_receivers, are_differential_sources) = if args.differential_enabled {
+        let differential_listener = differential_listener.expect(
+            "the differential listener should be created when `args.differential_enabled` is true",
+        );
+
         let (receivers, are_sources, num_sources) = acquire_replay_sources(
             &args,
             args.differential_address,
+            differential_listener,
             args.timely_connections,
             args.workers,
             args.replay_logs.as_deref(),
@@ -138,9 +171,13 @@ pub fn connect_to_sources(
 
     // Connect to progress sources
     let (progress_event_receivers, are_progress_sources) = if args.progress_enabled {
+        let progress_listener = progress_listener
+            .expect("the progress listener should be created when `args.progress_enabled` is true");
+
         let (receivers, are_sources, num_sources) = acquire_replay_sources(
             &args,
             args.progress_address,
+            progress_listener,
             args.timely_connections,
             args.workers,
             args.replay_logs.as_deref(),
@@ -187,9 +224,11 @@ pub fn connect_to_sources(
 
 /// Connect to and prepare the replay sources
 #[tracing::instrument(skip(args))]
+#[allow(clippy::too_many_arguments)]
 pub fn acquire_replay_sources<T, D1, D2>(
     args: &Args,
     address: SocketAddr,
+    listener: TcpListener,
     connections: NonZeroUsize,
     workers: NonZeroUsize,
     log_dir: Option<&Path>,
@@ -270,8 +309,6 @@ where
 
                 progress.inc(1);
                 num_sources += 1;
-            } else {
-                progress.tick();
             }
         }
 
@@ -286,9 +323,11 @@ where
     } else {
         let source = match args.stream_encoding {
             StreamEncoding::Abomonation => {
-                wait_for_abominated_connections(address, connections, &progress)?
+                wait_for_abominated_connections(listener, &address, connections, &progress)?
             }
-            StreamEncoding::Rkyv => wait_for_rkyv_connections(address, connections, &progress)?,
+            StreamEncoding::Rkyv => {
+                wait_for_rkyv_connections(listener, &address, connections, &progress)?
+            }
         };
 
         num_sources += connections.get();
@@ -383,7 +422,8 @@ pub fn make_streams<R, A>(
 /// in non-blocking mode
 #[tracing::instrument(skip(progress))]
 pub fn wait_for_abominated_connections<T, D, R>(
-    timely_addr: SocketAddr,
+    listener: TcpListener,
+    addr: &SocketAddr,
     connections: NonZeroUsize,
     progress: &ProgressBar,
 ) -> Result<ReplaySource<R, EventReader<T, D, TcpStream>>>
@@ -392,12 +432,10 @@ where
     T: Abomonation + Send + 'static,
     D: Abomonation + Send + 'static,
 {
-    let timely_listener =
-        TcpListener::bind(timely_addr).context("failed to bind to socket address")?;
-    progress.set_message(format!("connected to {}", timely_addr));
+    progress.set_message(format!("connected to {:?}", addr));
 
     let timely_conns = (0..connections.get())
-        .zip(timely_listener.incoming())
+        .zip(listener.incoming())
         .map(|(idx, socket)| {
             let socket = socket.context("failed to accept socket connection")?;
 
@@ -442,7 +480,8 @@ type ConnectedRkyvSource<T, D, A> =
 /// in non-blocking mode
 #[tracing::instrument(skip(progress))]
 pub fn wait_for_rkyv_connections<T, D, A>(
-    timely_addr: SocketAddr,
+    listener: TcpListener,
+    addr: &SocketAddr,
     connections: NonZeroUsize,
     progress: &ProgressBar,
 ) -> Result<ConnectedRkyvSource<T, D, A>>
@@ -452,12 +491,10 @@ where
     D: Archive,
     D::Archived: Deserialize<D, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
 {
-    let timely_listener =
-        TcpListener::bind(timely_addr).context("failed to bind to socket address")?;
-    progress.set_message(format!("connected to {}", timely_addr));
+    progress.set_message(format!("connected to {}", addr));
 
     let timely_conns = (0..connections.get())
-        .zip(timely_listener.incoming())
+        .zip(listener.incoming())
         .map(|(idx, socket)| {
             let socket = socket.context("failed to accept socket connection")?;
 

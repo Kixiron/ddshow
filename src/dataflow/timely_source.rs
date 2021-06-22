@@ -70,11 +70,7 @@ type TimelyCollections<S> = (
     Option<Collection<S, TimelineEvent, Present>>,
 );
 
-type WorkList = VecDeque<(
-    Vec<(Time, WorkerId, TimelyEvent)>,
-    Duration,
-    OutputCapabilities,
-)>;
+type WorkList = VecDeque<(Vec<TimelyLogBundle>, Duration, OutputCapabilities)>;
 
 // TODO: These could all emit `Present` difference types since there's no retractions here
 pub(super) fn extract_timely_info<S>(
@@ -101,7 +97,7 @@ where
         // This should be done by default when the number of ddshow workers is the same
         // as the number of timely ones, but this ensures that it happens for disk replay
         // and unbalanced numbers of workers to ensure work is fairly divided
-        Exchange::new(|&(_, id, _): &(_, WorkerId, _)| id.into_inner() as u64),
+        Exchange::new(|(_, worker, _): &TimelyLogBundle| worker.into_inner() as u64),
     );
 
     let mut builder = Builder::new(builder);
@@ -218,7 +214,7 @@ fn work_loop(
     lifespan_map: &mut HashMap<(WorkerId, OperatorId), Duration>,
     activation_map: &mut HashMap<(WorkerId, OperatorId), Duration>,
     work_list: &mut WorkList,
-    work_list_buffers: &mut Vec<Vec<(Time, WorkerId, TimelyEvent)>>,
+    work_list_buffers: &mut Vec<Vec<TimelyLogBundle>>,
     event_map: &mut EventMap,
     map_buffer: &mut EventMap,
     stack_buffer: &mut Vec<Vec<(Duration, Capability<Duration>)>>,
@@ -280,7 +276,7 @@ fn work_loop(
     // Keep our memory usage somewhat under control
     // TODO: Factor out into a function or method
     {
-        if lifespan_map.capacity() > lifespan_map.len() * 4 {
+        if lifespan_map.capacity() >= 128 && lifespan_map.capacity() > lifespan_map.len() * 4 {
             tracing::trace!(
                 "shrank lifespan map from a capacity of {} to {}",
                 lifespan_map.capacity(),
@@ -290,7 +286,8 @@ fn work_loop(
             lifespan_map.shrink_to_fit();
         }
 
-        if activation_map.capacity() > activation_map.len() * 4 {
+        if activation_map.capacity() >= 128 && activation_map.capacity() > activation_map.len() * 4
+        {
             tracing::trace!(
                 "shrank activation map from a capacity of {} to {}",
                 activation_map.capacity(),
@@ -300,7 +297,7 @@ fn work_loop(
             activation_map.shrink_to_fit();
         }
 
-        if work_list.capacity() > work_list.len() * 4 {
+        if work_list.capacity() >= 128 && work_list.capacity() > work_list.len() * 4 {
             tracing::trace!(
                 "shrank work list from a capacity of {} to {}",
                 work_list.capacity(),
@@ -310,7 +307,9 @@ fn work_loop(
             work_list.shrink_to_fit();
         }
 
-        if work_list_buffers.capacity() > work_list_buffers.len() * 4 {
+        if work_list_buffers.capacity() >= 128
+            && work_list_buffers.capacity() > work_list_buffers.len() * 4
+        {
             tracing::trace!(
                 "shrank work list buffers from a capacity of {} to {}",
                 work_list_buffers.capacity(),
@@ -320,7 +319,7 @@ fn work_loop(
             work_list_buffers.shrink_to_fit();
         }
 
-        if event_map.capacity() > event_map.len() * 4 {
+        if event_map.capacity() >= 128 && event_map.capacity() > event_map.len() * 4 {
             tracing::trace!(
                 "shrank event map from a capacity of {} to {}",
                 event_map.capacity(),
@@ -330,7 +329,7 @@ fn work_loop(
             event_map.shrink_to_fit();
         }
 
-        if map_buffer.capacity() > map_buffer.len() * 4 {
+        if map_buffer.capacity() >= 128 && map_buffer.capacity() > map_buffer.len() * 4 {
             tracing::trace!(
                 "shrank map buffer from a capacity of {} to {}",
                 map_buffer.capacity(),
@@ -340,8 +339,8 @@ fn work_loop(
             map_buffer.shrink_to_fit();
         }
 
-        stack_buffer.truncate(5);
-        if stack_buffer.capacity() > stack_buffer.len() * 4 {
+        stack_buffer.retain(|buffer| buffer.capacity() >= 128);
+        if stack_buffer.capacity() >= 128 && stack_buffer.capacity() > stack_buffer.len() * 4 {
             tracing::trace!(
                 "shrank stack buffer from a capacity of {} to {}",
                 stack_buffer.capacity(),

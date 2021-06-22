@@ -1,9 +1,11 @@
 //! Timely progress events
 
+use crate::WorkerId;
 #[cfg(feature = "enable_abomonation")]
 use abomonation_derive::Abomonation;
 #[cfg(feature = "rkyv")]
 use bytecheck::CheckBytes;
+use core::time::Duration;
 #[cfg(feature = "rkyv")]
 use rkyv_dep as rkyv;
 #[cfg(feature = "rkyv")]
@@ -11,6 +13,79 @@ use rkyv_dep::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSeriali
 #[cfg(feature = "serde")]
 use serde_dep::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 use timely::dataflow::operators::capture::event::Event as TimelyEvent;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
+#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
+#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
+pub struct Bundle<D, Id = WorkerId> {
+    pub time: Duration,
+    pub worker: Id,
+    pub event: D,
+}
+
+impl<D, Id> Bundle<D, Id> {
+    pub fn new(time: Duration, worker: Id, event: D) -> Self {
+        Self {
+            time,
+            worker,
+            event,
+        }
+    }
+}
+
+impl<D, Id> From<(Duration, Id, D)> for Bundle<D, Id> {
+    fn from((time, worker, event): (Duration, Id, D)) -> Self {
+        Self {
+            time,
+            worker,
+            event,
+        }
+    }
+}
+
+impl<D, Id> From<Bundle<D, Id>> for (Duration, Id, D) {
+    fn from(
+        Bundle {
+            time,
+            worker,
+            event,
+        }: Bundle<D, Id>,
+    ) -> Self {
+        (time, worker, event)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
+#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
+#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
+#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
+pub struct CapabilityBundle<T> {
+    pub time: T,
+    pub diff: i64,
+}
+
+impl<T> CapabilityBundle<T> {
+    pub fn new(time: T, diff: i64) -> Self {
+        Self { time, diff }
+    }
+}
+
+impl<T> From<(T, i64)> for CapabilityBundle<T> {
+    fn from((time, diff): (T, i64)) -> Self {
+        Self { time, diff }
+    }
+}
+
+impl<T> From<CapabilityBundle<T>> for (T, i64) {
+    fn from(CapabilityBundle { time, diff }: CapabilityBundle<T>) -> Self {
+        (time, diff)
+    }
+}
 
 /// Data and progress events of a captured stream.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

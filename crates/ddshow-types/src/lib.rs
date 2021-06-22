@@ -7,10 +7,13 @@ pub mod differential_logging;
 pub mod progress_logging;
 pub mod timely_logging;
 
-pub use event::Event;
 #[cfg(feature = "rkyv")]
 #[doc(hidden)]
-pub use event::{ArchivedEvent, EventResolver};
+pub use event::{
+    ArchivedBundle, ArchivedCapabilityBundle, ArchivedEvent, BundleResolver,
+    CapabilityBundleResolver, EventResolver,
+};
+pub use event::{Bundle, CapabilityBundle, Event};
 #[cfg(feature = "rkyv")]
 #[doc(hidden)]
 pub use ids::{ArchivedChannelId, ArchivedOperatorId, ArchivedPortId, ArchivedWorkerId};
