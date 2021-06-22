@@ -49,6 +49,14 @@ where
                     let new_time = delay(&time);
                     assert!(time.time().less_equal(&new_time));
 
+                    // Apply the delay to the ddflow collection's timestamps
+                    for (_data, time, _diff) in buffer.iter_mut() {
+                        let new_time = delay(&*time);
+                        debug_assert!(time.less_equal(&new_time));
+
+                        *time = new_time;
+                    }
+
                     elements
                         .entry(new_time.clone())
                         .or_insert_with(|| {
@@ -62,19 +70,13 @@ where
                 notificator.for_each(|time, _, _| {
                     if let Some(mut buffers) = elements.remove(&time) {
                         for mut data in buffers.drain(..) {
-                            // Apply the delay to the ddflow collection's timestamps
-                            for (_data, time, _diff) in data.iter_mut() {
-                                let new_time = delay(&*time);
-                                debug_assert!(time.less_equal(&new_time));
-
-                                *time = new_time;
-                            }
-
                             output.session(&time).give_vec(&mut data);
 
-                            // Give the freshly empty buffer back to the list of
-                            // idle buffers we maintain
-                            idle_buffers.push(data);
+                            if data.capacity() > 256 {
+                                // Give the freshly empty buffer back to the list of
+                                // idle buffers we maintain
+                                idle_buffers.push(data);
+                            }
                         }
                     }
                 });
@@ -83,8 +85,6 @@ where
                     elements.shrink_to_fit();
                 }
 
-                // Limit the number of extra buffers we keep lying around
-                idle_buffers.truncate(16);
                 if idle_buffers.capacity() > idle_buffers.len() * 4 {
                     idle_buffers.shrink_to_fit();
                 }

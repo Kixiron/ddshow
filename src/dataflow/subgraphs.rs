@@ -55,15 +55,15 @@ where
 
         let channels = channels.map(|(worker, channel)| {
             let mut source = channel.scope_addr.clone();
-            source.push(channel.source.0);
+            source.push(channel.source[0]);
 
             let mut target = channel.scope_addr;
-            target.push(channel.target.0);
+            target.push(channel.target[0]);
 
             (
-                (worker, source, channel.source.1),
+                (worker, source, channel.source[1]),
                 (
-                    (target, channel.target.1),
+                    (target, channel.target[1]),
                     OperatorAddr::from_elem(OperatorId::new(channel.id.into_inner())),
                 ),
             )
@@ -203,12 +203,12 @@ where
 
         channels
             .filter_map(|(worker, channel)| {
-                if channel.source.0 != PortId::zero() && channel.target.0 != PortId::zero() {
+                if channel.source[0] != PortId::zero() && channel.target[0] != PortId::zero() {
                     let mut source_addr = channel.scope_addr.clone();
-                    source_addr.push(channel.source.0);
+                    source_addr.push(channel.source[0]);
 
                     let mut target_addr = channel.scope_addr;
-                    target_addr.push(channel.target.0);
+                    target_addr.push(channel.target[0]);
 
                     Some(((worker, source_addr), (channel.id, target_addr)))
                 } else {

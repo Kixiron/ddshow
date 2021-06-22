@@ -6,6 +6,7 @@ use std::{
     io::{self, Read, Write},
     marker::PhantomData,
     mem,
+    panic::Location,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -205,6 +206,7 @@ where
     I: IntoIterator,
     <I as IntoIterator>::Item: EventIterator<T, D> + 'static,
 {
+    #[track_caller]
     fn replay_with_shutdown_into_core<N, S>(
         self,
         name: N,
@@ -223,7 +225,18 @@ where
         }
 
         let worker_index = scope.index();
-        let mut builder = OperatorBuilder::new(name.into(), scope.clone());
+        let caller = Location::caller();
+
+        let mut builder = OperatorBuilder::new(
+            format!(
+                "{} @ {}:{}:{}",
+                name.into(),
+                caller.file(),
+                caller.line(),
+                caller.column(),
+            ),
+            scope.clone(),
+        );
         builder.set_notify(false);
 
         let address = builder.operator_info().address;

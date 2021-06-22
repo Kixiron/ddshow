@@ -65,8 +65,8 @@ impl From<TimelyOperatesEvent> for OperatesEvent {
 pub struct ChannelsEvent {
     pub id: ChannelId,
     pub scope_addr: OperatorAddr,
-    pub source: (PortId, PortId),
-    pub target: (PortId, PortId),
+    pub source: [PortId; 2],
+    pub target: [PortId; 2],
 }
 
 impl ChannelsEvent {
@@ -79,8 +79,8 @@ impl ChannelsEvent {
         Self {
             id,
             scope_addr,
-            source,
-            target,
+            source: [source.0, source.1],
+            target: [target.0, target.1],
         }
     }
 }
@@ -90,8 +90,8 @@ impl From<TimelyChannelsEvent> for ChannelsEvent {
         Self {
             id: ChannelId::new(event.id),
             scope_addr: OperatorAddr::from(event.scope_addr),
-            source: (PortId::new(event.source.0), PortId::new(event.source.1)),
-            target: (PortId::new(event.target.0), PortId::new(event.target.1)),
+            source: [PortId::new(event.source.0), PortId::new(event.source.1)],
+            target: [PortId::new(event.target.0), PortId::new(event.target.1)],
         }
     }
 }

@@ -30,7 +30,7 @@ tera = "1.6.1"
 anyhow = "1.0.38"
 tracing = "0.1.25"
 colorous = "1.0.3"
-bytecheck = "0.5.1"
+bytecheck = "0.5.2"
 byteorder = "1.4.3"
 structopt = "0.3.21"
 serde_json = "1.0.64"
@@ -42,7 +42,7 @@ abomonation_derive = "0.5.0"
 tracing-subscriber = "0.2.16"
 strum = { version = "0.21.0", features = ["derive"] }
 serde = { version = "1.0.123", features = ["derive"] }
-rkyv = { version = "0.6.6", features = ["validation"] }
+rkyv = { version = "0.6.7", features = ["validation"] }  # TODO: "strict"
 tinyvec = { version = "1.2.0", features = ["alloc", "serde"] }
 indicatif = { version = "0.16.2", features = ["improved_unicode"] }
 
@@ -70,7 +70,7 @@ opt-level = 0
 incremental = true
 
 [profile.release]
-debug = 0
+debug = 2
 lto = "thin"
 opt-level = 3
 codegen-units = 24

@@ -118,6 +118,8 @@ fn main() {
 }
 
 fn set_loggers<A: Allocate>(worker: &mut Worker<A>) {
+    let use_rkyv = matches!(env::var("DDSHOW_USE_RKYV").as_deref(), Ok("1"));
+
     if let Ok(dir) = env::var("TIMELY_DISK_LOG") {
         if !dir.is_empty() {
             ddshow_sink::save_timely_logs_to_disk(worker, &dir).unwrap();
@@ -136,10 +138,24 @@ fn set_loggers<A: Allocate>(worker: &mut Worker<A>) {
     //     }
     // }
 
+    if let Ok(addr) = env::var("TIMELY_LOG_ADDR") {
+        if !addr.is_empty() {
+            if let Ok(stream) = TcpStream::connect(&addr) {
+                ddshow_sink::enable_timely_logging(worker, stream);
+            } else {
+                panic!("Could not connect to differential log address: {:?}", addr);
+            }
+        }
+    }
+
     if let Ok(addr) = env::var("DIFFERENTIAL_LOG_ADDR") {
         if !addr.is_empty() {
             if let Ok(stream) = TcpStream::connect(&addr) {
-                differential_dataflow::logging::enable(worker, stream);
+                if use_rkyv {
+                    ddshow_sink::enable_differential_logging(worker, stream);
+                } else {
+                    differential_dataflow::logging::enable(worker, stream);
+                }
             } else {
                 panic!("Could not connect to differential log address: {:?}", addr);
             }

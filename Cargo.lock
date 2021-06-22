@@ -128,21 +128,20 @@ checksum = "e3b5ca7a04898ad4bcd41c90c5285445ff5b791899bb1b0abdd2a2aa791211d7"
 
 [[package]]
 name = "bytecheck"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5317c06b5d5ceddb70320c3ca83fffcb879feb42b8f34c5a7401d9825d5b3ca4"
+checksum = "01faae92f5625dfbca0915bff633cbf49b90504850f2eb11d319486ccd552160"
 dependencies = [
  "bytecheck_derive",
- "memoffset",
  "ptr_meta",
  "simdutf8",
 ]
 
 [[package]]
 name = "bytecheck_derive"
-version = "0.5.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a16e621f4ebad15bb0784555cfddcae78a7077184bc3b4f2407ecafaf7fca6a"
+checksum = "0881f8a3cade6a2f417972d6a15ea72e9d49a03391d598ffb121c9b2399f2b3f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1076,9 +1075,9 @@ dependencies = [
 
 [[package]]
 name = "rkyv"
-version = "0.6.6"
+version = "0.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f10244dc3cf3eddbf33245a69d154620746c60f629bec071e236d135b654556d"
+checksum = "cb135b3e5e3311f0a254bfb00333f4bac9ef1d89888b84242a89eb8722b09a07"
 dependencies = [
  "bytecheck",
  "memoffset",
@@ -1089,9 +1088,9 @@ dependencies = [
 
 [[package]]
 name = "rkyv_derive"
-version = "0.6.3"
+version = "0.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e3fccbf52ee0b76a29417794226e225798dd6bd32e40debd9e284cecc20dd76"
+checksum = "ba8f489f6b6d8551bb15904293c1ad58a6abafa7d8390d15f7ed05a2afcd87d5"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -4,8 +4,8 @@ use crate::dataflow::operators::EventIterator;
 use bytecheck::CheckBytes;
 use ddshow_types::Event;
 use rkyv::{
-    archived_root, check_archived_root, de::deserializers::AllocDeserializer,
-    validation::DefaultArchiveValidator, AlignedVec, Archive, Deserialize,
+    check_archived_root, de::deserializers::AllocDeserializer, validation::DefaultArchiveValidator,
+    AlignedVec, Archive, Deserialize,
 };
 use std::{
     convert::TryInto,
@@ -46,9 +46,9 @@ impl<T, D, R> RkyvEventReader<T, D, R> {
 impl<T, D, R> EventIterator<T, D> for RkyvEventReader<T, D, R>
 where
     R: Read,
-    T: Archive + Debug,
+    T: Archive,
     T::Archived: Deserialize<T, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
-    D: Archive + Debug,
+    D: Archive,
     D::Archived: Deserialize<D, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
 {
     fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<TimelyEvent<T, D>>> {
@@ -101,12 +101,6 @@ where
                     }
 
                     Err(err) => {
-                        let unsafely_archived: TimelyEvent<T, D> =
-                            unsafe { archived_root::<Event<T, D>>(slice) }
-                                .deserialize(&mut AllocDeserializer)
-                                .unwrap_or_else(|unreachable| match unreachable {})
-                                .into();
-
                         tracing::error!(
                             type_name = std::any::type_name::<Event<T, D>>(),
                             consumed = self.consumed,
@@ -117,7 +111,6 @@ where
                                 + alignment_offset
                                 + archive_length
                                 + mem::size_of::<u128>(),
-                            unsafely_archived = ?unsafely_archived,
                             "failed to check archived event: {:?}",
                             err,
                         );
@@ -154,9 +147,9 @@ where
 impl<T, D, R> Iterator for RkyvEventReader<T, D, R>
 where
     R: Read,
-    T: Archive + Debug,
+    T: Archive,
     T::Archived: Deserialize<T, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
-    D: Archive + Debug,
+    D: Archive,
     D::Archived: Deserialize<D, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
 {
     type Item = TimelyEvent<T, D>;

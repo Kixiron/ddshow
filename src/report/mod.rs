@@ -362,8 +362,8 @@ fn operator_tree(
             .find_map(|&worker| name_lookup.get(&(worker, operator)))
             .expect("missing operator name");
 
-        let displaced = tree.insert(addr.as_slice(), (stats.total, name, addr));
-        debug_assert_eq!(displaced, None);
+        tree.insert(addr.as_slice(), (stats.total, name, addr));
+        // debug_assert_eq!(displaced, None);
     }
 
     // FIXME: Things aren't actually getting sorted for some reason

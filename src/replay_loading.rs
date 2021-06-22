@@ -199,9 +199,9 @@ pub fn acquire_replay_sources<T, D1, D2>(
 where
     Event<T, D2>: Clone,
     D2: Abomonation + Send + 'static,
-    T: Archive + Abomonation + Debug + Send + 'static,
+    T: Archive + Abomonation + Send + 'static,
     T::Archived: Deserialize<T, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
-    D1: Archive + Debug + Send + 'static,
+    D1: Archive + Send + 'static,
     D1::Archived: Deserialize<D1, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
 {
     let mut num_sources = 0;
@@ -447,9 +447,9 @@ pub fn wait_for_rkyv_connections<T, D, A>(
     progress: &ProgressBar,
 ) -> Result<ConnectedRkyvSource<T, D, A>>
 where
-    T: Archive + Debug,
+    T: Archive,
     T::Archived: Deserialize<T, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
-    D: Archive + Debug,
+    D: Archive,
     D::Archived: Deserialize<D, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
 {
     let timely_listener =

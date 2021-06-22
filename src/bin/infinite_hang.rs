@@ -45,8 +45,10 @@ fn main() {
 }
 
 fn set_loggers<A: Allocate>(worker: &mut Worker<A>) {
+    let use_rkyv = matches!(env::var("DDSHOW_USE_RKYV").as_deref(), Ok("1"));
+
     if let Ok(dir) = env::var("TIMELY_DISK_LOG") {
-        if !dir.is_empty() {
+        if !use_rkyv && !dir.is_empty() {
             ddshow_sink::save_timely_logs_to_disk(worker, &dir).unwrap();
         }
     }

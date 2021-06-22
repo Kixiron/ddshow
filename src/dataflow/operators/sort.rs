@@ -1,3 +1,5 @@
+use std::panic::Location;
+
 use crate::dataflow::operators::Multiply;
 use differential_dataflow::{
     difference::Abelian, lattice::Lattice, operators::Reduce, AsCollection, Collection, Data,
@@ -12,12 +14,22 @@ const DEFAULT_HIERARCHICAL_BUCKETS: [u64; 16] =
 pub trait SortBy<T> {
     type Output;
 
+    #[track_caller]
     fn sort_by<F, K>(&self, key: F) -> Self::Output
     where
         F: Fn(&T) -> K + Clone + 'static,
         K: Ord,
     {
-        self.sort_by_named("SortBy", key)
+        let caller = Location::caller();
+        self.sort_by_named(
+            &format!(
+                "SortBy @ {}:{}:{}",
+                caller.file(),
+                caller.line(),
+                caller.column()
+            ),
+            key,
+        )
     }
 
     fn sort_by_named<F, K>(&self, name: &str, key: F) -> Self::Output
@@ -28,12 +40,22 @@ pub trait SortBy<T> {
         self.hierarchical_sort_core(name, [0].iter().copied(), key)
     }
 
+    #[track_caller]
     fn hierarchical_sort_by<F, K>(&self, key: F) -> Self::Output
     where
         F: Fn(&T) -> K + Clone + 'static,
         K: Ord,
     {
-        self.hierarchical_sort_by_named("HierarchicalSortBy", key)
+        let caller = Location::caller();
+        self.hierarchical_sort_by_named(
+            &format!(
+                "HierarchicalSortBy @ {}:{}:{}",
+                caller.file(),
+                caller.line(),
+                caller.column()
+            ),
+            key,
+        )
     }
 
     fn hierarchical_sort_by_named<F, K>(&self, name: &str, key: F) -> Self::Output
