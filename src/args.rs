@@ -1,5 +1,5 @@
-use colorous::Gradient;
-use std::{net::SocketAddr, num::NonZeroUsize, ops::Deref, path::PathBuf, str::FromStr};
+pub use colorous::Gradient;
+use std::{net::SocketAddr, num::NonZeroUsize, path::PathBuf, str::FromStr};
 use structopt::StructOpt;
 use timely::{CommunicationConfig, WorkerConfig};
 
@@ -60,7 +60,7 @@ pub struct Args {
         possible_values = ACCEPTED_GRADIENTS,
         default_value = "inferno",
     )]
-    pub palette: ThreadedGradient,
+    pub palette: Gradient,
 
     /// The directory to generate artifacts in
     #[structopt(long, default_value = "dataflow-graph")]
@@ -130,6 +130,34 @@ impl Args {
     /// Returns `true` if the program is replaying logs from a file
     pub const fn is_file_sourced(&self) -> bool {
         self.replay_logs.is_some()
+    }
+}
+
+impl Default for Args {
+    fn default() -> Self {
+        // Safety: One isn't zero
+        const ONE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1) };
+
+        Self {
+            workers: ONE,
+            timely_connections: ONE,
+            timely_address: "127.0.0.1:51317".parse().unwrap(),
+            differential_enabled: false,
+            differential_address: "127.0.0.1:51318".parse().unwrap(),
+            progress_enabled: false,
+            progress_address: "127.0.0.1:51319".parse().unwrap(),
+            palette: colorous::INFERNO,
+            output_dir: PathBuf::from("dataflow-graph"),
+            dump_json: None,
+            save_logs: None,
+            replay_logs: None,
+            report_file: PathBuf::from("report.txt"),
+            no_report_file: false,
+            color: TerminalColor::Auto,
+            dataflow_profiling: false,
+            disable_timeline: false,
+            stream_encoding: StreamEncoding::Abomonation,
+        }
     }
 }
 
@@ -210,7 +238,7 @@ impl Default for TerminalColor {
 
 macro_rules! parse_gradient {
     ($($lower:literal => $gradient:ident),* $(,)?) => {
-        fn gradient_from_str(src: &str) -> Result<ThreadedGradient, String> {
+        fn gradient_from_str(src: &str) -> Result<Gradient, String> {
             let gradient = src.to_lowercase();
 
             let gradient = match gradient.as_str() {
@@ -221,7 +249,7 @@ macro_rules! parse_gradient {
                 _ => return Err(format!("unrecognized gradient '{}'", src)),
             };
 
-            Ok(ThreadedGradient(gradient))
+            Ok(gradient)
         }
 
         // TODO: Const eval over proc macro
@@ -253,35 +281,31 @@ parse_gradient! {
     "yellow-orange-red" => YELLOW_ORANGE_RED,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct ThreadedGradient(Gradient);
-
-impl Deref for ThreadedGradient {
-    type Target = Gradient;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Default for ThreadedGradient {
-    fn default() -> Self {
-        Self(colorous::INFERNO)
-    }
-}
-
-unsafe impl Send for ThreadedGradient {}
-unsafe impl Sync for ThreadedGradient {}
+// #[derive(Debug, Clone, Copy)]
+// pub struct ThreadedGradient(Gradient);
+//
+// impl Deref for ThreadedGradient {
+//     type Target = Gradient;
+//
+//     fn deref(&self) -> &Self::Target {
+//         &self.0
+//     }
+// }
+//
+// impl Default for ThreadedGradient {
+//     fn default() -> Self {
+//         Self(colorous::INFERNO)
+//     }
+// }
+//
+// unsafe impl Send for ThreadedGradient {}
+// unsafe impl Sync for ThreadedGradient {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Output {
     Stdout,
     Stderr,
     Quiet,
-}
-
-impl Output {
-    // const VALUES: &'static [&'static str] = &["stdout", "stderr", "quiet"];
 }
 
 impl FromStr for Output {
