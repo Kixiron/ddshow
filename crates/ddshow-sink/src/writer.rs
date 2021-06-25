@@ -45,7 +45,7 @@ where
         // Align to 16
         const PADDING: [u8; 15] = [0; 15];
         match self.position & 15 {
-            0 => (),
+            0 => {}
             x => {
                 let padding = 16 - x;
 

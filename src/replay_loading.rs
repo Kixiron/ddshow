@@ -713,7 +713,7 @@ pub fn wait_for_input(
 #[cfg(test)]
 mod tests {
     use crate::{
-        args::{StreamEncoding, TerminalColor, ThreadedGradient},
+        args::StreamEncoding,
         dataflow::operators::EventIterator,
         logging,
         replay_loading::{connect_to_sources, ReplaySource},
@@ -732,15 +732,13 @@ mod tests {
     use std::{
         fmt::Debug,
         net::{SocketAddr, TcpStream},
-        num::NonZeroUsize,
-        path::PathBuf,
-        str::FromStr,
         sync::{Arc, Barrier},
         thread,
         time::Duration,
     };
     use timely::dataflow::operators::capture::Event as RawEvent;
 
+    // TODO: Replace with `std::assert_matches!()`
     macro_rules! assert_matches {
         ($left:expr, $( $pattern:pat )|+ $( if $guard: expr )? $(,)?) => ({
             match $left {
@@ -776,7 +774,10 @@ mod tests {
 
     #[test]
     fn connection_test() {
-        let args = default_args();
+        let args = Args {
+            stream_encoding: StreamEncoding::Rkyv,
+            ..Default::default()
+        };
         logging::init_logging(&args);
 
         let barrier = Arc::new(Barrier::new(2));
@@ -841,28 +842,5 @@ mod tests {
                 time += Duration::from_millis(100);
             }
         });
-    }
-
-    fn default_args() -> Args {
-        Args {
-            workers: NonZeroUsize::new(1).unwrap(),
-            timely_connections: NonZeroUsize::new(1).unwrap(),
-            timely_address: SocketAddr::from_str("127.0.0.1:5000").unwrap(),
-            differential_enabled: false,
-            differential_address: SocketAddr::from_str("127.0.0.1:5001").unwrap(),
-            progress_enabled: false,
-            progress_address: SocketAddr::from_str("127.0.0.1:5002").unwrap(),
-            palette: ThreadedGradient::default(),
-            output_dir: PathBuf::default(),
-            dump_json: None,
-            save_logs: None,
-            replay_logs: None,
-            report_file: PathBuf::default(),
-            no_report_file: true,
-            color: TerminalColor::Auto,
-            dataflow_profiling: false,
-            disable_timeline: false,
-            stream_encoding: StreamEncoding::Rkyv,
-        }
     }
 }
