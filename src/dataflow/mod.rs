@@ -206,7 +206,7 @@ where
     Ok(probe)
 }
 
-#[allow(clippy::clippy::too_many_arguments, clippy::type_complexity)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn install_data_extraction<S>(
     scope: &mut S,
     senders: DataflowSenders,

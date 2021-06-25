@@ -162,6 +162,14 @@ pub enum StartStop {
 }
 
 impl StartStop {
+    pub const fn start() -> Self {
+        Self::Start
+    }
+
+    pub const fn stop() -> Self {
+        Self::Stop
+    }
+
     /// Returns `true` if the start_stop is [`StartStop::Start`].
     pub const fn is_start(&self) -> bool {
         matches!(self, Self::Start)
@@ -339,6 +347,12 @@ impl From<TimelyCommChannelKind> for CommChannelKind {
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct InputEvent {
     pub start_stop: StartStop,
+}
+
+impl InputEvent {
+    pub const fn new(start_stop: StartStop) -> Self {
+        Self { start_stop }
+    }
 }
 
 impl From<TimelyInputEvent> for InputEvent {

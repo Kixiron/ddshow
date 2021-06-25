@@ -37,6 +37,18 @@ use timely::{
 pub trait EventIterator<T, D> {
     /// Iterates over references to `Event<T, D>` elements.
     fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>>;
+
+    fn take_events(&mut self) -> io::Result<Vec<Event<T, D>>> {
+        let (mut events, mut is_finished) = (Vec::new(), false);
+
+        while !is_finished {
+            if let Some(event) = self.next(&mut is_finished)? {
+                events.push(event);
+            }
+        }
+
+        Ok(events)
+    }
 }
 
 impl<I, T, D> EventIterator<T, D> for Box<I>

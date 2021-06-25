@@ -1,5 +1,3 @@
-#![allow(clippy::clippy::unused_unit)]
-
 use crate::dataflow::operators::EventIterator;
 use bytecheck::CheckBytes;
 use ddshow_types::Event;
@@ -9,7 +7,7 @@ use rkyv::{
 };
 use std::{
     convert::TryInto,
-    fmt::Debug,
+    fmt::{self, Debug},
     io::{self, Read},
     marker::PhantomData,
     mem,
@@ -17,7 +15,6 @@ use std::{
 use timely::dataflow::operators::capture::event::Event as TimelyEvent;
 
 /// A Wrapper for `R: Read` implementing `EventIterator<T, D>`.
-#[derive(Debug)]
 pub struct RkyvEventReader<T, D, R> {
     reader: R,
     bytes: Vec<u8>,
@@ -52,10 +49,7 @@ where
     D::Archived: Deserialize<D, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
 {
     fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<TimelyEvent<T, D>>> {
-        if self.peer_finished
-            && self.bytes.is_empty()
-            && self.buffer1.is_empty()
-            && self.buffer2.is_empty()
+        if self.peer_finished && self.buffer1[self.consumed..].is_empty() && self.buffer2.is_empty()
         {
             *is_finished = true;
             return Ok(None);
@@ -73,7 +67,6 @@ where
             .get(consumed..consumed + mem::size_of::<u128>())
         {
             let archive_length = u128::from_le_bytes(header_slice.try_into().unwrap()) as usize;
-
             let archive_start = consumed + mem::size_of::<u128>();
 
             if let Some(slice) = self
@@ -124,12 +117,12 @@ where
         // if we exhaust data we should shift back while preserving our alignment
         // of 16 bytes
         if self.consumed > 15 {
-            self.buffer2.clear();
             self.buffer2
                 .extend_from_slice(&self.buffer1[self.consumed & !15..]);
 
             mem::swap(&mut self.buffer1, &mut self.buffer2);
             self.consumed &= 15;
+            self.buffer2.clear();
         }
 
         if let Ok(len) = self.reader.read(&mut self.bytes[..]) {
@@ -156,6 +149,16 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         EventIterator::next(self, &mut false).ok().flatten()
+    }
+}
+
+impl<T, D, R> Debug for RkyvEventReader<T, D, R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RkyvEventReader")
+            .field("buffer1", &self.buffer1)
+            .field("consumed", &self.consumed)
+            .field("peer_finished", &self.peer_finished)
+            .finish()
     }
 }
 
