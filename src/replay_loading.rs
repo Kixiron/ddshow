@@ -92,6 +92,15 @@ impl<R, A> ReplaySource<R, A> {
     pub const fn is_abomonation(&self) -> bool {
         matches!(self, Self::Abomonation(..))
     }
+
+    #[cfg(test)]
+    pub fn into_rkyv(self) -> Result<Vec<R>, Self> {
+        if let Self::Rkyv(rkyv) = self {
+            Ok(rkyv)
+        } else {
+            Err(self)
+        }
+    }
 }
 
 #[tracing::instrument(skip(args))]
@@ -699,4 +708,161 @@ pub fn wait_for_input(
     let data = extractor.extract_all();
 
     Ok(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        args::{StreamEncoding, TerminalColor, ThreadedGradient},
+        dataflow::operators::EventIterator,
+        logging,
+        replay_loading::{connect_to_sources, ReplaySource},
+        Args,
+    };
+    use bytecheck::CheckBytes;
+    use ddshow_sink::{BatchLogger, EventWriter as RkyvEventWriter};
+    use ddshow_types::{
+        timely_logging::{InputEvent, StartStop, TimelyEvent},
+        WorkerId,
+    };
+    use rkyv::{
+        ser::serializers::AlignedSerializer, validation::DefaultArchiveValidator, AlignedVec,
+        Serialize,
+    };
+    use std::{
+        fmt::Debug,
+        net::{SocketAddr, TcpStream},
+        num::NonZeroUsize,
+        path::PathBuf,
+        str::FromStr,
+        sync::{Arc, Barrier},
+        thread,
+        time::Duration,
+    };
+    use timely::dataflow::operators::capture::Event as RawEvent;
+
+    macro_rules! assert_matches {
+        ($left:expr, $( $pattern:pat )|+ $( if $guard: expr )? $(,)?) => ({
+            match $left {
+                $( $pattern )|+ $( if $guard )? => {}
+                ref left_val => {
+                    panic!(
+                        "assertion failed: `(left matches right)`\n\
+                        left: `{:?}`,\n\
+                        right: `{:?}`",
+                        left_val,
+                        stringify!($($pattern)|+ $(if $guard)?),
+                    );
+                }
+            }
+        });
+
+        ($left:expr, $( $pattern:pat )|+ $( if $guard: expr )?, $($arg:tt)+) => ({
+            match $left {
+                $( $pattern )|+ $( if $guard )? => {}
+                ref left_val => {
+                    panic!(
+                        "assertion failed: `(left matches right)`\n\
+                        left: `{:?}`,\n\
+                        right: `{:?}`: {}",
+                        left_val,
+                        stringify!($($pattern)|+ $(if $guard)?),
+                        format_args!($($arg)+),
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn connection_test() {
+        let args = default_args();
+        logging::init_logging(&args);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let events = vec![
+            TimelyEvent::Input(InputEvent::new(StartStop::start())),
+            TimelyEvent::Input(InputEvent::new(StartStop::stop())),
+        ];
+
+        target_program(barrier.clone(), args.timely_address, events.clone());
+        barrier.wait();
+
+        let (timely_recv, differential_recv, progress_recv, total_sources) =
+            connect_to_sources(&args).unwrap().unwrap();
+
+        assert_eq!(total_sources, 1);
+        assert_matches!(differential_recv, None);
+        assert_matches!(progress_recv, None);
+
+        let mut sources: Vec<_> = timely_recv
+            .iter()
+            .flat_map(|recv| recv.try_iter())
+            .collect();
+        assert_eq!(sources.len(), 1);
+
+        let source = sources.remove(0);
+        assert_matches!(source, ReplaySource::Rkyv(_));
+
+        let mut source = source.into_rkyv().unwrap();
+        assert_eq!(source.len(), 1);
+
+        let mut source = source.remove(0);
+        let result: Vec<_> = source
+            .take_events()
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| match event {
+                RawEvent::Messages(_, data) => Some(data),
+                RawEvent::Progress(_) => None,
+            })
+            .flatten()
+            .map(|(_, _, event)| event)
+            .collect();
+        assert_eq!(result, events);
+    }
+
+    fn target_program<E>(barrier: Arc<Barrier>, address: SocketAddr, events: Vec<E>)
+    where
+        E: for<'a> Serialize<AlignedSerializer<&'a mut AlignedVec>> + Send + Debug + 'static,
+        E::Archived: CheckBytes<DefaultArchiveValidator>,
+    {
+        thread::spawn(move || {
+            barrier.wait();
+            thread::sleep(Duration::from_millis(200));
+
+            let mut writer = BatchLogger::<E, WorkerId, _>::new(RkyvEventWriter::new(
+                TcpStream::connect(address).unwrap(),
+            ));
+
+            let mut time = Duration::from_secs(0);
+            for event in events {
+                writer.publish_batch(&time, &mut vec![(time, WorkerId::new(0), event)]);
+                time += Duration::from_millis(100);
+            }
+        });
+    }
+
+    fn default_args() -> Args {
+        Args {
+            workers: NonZeroUsize::new(1).unwrap(),
+            timely_connections: NonZeroUsize::new(1).unwrap(),
+            timely_address: SocketAddr::from_str("127.0.0.1:5000").unwrap(),
+            differential_enabled: false,
+            differential_address: SocketAddr::from_str("127.0.0.1:5001").unwrap(),
+            progress_enabled: false,
+            progress_address: SocketAddr::from_str("127.0.0.1:5002").unwrap(),
+            palette: ThreadedGradient::default(),
+            output_dir: PathBuf::default(),
+            dump_json: None,
+            save_logs: None,
+            replay_logs: None,
+            report_file: PathBuf::default(),
+            no_report_file: true,
+            color: TerminalColor::Auto,
+            dataflow_profiling: false,
+            disable_timeline: false,
+            stream_encoding: StreamEncoding::Rkyv,
+        }
+    }
 }

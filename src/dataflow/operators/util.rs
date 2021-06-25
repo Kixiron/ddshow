@@ -159,7 +159,7 @@ impl<T: Ord, D: Ord> Extract<T, D> for CrossbeamExtractor<Event<T, D>> {
         let mut current = 0;
         for i in 1..result.len() {
             if result[current].0 == result[i].0 {
-                let data = mem::replace(&mut result[i].1, Vec::new());
+                let data = mem::take(&mut result[i].1);
                 result[current].1.extend(data);
             } else {
                 current = i;

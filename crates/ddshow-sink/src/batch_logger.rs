@@ -4,22 +4,22 @@ use timely::dataflow::operators::capture::{Event as RawEvent, EventPusher};
 /// Logs events from a timely stream, including progress information
 /// and logging messages
 #[derive(Debug)]
-pub struct BatchLogger<T, D, P>
+pub struct BatchLogger<Event, Id, Pusher>
 where
-    P: EventPusher<Duration, (Duration, D, T)>,
+    Pusher: EventPusher<Duration, (Duration, Id, Event)>,
 {
     // None when the logging stream is closed
     time: Duration,
-    event_pusher: P,
-    __type: PhantomData<(D, T)>,
+    event_pusher: Pusher,
+    __type: PhantomData<(Id, Event)>,
 }
 
-impl<T, D, P> BatchLogger<T, D, P>
+impl<Event, Id, Pusher> BatchLogger<Event, Id, Pusher>
 where
-    P: EventPusher<Duration, (Duration, D, T)>,
+    Pusher: EventPusher<Duration, (Duration, Id, Event)>,
 {
     /// Creates a new batch logger.
-    pub fn new(event_pusher: P) -> Self {
+    pub fn new(event_pusher: Pusher) -> Self {
         BatchLogger {
             time: Default::default(),
             event_pusher,
@@ -28,16 +28,19 @@ where
     }
 
     /// Publishes a batch of logged events and advances the capability.
-    pub fn publish_batch<D2, T2>(&mut self, &time: &Duration, data: &mut Vec<(Duration, D2, T2)>)
-    where
-        D: From<D2>,
-        T: From<T2>,
+    pub fn publish_batch<Id2, Event2>(
+        &mut self,
+        &time: &Duration,
+        data: &mut Vec<(Duration, Id2, Event2)>,
+    ) where
+        Id: From<Id2>,
+        Event: From<Event2>,
     {
         if !data.is_empty() {
             self.event_pusher.push(RawEvent::Messages(
                 self.time,
                 data.drain(..)
-                    .map(|(time, worker, data)| (time, D::from(worker), T::from(data)))
+                    .map(|(time, worker, data)| (time, Id::from(worker), Event::from(data)))
                     .collect(),
             ));
         }
@@ -56,9 +59,9 @@ where
     }
 }
 
-impl<T, E, P> Drop for BatchLogger<T, E, P>
+impl<Event, Id, Pusher> Drop for BatchLogger<Event, Id, Pusher>
 where
-    P: EventPusher<Duration, (Duration, E, T)>,
+    Pusher: EventPusher<Duration, (Duration, Id, Event)>,
 {
     fn drop(&mut self) {
         self.event_pusher

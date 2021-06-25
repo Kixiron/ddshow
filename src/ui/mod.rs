@@ -101,6 +101,7 @@ pub fn render(
     RkyvSerialize,
     RkyvDeserialize,
 )]
+#[allow(clippy::upper_case_acronyms)]
 #[archive(strict, derive(CheckBytes))]
 pub struct DDShowStats {
     pub program: ProgramStats,
