@@ -18,8 +18,11 @@ tracing = ["tracing_dep"]
 byteorder = "1.4.3"
 bytecheck = "0.5.2"
 rkyv = { version = "0.6.6", features = ["validation"] } # TODO: "strict"
-timely = { version = "0.12.0", default-features = false }
-differential-dataflow = { version = "0.12.0", default-features = false, optional = true }
+timely = { git = "https://github.com/ddlog-dev/timely-dataflow", branch = "ddlog-4", default-features = false }
+differential-dataflow = { git = "https://github.com/ddlog-dev/differential-dataflow", branch = "ddlog-4",  default-features = false, optional = true }
+
+#timely = { version = "0.12.0", default-features = false }
+#differential-dataflow = { version = "0.12.0", default-features = false, optional = true }
 ddshow-types = { version = "0.1.1", path = "../ddshow-types", features = ["rkyv", "enable_abomonation"] }
 
 [dependencies.tracing_dep]

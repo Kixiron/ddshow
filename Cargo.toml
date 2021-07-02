@@ -49,8 +49,10 @@ indicatif = { version = "0.16.2", features = ["improved_unicode"] }
 ddshow-sink = { version = "0.1.1", path = "crates/ddshow-sink", features = ["ddflow", "tracing"] }
 ddshow-types = { version = "0.1.1", path = "crates/ddshow-types", features = ["rkyv", "serde", "enable_abomonation"] }
 
-timely = "0.12.0"
-differential-dataflow = { version = "0.12.0", default-features = false }
+timely = { git = "https://github.com/ddlog-dev/timely-dataflow", branch = "ddlog-4" }
+differential-dataflow = { git = "https://github.com/ddlog-dev/differential-dataflow", branch = "ddlog-4",  default-features = false }
+#timely = "0.12.0"
+#differential-dataflow = { version = "0.12.0", default-features = false }
 # timely = { git = "https://github.com/TimelyDataflow/timely-dataflow" }
 # differential-dataflow = { git = "https://github.com/TimelyDataflow/differential-dataflow" }
 
