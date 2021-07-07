@@ -66,3 +66,17 @@ where
         }
     }
 }
+
+impl<S> InspectExt for Option<S>
+where
+    S: InspectExt,
+{
+    type Value = <S as InspectExt>::Value;
+
+    fn debug_inspect<F>(&self, inspect: F) -> Self
+    where
+        F: FnMut(&Self::Value) + 'static,
+    {
+        self.as_ref().map(|stream| stream.debug_inspect(inspect))
+    }
+}

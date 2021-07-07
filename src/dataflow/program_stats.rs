@@ -1,6 +1,6 @@
 use crate::{
     dataflow::{
-        operators::{DelayExt, DiffDuration, JoinArranged, MapExt, Max, Min},
+        operators::{DelayExt, DiffDuration, InspectExt, JoinArranged, MapExt, Max, Min},
         send_recv::ChannelAddrs,
         utils::{granulate, ArrangedKey, DifferentialLogBundle, TimelyLogBundle},
         Channel, Diff, OperatorAddr,
@@ -54,6 +54,14 @@ pub fn aggregate_worker_stats<S>(
 where
     S: Scope<Timestamp = Duration>,
 {
+    channels.debug();
+    subgraph_addresses
+        .as_collection(|&(worker, ref channel), &()| (worker, channel.clone()))
+        .debug();
+    operator_addrs_by_self
+        .as_collection(|&(worker, ref addr), &()| (worker, addr.clone()))
+        .debug();
+
     let only_operators = operator_addrs_by_self.antijoin_arranged(subgraph_addresses);
     let only_subgraphs = operator_addrs_by_self
         .semijoin_arranged(subgraph_addresses)
@@ -164,13 +172,21 @@ where
     // TODO: This really should be a delta join :(
     // TODO: This may actually be feasibly hoisted into the difference type or something?
     let worker_stats = dataflow_addrs
+        .debug()
         .join(&total_dataflows)
+        .debug()
         .join(&total_operators)
+        .debug()
         .join(&total_subgraphs)
+        .debug()
         .join(&total_channels)
+        .debug()
         .join(&total_arrangements)
+        .debug()
         .join(&total_events)
+        .debug()
         .join(&total_runtime)
+        .debug()
         .map(
             |(
                 worker,
@@ -207,6 +223,7 @@ where
 
     let program_stats =
         worker_stats
+            .debug()
             .explode(|(_, stats)| {
                 let diff = DiffPair::new(
                     1,
@@ -233,7 +250,9 @@ where
 
                 iter::once(((), diff))
             })
+            .debug()
             .count_total()
+            .debug()
             .map(
                 |(
                     (),
@@ -276,7 +295,8 @@ where
                     events: events as usize,
                     runtime: runtime.to_duration(),
                 },
-            );
+            )
+            .debug();
 
     (program_stats, worker_stats)
 }

@@ -55,7 +55,7 @@ where
 }
 
 pub(super) type TimelineStreamEvent = (TimelineEvent, Duration, Present);
-pub(super) type EventMap = HashMap<(WorkerId, EventKind), Vec<(Duration, Capability<Duration>)>>;
+pub(super) type EventMap = HashMap<(WorkerId, EventKind), Vec<Duration>>;
 type EventOutput<'a> =
     OutputHandle<'a, Duration, TimelineStreamEvent, Tee<Duration, TimelineStreamEvent>>;
 
@@ -196,7 +196,7 @@ fn process_differential_event(
 pub(super) struct EventProcessor<'a, 'b> {
     event_map: &'a mut EventMap,
     map_buffer: &'a mut EventMap,
-    stack_buffer: &'a mut Vec<Vec<(Duration, Capability<Duration>)>>,
+    stack_buffer: &'a mut Vec<Vec<Duration>>,
     output: &'a mut EventOutput<'b>,
     capability: &'a Capability<Duration>,
     worker: WorkerId,
@@ -207,7 +207,7 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
     pub(super) fn new(
         event_map: &'a mut EventMap,
         map_buffer: &'a mut EventMap,
-        stack_buffer: &'a mut Vec<Vec<(Duration, Capability<Duration>)>>,
+        stack_buffer: &'a mut Vec<Vec<Duration>>,
         output: &'a mut EventOutput<'b>,
         capability: &'a Capability<Duration>,
         worker: WorkerId,
@@ -268,23 +268,22 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
             stack_buffer,
             worker,
             time,
-            capability,
             ..
         } = self;
 
         event_map
             .entry((*worker, event_kind))
             .or_insert_with(|| stack_buffer.pop().unwrap_or_else(Vec::new))
-            .push((*time, capability.clone()));
+            .push(*time);
     }
 
     fn remove(&mut self, event_kind: EventKind, event: EventKind) {
-        if let Some((start_time, stored_capability)) = self
+        if let Some(start_time) = self
             .event_map
             .get_mut(&(self.worker, event_kind))
             .and_then(Vec::pop)
         {
-            self.output_event(start_time, stored_capability, event)
+            self.output_event(start_time, event)
         } else {
             tracing::warn!(
                 event_kind = ?event_kind,
@@ -297,18 +296,12 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
         }
     }
 
-    fn output_event(
-        &mut self,
-        start_time: Duration,
-        stored_capability: Capability<Duration>,
-        event: EventKind,
-    ) {
+    fn output_event(&mut self, start_time: Duration, event: EventKind) {
         Self::output_event_inner(
             self.output,
             self.time,
             start_time,
             &self.capability,
-            stored_capability,
             event,
             self.worker,
         )
@@ -320,17 +313,15 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
         output: &mut EventOutput,
         current_time: Duration,
         start_time: Duration,
-        current_capability: &Capability<Duration>,
-        mut stored_capability: Capability<Duration>,
+        capability: &Capability<Duration>,
         event: EventKind,
         worker: WorkerId,
     ) {
         let duration = current_time - start_time;
-        stored_capability.downgrade(&stored_capability.time().join(current_capability.time()));
 
-        output.session(&stored_capability).give((
+        output.session(capability).give((
             TimelineEvent::new(worker, event, start_time, duration),
-            *stored_capability.time(),
+            *capability.time(),
             Present,
         ));
     }
@@ -377,13 +368,12 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
                     };
 
                     // Drain the value stack, sending all dangling events
-                    for (start_time, stored_capability) in value_stack.drain(..) {
+                    for start_time in value_stack.drain(..) {
                         Self::output_event_inner(
                             self.output,
                             self.time,
                             start_time,
                             &self.capability,
-                            stored_capability,
                             event,
                             self.worker,
                         )

@@ -1,4 +1,5 @@
 pub use colorous::Gradient;
+
 use std::{net::SocketAddr, num::NonZeroUsize, path::PathBuf, str::FromStr};
 use structopt::StructOpt;
 use timely::{CommunicationConfig, WorkerConfig};
@@ -110,6 +111,10 @@ pub struct Args {
         possible_values = &["abomonation", "rkyv"],
     )]
     pub stream_encoding: StreamEncoding,
+
+    /// The time between updating the report file in seconds
+    #[structopt(long, conflicts_with("no-report-file"), hidden(true))]
+    pub report_update_duration: Option<u8>,
 }
 
 impl Args {
@@ -157,6 +162,7 @@ impl Default for Args {
             dataflow_profiling: false,
             disable_timeline: false,
             stream_encoding: StreamEncoding::Abomonation,
+            report_update_duration: None,
         }
     }
 }

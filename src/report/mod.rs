@@ -44,12 +44,7 @@ pub fn build_report(
         tracing::debug!("creating report file: {}", args.report_file.display());
         let mut file = File::create(&args.report_file).context("failed to create report file")?;
 
-        let all_workers: HashSet<_> = data
-            .worker_stats
-            .iter()
-            .flatten()
-            .map(|&(worker, _)| worker)
-            .collect();
+        let all_workers: HashSet<_> = data.nodes.iter().map(|&((worker, _), _)| worker).collect();
 
         program_overview(args, data, &mut file)?;
         worker_stats(args, data, &mut file)?;
@@ -136,7 +131,7 @@ fn worker_stats(args: &Args, data: &DataflowData, file: &mut File) -> Result<()>
 
     table.set_header(headers);
 
-    if let Some(stats) = worker_stats.first() {
+    if let Some(stats) = worker_stats.last() {
         // There should only be one entry
         debug_assert_eq!(worker_stats.len(), 1);
 
@@ -212,22 +207,19 @@ fn operator_stats(
 
     table.set_header(headers);
 
-    for (operator, stats, addr, name) in operators_by_total_runtime
-        .iter()
-        .filter_map(|&(operator, ref stats)| {
-            all_workers.iter().find_map(|&worker| {
-                addr_lookup
-                    .get(&(worker, operator))
-                    .map(|addr| (operator, stats, addr))
-            })
-        })
-        .map(|(operator, stats, addr)| {
-            let name: Option<&str> = all_workers
-                .iter()
-                .find_map(|&worker| name_lookup.get(&(worker, operator)).map(|name| &**name));
+    for (operator, stats, addr, name) in
+        operators_by_total_runtime
+            .iter()
+            .map(|&(operator, ref stats)| {
+                let addr = all_workers
+                    .iter()
+                    .find_map(|&worker| addr_lookup.get(&(worker, operator)));
+                let name: Option<&str> = all_workers
+                    .iter()
+                    .find_map(|&worker| name_lookup.get(&(worker, operator)).map(|name| &**name));
 
-            (operator, stats, addr, name.unwrap_or("N/A"))
-        })
+                (operator, stats, addr, name.unwrap_or("N/A"))
+            })
     {
         let arrange = stats.arrangement_size.as_ref().map(|arrange| {
             (
@@ -242,10 +234,14 @@ fn operator_stats(
             Cell::new(operator),
             Cell::new(format!(
                 "[{}]",
-                addr.iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                addr.map_or_else(
+                    || String::from("{unknown}"),
+                    |addr| addr
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
             )),
             Cell::new(format!("{:#?}", stats.total)),
             Cell::new(stats.activations),
@@ -299,32 +295,33 @@ fn arrangement_stats(
         "Arrangement Batches",
     ]);
 
-    for (operator, stats, arrange, addr, name) in operators_by_arrangement_size
-        .iter()
-        .filter_map(|&(operator, ref stats, arrange)| {
-            all_workers.iter().find_map(|&worker| {
-                addr_lookup
-                    .get(&(worker, operator))
-                    .map(|addr| (operator, stats, arrange, addr))
-            })
-        })
-        .map(|(operator, stats, arrange, addr)| {
-            let name: Option<&str> = all_workers
-                .iter()
-                .find_map(|&worker| name_lookup.get(&(worker, operator)).map(|name| &**name));
+    for (operator, stats, arrange, addr, name) in
+        operators_by_arrangement_size
+            .iter()
+            .map(|&(operator, ref stats, arrange)| {
+                let addr = all_workers
+                    .iter()
+                    .find_map(|&worker| addr_lookup.get(&(worker, operator)));
+                let name: Option<&str> = all_workers
+                    .iter()
+                    .find_map(|&worker| name_lookup.get(&(worker, operator)).map(|name| &**name));
 
-            (operator, stats, arrange, addr, name.unwrap_or("N/A"))
-        })
+                (operator, stats, arrange, addr, name.unwrap_or("N/A"))
+            })
     {
         table.add_row(vec![
             Cell::new(name),
             Cell::new(operator),
             Cell::new(format!(
                 "[{}]",
-                addr.iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                addr.map_or_else(
+                    || String::from("{unknown}"),
+                    |addr| addr
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
             )),
             Cell::new(format!("{:#?}", stats.total)),
             Cell::new(arrange.max_size),

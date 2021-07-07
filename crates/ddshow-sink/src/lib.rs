@@ -53,6 +53,7 @@ where
 ///
 /// ```rust
 /// use std::{env, net::TcpStream};
+/// use timely::dataflow::operators::{Inspect, ToStream};
 ///
 /// timely::execute_directly(|worker| {
 ///     // If `TIMELY_WORKER_LOG_ADDR` is set, `ddshow_sink` will
@@ -137,6 +138,7 @@ where
 ///
 /// ```rust
 /// use std::{env, net::TcpStream};
+/// use timely::dataflow::operators::{Inspect, ToStream};
 ///
 /// timely::execute_directly(|worker| {
 ///     // If `TIMELY_WORKER_LOG_ADDR` is set, `ddshow_sink` will

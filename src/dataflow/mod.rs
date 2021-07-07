@@ -27,7 +27,7 @@ use crate::{
     args::Args,
     dataflow::{
         operator_stats::AggregatedOperatorStats,
-        operators::{FilterMap, JoinArranged, Multiply, SortBy},
+        operators::{FilterMap, InspectExt, JoinArranged, Multiply, SortBy},
         send_recv::ChannelAddrs,
         subgraphs::rewire_channels,
         utils::{
@@ -139,6 +139,7 @@ where
     });
 
     let addressed_operators = raw_operators
+        .debug()
         .map(|(worker, operator)| ((worker, operator.addr.clone()), operator))
         .arrange_by_key_named("ArrangeByKey: Addressed Operators");
 
@@ -416,7 +417,7 @@ where
             .map(|(addr, ())| addr)
             .leave_region();
 
-        (leaf_operators, observed_subgraphs)
+        (leaf_operators.debug(), observed_subgraphs.debug())
     })
 }
 
