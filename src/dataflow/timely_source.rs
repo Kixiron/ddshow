@@ -1,7 +1,7 @@
 use crate::{
     dataflow::{
         constants::IDLE_EXTRACTION_FUEL,
-        operators::{DelayExt, Fuel},
+        operators::{DelayExt, Fuel, InspectExt},
         utils::{granulate, Time},
         worker_timeline::{process_timely_event, EventMap, EventProcessor},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelineEvent,
@@ -103,7 +103,7 @@ where
     let mut builder = Builder::new(builder);
     let (mut outputs, streams) = Outputs::new(&mut builder, !disable_timeline);
 
-    builder.build(move |_capabilities| {
+    builder.build_reschedule(move |_capabilities| {
         // TODO: Use stacks for these, migrate to something more like `EventProcessor`
         let (
             mut lifespan_map,
@@ -158,6 +158,7 @@ where
 
             // FIXME: If every data source has completed, cut off any outstanding events to keep
             //        us from getting stuck in an infinite loop
+            !work_list.is_empty()
         }
     });
 
@@ -180,11 +181,15 @@ where
     // TODO: Granulate the times within the operator
     let operator_names = operator_names.arrange_by_key_named("ArrangeByKey: Operator Names");
     let operator_ids = operator_ids.arrange_by_key_named("ArrangeByKey: Operator Ids");
-    let operator_addrs = operator_addrs.arrange_by_key_named("ArrangeByKey: Operator Addrs");
-    let operator_addrs_by_self =
-        operator_addrs_by_self.arrange_named("Arrange: Operator Addrs by Self");
-    let channel_scope_addrs =
-        channel_scope_addrs.arrange_by_key_named("ArrangeByKey: Channel Scope Addrs");
+    let operator_addrs = operator_addrs
+        .debug()
+        .arrange_by_key_named("ArrangeByKey: Operator Addrs");
+    let operator_addrs_by_self = operator_addrs_by_self
+        .debug()
+        .arrange_named("Arrange: Operator Addrs by Self");
+    let channel_scope_addrs = channel_scope_addrs
+        .debug()
+        .arrange_by_key_named("ArrangeByKey: Channel Scope Addrs");
     let dataflow_ids = dataflow_ids.arrange_named("Arrange: Dataflow Ids");
 
     // Granulate all streams and turn them into collections
@@ -193,7 +198,7 @@ where
         activation_durations,
         operator_creations,
         channel_creations,
-        raw_channels,
+        raw_channels.debug(),
         // FIXME: This isn't granulated since I have no idea what depends
         //       on the timestamp being the event time
         raw_operators,
@@ -217,13 +222,15 @@ fn work_loop(
     work_list_buffers: &mut Vec<Vec<TimelyLogBundle>>,
     event_map: &mut EventMap,
     map_buffer: &mut EventMap,
-    stack_buffer: &mut Vec<Vec<(Duration, Capability<Duration>)>>,
+    stack_buffer: &mut Vec<Vec<Duration>>,
 ) {
     // Reset our fuel on each activation
     fuel.reset();
 
     'work_loop: while !fuel.is_exhausted() {
         if let Some((mut buffer, capability_time, mut capabilities)) = work_list.pop_front() {
+            fuel.exert(buffer.len());
+
             for (time, worker, event) in buffer.drain(..) {
                 if let (Some(worker_events), Some(capability)) = (
                     handles.worker_events.as_mut(),
@@ -246,6 +253,11 @@ fn work_loop(
                 let session_time = capability_time.join(&time);
                 capabilities.downgrade(&session_time);
 
+                for (_, capability_time, capabilities) in work_list.iter_mut() {
+                    let inner_time = capability_time.join(&time).join(&capabilities.time());
+                    capabilities.downgrade(&inner_time);
+                }
+
                 ingest_event(
                     time,
                     worker,
@@ -256,18 +268,17 @@ fn work_loop(
                     lifespan_map,
                     activation_map,
                 );
-
-                fuel.exert(1);
             }
 
-            // If we didn't have enough fuel to fully deplete the buffer, push it back onto the work list
-            if !buffer.is_empty() {
-                work_list.push_front((buffer, capability_time, capabilities));
-
-            // Otherwise add it to the extra buffers we maintain
-            } else {
-                work_list_buffers.push(buffer);
-            }
+            // // If we didn't have enough fuel to fully deplete the buffer, push it back onto the work list
+            // if !buffer.is_empty() {
+            //     work_list.push_front((buffer, capability_time, capabilities));
+            //
+            // // Otherwise add it to the extra buffers we maintain
+            // } else {
+            //     work_list_buffers.push(buffer);
+            // }
+            work_list_buffers.push(buffer);
         } else {
             break 'work_loop;
         }
@@ -525,12 +536,12 @@ where
         (output, stream)
     }
 
-    fn build<B, L>(self, constructor: B)
+    fn build_reschedule<B, L>(self, constructor: B)
     where
         B: FnOnce(Vec<Capability<Time>>) -> L,
-        L: FnMut(&[MutableAntichain<Time>]) + 'static,
+        L: FnMut(&[MutableAntichain<Time>]) -> bool + 'static,
     {
-        self.builder.build(constructor)
+        self.builder.build_reschedule(constructor)
     }
 }
 
@@ -672,6 +683,23 @@ macro_rules! timely_source_processor {
 
             fn downgrade(&mut self, time: &Time) {
                 $(timely_source_processor!(@downgrade self, time, $name, $($cond)?);)*
+            }
+
+            #[allow(unused_must_use)]
+            fn time(&self) -> Time {
+                let x = $(&self.$name;)*
+                *x.time()
+            }
+        }
+
+        impl Drop for OutputCapabilities {
+            fn drop(&mut self) {
+                tracing::trace!(
+                    target: "timely_source_capabilities",
+                    $($name = ?self.$name,)*
+                    "dropped output capability for timestamp {:#?}",
+                    self.time(),
+                );
             }
         }
     };

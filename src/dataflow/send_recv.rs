@@ -239,6 +239,24 @@ macro_rules! make_send_recv {
 
                 DataflowData::new($($name,)*)
             }
+
+            #[inline(never)]
+            pub fn current_dataflow_data(&self) -> DataflowData {
+                $(
+                    let $name: Vec<_> = self.$name.1
+                        .iter()
+                        .filter_map(|(data, diff)| if !diff.is_zero() { Some(data.clone()) } else { None })
+                        .collect();
+
+                    tracing::debug!(
+                        "extracted {} {} events",
+                        $name.len(),
+                        stringify!($name).split("_").collect::<Vec<_>>().join(" "),
+                    );
+                )*
+
+                DataflowData::new($($name,)*)
+            }
         }
 
         #[derive(Clone, Debug)]

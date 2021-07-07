@@ -6,6 +6,7 @@ use crate::{
         utils::{self, DifferentialLogBundle, ProgressLogBundle, TimelyLogBundle},
         DataflowData, DataflowReceivers,
     },
+    report,
 };
 use abomonation::Abomonation;
 use anyhow::{Context, Result};
@@ -19,6 +20,7 @@ use rkyv::{
     de::deserializers::AllocDeserializer, validation::DefaultArchiveValidator, Archive, Deserialize,
 };
 use std::{
+    collections::HashMap,
     ffi::OsStr,
     fmt::Debug,
     fs::{self, File},
@@ -33,7 +35,7 @@ use std::{
         Arc, Barrier,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use timely::{
     communication::WorkerGuards, dataflow::operators::capture::Event,
@@ -629,6 +631,11 @@ pub fn wait_for_input(
     );
     let num_threads = worker_guards.guards().len();
 
+    let report_update_duration = args
+        .report_update_duration
+        .map(|secs| Duration::from_secs(secs as u64));
+    let mut last_report_update = Instant::now();
+
     loop {
         hint::spin_loop();
 
@@ -680,6 +687,27 @@ pub fn wait_for_input(
         );
 
         fuel.reset();
+
+        if let Some(duration) = report_update_duration {
+            let elapsed = last_report_update.elapsed();
+
+            if elapsed >= duration {
+                tracing::info!(
+                    "the last report file update happened {:#?} ago, updating the report file",
+                    elapsed,
+                );
+
+                let data = extractor.current_dataflow_data();
+
+                let name_lookup: HashMap<_, _> = data.name_lookup.iter().cloned().collect();
+                let addr_lookup: HashMap<_, _> = data.addr_lookup.iter().cloned().collect();
+
+                // Build & emit the textual report
+                report::build_report(&*args, &data, &name_lookup, &addr_lookup)?;
+
+                last_report_update = Instant::now();
+            }
+        }
     }
 
     // Terminate the replay
