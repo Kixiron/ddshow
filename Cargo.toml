@@ -35,19 +35,19 @@ byteorder = "1.4.3"
 structopt = "0.3.21"
 serde_json = "1.0.64"
 abomonation = "0.7.3"
-comfy-table = "3.0.0"
+comfy-table = "4.0.0"
 ordered-float = "2.5.1"
 crossbeam-channel = "0.5.0"
 abomonation_derive = "0.5.0"
 tracing-subscriber = "0.2.16"
 strum = { version = "0.21.0", features = ["derive"] }
 serde = { version = "1.0.123", features = ["derive"] }
-rkyv = { version = "0.6.7", features = ["validation"] }  # TODO: "strict"
+rkyv = { version = "0.6.7", features = ["validation"] } # TODO: "strict"
 tinyvec = { version = "1.2.0", features = ["alloc", "serde"] }
 indicatif = { version = "0.16.2", features = ["improved_unicode"] }
 
-ddshow-sink = { version = "0.1.1", path = "crates/ddshow-sink", features = ["ddflow", "tracing"] }
-ddshow-types = { version = "0.1.1", path = "crates/ddshow-types", features = ["rkyv", "serde", "enable_abomonation"] }
+ddshow-sink = { version = "0.1.1", path="crates/ddshow-sink", features = ["ddflow", "tracing"] }
+ddshow-types = { version = "0.1.1", path="crates/ddshow-types", features = ["rkyv", "serde", "enable_abomonation"] }
 
 timely = { git = "https://github.com/ddlog-dev/timely-dataflow", branch = "ddlog-4" }
 differential-dataflow = { git = "https://github.com/ddlog-dev/differential-dataflow", branch = "ddlog-4",  default-features = false }
@@ -57,8 +57,9 @@ differential-dataflow = { git = "https://github.com/ddlog-dev/differential-dataf
 # differential-dataflow = { git = "https://github.com/TimelyDataflow/differential-dataflow" }
 
 [dev-dependencies]
-proptest = "1.0.0"
 rand = "0.8.0"
+proptest = "1.0.0"
+libtest-mimic = "0.3.0"
 
 [build-dependencies.vergen]
 version = "5.1.6"
@@ -76,3 +77,8 @@ lto = "thin"
 opt-level = 3
 codegen-units = 24
 debug-assertions = false
+
+[[test]]
+name = "ui"
+path = "tests/ui.rs"
+harness = false

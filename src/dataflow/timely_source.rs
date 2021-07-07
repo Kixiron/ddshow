@@ -253,11 +253,6 @@ fn work_loop(
                 let session_time = capability_time.join(&time);
                 capabilities.downgrade(&session_time);
 
-                for (_, capability_time, capabilities) in work_list.iter_mut() {
-                    let inner_time = capability_time.join(&time).join(&capabilities.time());
-                    capabilities.downgrade(&inner_time);
-                }
-
                 ingest_event(
                     time,
                     worker,

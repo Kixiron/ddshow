@@ -80,7 +80,7 @@ pub struct Args {
     /// The directory to replay a recorded set of logs from
     #[structopt(
         long,
-        conflicts_with_all(&["save-logs", "connections", "address", "differential"]),
+        conflicts_with_all(&["save-logs", "connections", "address", "differential-address", "progress-address"]),
     )]
     pub replay_logs: Option<PathBuf>,
 
@@ -115,6 +115,10 @@ pub struct Args {
     /// The time between updating the report file in seconds
     #[structopt(long, conflicts_with("no-report-file"), hidden(true))]
     pub report_update_duration: Option<u8>,
+
+    /// Disables ddshow's terminal output
+    #[structopt(long, short = "q", hidden(true))]
+    pub quiet: bool,
 }
 
 impl Args {
@@ -163,6 +167,7 @@ impl Default for Args {
             disable_timeline: false,
             stream_encoding: StreamEncoding::Abomonation,
             report_update_duration: None,
+            quiet: false,
         }
     }
 }
