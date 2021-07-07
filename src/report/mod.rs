@@ -2,7 +2,7 @@ mod tree;
 
 use crate::{args::Args, dataflow::DataflowData, report::tree::Tree};
 use anyhow::{Context, Result};
-use comfy_table::{presets::UTF8_FULL, Cell, ColumnConstraint, Row, Table as InnerTable};
+use comfy_table::{presets::UTF8_FULL, Cell, ColumnConstraint, Row, Table as InnerTable, Width};
 use ddshow_types::{OperatorAddr, OperatorId, WorkerId};
 use std::{
     cmp::Reverse,
@@ -412,8 +412,9 @@ impl Table {
     fn set_header(&mut self, row: Vec<&str>) -> &mut Self {
         self.inner
             .set_constraints(
-                row.iter()
-                    .map(|header| ColumnConstraint::MinWidth(header.len() as u16)),
+                row.iter().map(|header| {
+                    ColumnConstraint::LowerBoundary(Width::Fixed(header.len() as u16))
+                }),
             )
             .set_header(row);
 
