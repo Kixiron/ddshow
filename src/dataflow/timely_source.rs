@@ -1,7 +1,7 @@
 use crate::{
     dataflow::{
         constants::IDLE_EXTRACTION_FUEL,
-        operators::{DelayExt, Fuel, InspectExt},
+        operators::{DelayExt, Fuel},
         utils::{granulate, Time},
         worker_timeline::{process_timely_event, EventMap, EventProcessor},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelineEvent,
@@ -103,7 +103,7 @@ where
     let mut builder = Builder::new(builder);
     let (mut outputs, streams) = Outputs::new(&mut builder, !disable_timeline);
 
-    builder.build_reschedule(move |_capabilities| {
+    builder.build(move |_capabilities| {
         // TODO: Use stacks for these, migrate to something more like `EventProcessor`
         let (
             mut lifespan_map,
@@ -158,7 +158,6 @@ where
 
             // FIXME: If every data source has completed, cut off any outstanding events to keep
             //        us from getting stuck in an infinite loop
-            !work_list.is_empty()
         }
     });
 
@@ -181,15 +180,11 @@ where
     // TODO: Granulate the times within the operator
     let operator_names = operator_names.arrange_by_key_named("ArrangeByKey: Operator Names");
     let operator_ids = operator_ids.arrange_by_key_named("ArrangeByKey: Operator Ids");
-    let operator_addrs = operator_addrs
-        .debug()
-        .arrange_by_key_named("ArrangeByKey: Operator Addrs");
-    let operator_addrs_by_self = operator_addrs_by_self
-        .debug()
-        .arrange_named("Arrange: Operator Addrs by Self");
-    let channel_scope_addrs = channel_scope_addrs
-        .debug()
-        .arrange_by_key_named("ArrangeByKey: Channel Scope Addrs");
+    let operator_addrs = operator_addrs.arrange_by_key_named("ArrangeByKey: Operator Addrs");
+    let operator_addrs_by_self =
+        operator_addrs_by_self.arrange_named("Arrange: Operator Addrs by Self");
+    let channel_scope_addrs =
+        channel_scope_addrs.arrange_by_key_named("ArrangeByKey: Channel Scope Addrs");
     let dataflow_ids = dataflow_ids.arrange_named("Arrange: Dataflow Ids");
 
     // Granulate all streams and turn them into collections
@@ -198,7 +193,7 @@ where
         activation_durations,
         operator_creations,
         channel_creations,
-        raw_channels.debug(),
+        raw_channels,
         // FIXME: This isn't granulated since I have no idea what depends
         //       on the timestamp being the event time
         raw_operators,
@@ -531,12 +526,12 @@ where
         (output, stream)
     }
 
-    fn build_reschedule<B, L>(self, constructor: B)
+    fn build<B, L>(self, constructor: B)
     where
         B: FnOnce(Vec<Capability<Time>>) -> L,
-        L: FnMut(&[MutableAntichain<Time>]) -> bool + 'static,
+        L: FnMut(&[MutableAntichain<Time>]) + 'static,
     {
-        self.builder.build_reschedule(constructor)
+        self.builder.build(constructor)
     }
 }
 

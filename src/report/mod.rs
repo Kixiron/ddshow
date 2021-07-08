@@ -193,6 +193,8 @@ fn operator_stats(
         "Average Activation Time",
         "Max Activation Time",
         "Min Activation Time",
+        "Inputs",
+        "Outputs",
     ];
     if args.differential_enabled {
         headers.extend(
@@ -218,7 +220,7 @@ fn operator_stats(
                     .iter()
                     .find_map(|&worker| name_lookup.get(&(worker, operator)).map(|name| &**name));
 
-                (operator, stats, addr, name.unwrap_or("N/A"))
+                (operator, stats, addr, name.unwrap_or(""))
             })
     {
         let arrange = stats.arrangement_size.as_ref().map(|arrange| {
@@ -228,6 +230,21 @@ fn operator_stats(
                 format!("{}", arrange.batches),
             )
         });
+
+        let (inputs, outputs) = data
+            .operator_shapes
+            .iter()
+            .find_map(|shape| {
+                if shape.id == operator {
+                    Some((shape.inputs.len(), shape.outputs.len()))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| {
+                tracing::warn!("couldn't find operator shape for {}", operator);
+                (0, 0)
+            });
 
         let mut row = vec![
             Cell::new(name),
@@ -248,6 +265,8 @@ fn operator_stats(
             Cell::new(format!("{:#?}", stats.average)),
             Cell::new(format!("{:#?}", stats.max)),
             Cell::new(format!("{:#?}", stats.min)),
+            Cell::new(inputs),
+            Cell::new(outputs),
         ];
 
         if let Some((max, min, batches)) = arrange {
@@ -306,7 +325,7 @@ fn arrangement_stats(
                     .iter()
                     .find_map(|&worker| name_lookup.get(&(worker, operator)).map(|name| &**name));
 
-                (operator, stats, arrange, addr, name.unwrap_or("N/A"))
+                (operator, stats, arrange, addr, name.unwrap_or(""))
             })
     {
         table.add_row(vec![

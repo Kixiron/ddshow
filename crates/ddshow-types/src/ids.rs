@@ -25,16 +25,19 @@ pub struct WorkerId {
 }
 
 impl WorkerId {
+    #[inline]
     pub const fn new(worker: WorkerIdentifier) -> Self {
         Self { worker }
     }
 
+    #[inline]
     pub const fn into_inner(self) -> WorkerIdentifier {
         self.worker
     }
 }
 
 impl From<usize> for WorkerId {
+    #[inline]
     fn from(worker: usize) -> Self {
         Self::new(worker)
     }
@@ -64,12 +67,20 @@ pub struct OperatorId {
 }
 
 impl OperatorId {
+    #[inline]
     pub const fn new(operator: usize) -> Self {
         Self { operator }
     }
 
+    #[inline]
     pub const fn into_inner(self) -> usize {
         self.operator
+    }
+}
+
+impl From<PortId> for OperatorId {
+    fn from(port: PortId) -> Self {
+        Self::new(port.into_inner())
     }
 }
 
@@ -97,18 +108,22 @@ pub struct PortId {
 }
 
 impl PortId {
+    #[inline]
     pub const fn new(port: usize) -> Self {
         Self { port }
     }
 
+    #[inline]
     pub const fn into_inner(self) -> usize {
         self.port
     }
 
+    #[inline]
     pub const fn zero() -> Self {
         Self::new(0)
     }
 
+    #[inline]
     pub const fn is_zero(&self) -> bool {
         self.port == 0
     }
@@ -138,10 +153,12 @@ pub struct ChannelId {
 }
 
 impl ChannelId {
+    #[inline]
     pub const fn new(channel: usize) -> Self {
         Self { channel }
     }
 
+    #[inline]
     pub const fn into_inner(self) -> usize {
         self.channel
     }

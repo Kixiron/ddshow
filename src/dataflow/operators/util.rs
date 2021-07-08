@@ -235,3 +235,16 @@ impl Fuel {
         }
     }
 }
+
+macro_rules! located {
+    ($name:expr) => {{
+        let caller = ::std::panic::Location::caller();
+        ::std::format!(
+            "{} @ {}:{}:{}",
+            $name,
+            caller.file(),
+            caller.line(),
+            caller.column(),
+        )
+    }};
+}

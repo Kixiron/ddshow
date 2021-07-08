@@ -26,6 +26,18 @@ pub trait InspectExt {
             );
         })
     }
+
+    #[track_caller]
+    fn debug_with(&self, name: &str) -> Self
+    where
+        Self: Sized,
+        Self::Value: Debug,
+    {
+        let name = name.to_owned();
+        self.debug_inspect(move |value| {
+            println!("[{}]: {:?}", name, value);
+        })
+    }
 }
 
 impl<S, D, R> InspectExt for Collection<S, D, R>

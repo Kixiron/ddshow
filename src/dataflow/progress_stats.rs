@@ -1,20 +1,17 @@
 use crate::dataflow::{
-    operators::{DelayExt, JoinArranged},
-    utils::{granulate, ProgressLogBundle},
-    Diff,
+    operators::{FlatSplit, InspectExt, Keys},
+    utils::ProgressLogBundle,
+    Diff, OperatorShape,
 };
 use abomonation_derive::Abomonation;
-use ddshow_types::{ChannelId, OperatorAddr, WorkerId};
+use ddshow_types::{ChannelId, OperatorAddr, OperatorId, PortId, WorkerId};
 use differential_dataflow::{
-    operators::{
-        arrange::{ArrangeByKey, ArrangeBySelf},
-        CountTotal, JoinCore, Reduce,
-    },
+    operators::{arrange::ArrangeByKey, CountTotal, Join, Reduce},
     AsCollection, Collection,
 };
 use serde::{Deserialize, Serialize};
-use std::{iter, time::Duration};
-use timely::dataflow::{operators::Map, Scope, Stream};
+use std::{collections::BTreeMap, iter, time::Duration};
+use timely::dataflow::{Scope, Stream};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
 pub struct ChannelMessageStats {
@@ -78,6 +75,34 @@ impl Channel {
     }
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+pub struct OperatorProgress {
+    pub operator: OperatorId,
+    pub worker: WorkerId,
+    /// Input port -> (messages, channel)
+    pub input_messages: BTreeMap<PortId, (isize, ChannelId)>,
+    /// Output port -> (messages, channel)
+    pub output_messages: BTreeMap<PortId, (isize, ChannelId)>,
+}
+
+impl OperatorProgress {
+    pub const fn new(
+        operator: OperatorId,
+        worker: WorkerId,
+        input_messages: BTreeMap<PortId, (isize, ChannelId)>,
+        output_messages: BTreeMap<PortId, (isize, ChannelId)>,
+    ) -> Self {
+        Self {
+            operator,
+            worker,
+            input_messages,
+            output_messages,
+        }
+    }
+}
+
+impl abomonation::Abomonation for OperatorProgress {}
+
 #[derive(
     Debug,
     Default,
@@ -117,124 +142,134 @@ pub struct ProgressStats {
     pub capability_updates: usize,
 }
 
-impl ProgressStats {
-    pub const fn new(messages: usize, capability_updates: usize) -> Self {
-        Self {
-            messages,
-            capability_updates,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
-pub enum ConnectionKind {
-    Target,
-    Source,
-}
-
 pub fn aggregate_channel_messages<S>(
     progress_stream: &Stream<S, ProgressLogBundle>,
-) -> Collection<S, (OperatorAddr, ProgressInfo), Diff>
+    shapes: &Collection<S, OperatorShape, Diff>,
+) -> Collection<S, OperatorProgress, Diff>
 where
     S: Scope<Timestamp = Duration>,
 {
-    let message_updates = progress_stream
-        .flat_map(|(time, _dest_worker, event)| {
-            let (addr, channel_id, is_send) = (event.addr, event.channel, event.is_send);
+    let (produced, consumed) =
+        progress_stream.flat_split_named("Progress Inputs & Outputs", |(time, worker, event)| {
+            // FIXME: Rust 2021 edition allows closures to capture fields instead of the whole struct
+            let (scope_addr, channel) = (event.addr, event.channel);
 
-            event.messages.into_iter().map(move |message| {
-                let kind = if is_send {
-                    ConnectionKind::Source
-                } else {
-                    ConnectionKind::Target
-                };
-                let data = (message.node, message.port, addr.clone(), channel_id, kind);
+            let messages: Box<dyn Iterator<Item = (_, _, _)>> =
+                Box::new(event.messages.into_iter().map(move |message| {
+                    (
+                        (
+                            (worker, message.node, scope_addr.clone()),
+                            (message.port, channel, message.diff),
+                        ),
+                        time,
+                        1,
+                    )
+                }));
+            let empty: Box<dyn Iterator<Item = (_, _, _)>> = Box::new(iter::empty());
 
-                (data, time, 1isize)
-            })
-        })
-        .as_collection()
-        .delay_fast(granulate)
-        .count_total()
-        .arrange_by_key();
+            // When this is a source event `message.node` is the output port of the producing operator
+            // while `message.port` is the input port on the consuming operator
+            if event.is_send {
+                // `messages` is `((worker, output_port, scope_addr), (input_port, channel, diff))`
+                (messages, empty)
 
-    let capability_updates = progress_stream
-        .flat_map(|(time, _dest_worker, event)| {
-            let (addr, channel_id, is_send) = (event.addr, event.channel, event.is_send);
-
-            event.internal.into_iter().map(move |capability| {
-                let kind = if is_send {
-                    ConnectionKind::Source
-                } else {
-                    ConnectionKind::Target
-                };
-                let data = (
-                    capability.node,
-                    capability.port,
-                    addr.clone(),
-                    channel_id,
-                    kind,
-                );
-
-                (data, time, 1isize)
-            })
-        })
-        .as_collection()
-        .delay_fast(granulate)
-        .count_total()
-        .arrange_by_key();
-
-    let mut combined_updates = message_updates
-        .join_core(&capability_updates, |key, &messages, &updates| {
-            iter::once((key.clone(), (messages as usize, updates as usize)))
-        });
-    let combined_updates_arranged = combined_updates.map(|(key, _)| key).arrange_by_self();
-
-    // Add back in any messages or capabilities that only have one side of things
-    // (eg. only messages or only capabilities)
-    combined_updates = combined_updates.concat(
-        &message_updates
-            .antijoin_arranged(&combined_updates_arranged)
-            .map(|(key, messages)| (key, (messages as usize, 0))),
-    );
-    combined_updates = combined_updates.concat(
-        &capability_updates
-            .antijoin_arranged(&combined_updates_arranged)
-            .map(|(key, updates)| (key, (0, updates as usize))),
-    );
-
-    combined_updates
-        .map(
-            |((node, port, address, channel_id, kind), (messages, updates))| {
-                ((node, port, address), (channel_id, kind, messages, updates))
-            },
-        )
-        .arrange_by_key_named("ArrangeByKey: Combined Updates")
-        .reduce(|_, inputs, outputs| {
-            let mut info = ProgressInfo::default();
-            for &(&(channel_id, kind, messages, capability_updates), _diff) in inputs {
-                let stats = ProgressStats::new(messages, capability_updates);
-                info.channel_id = channel_id;
-
-                match kind {
-                    ConnectionKind::Source => info.produced = stats,
-                    ConnectionKind::Target => info.consumed = stats,
-                }
+            // When this is a target event `message.node` is the input port of the consuming operator
+            // while `message.port` is the output port on the producing operator
+            } else {
+                // `messages` is `((worker, input_port, scope_addr), (output_port, channel, diff))`
+                (empty, messages)
             }
+        });
 
-            // TODO: Should do do something like creating the src/dest addrs here?
-            outputs.push((info, 1));
+    let (produced, consumed) = (produced.as_collection(), consumed.as_collection());
+    produced.debug_with("Progress Inputs");
+    consumed.debug_with("Progress Outputs");
+
+    let shape_ids = shapes
+        .map(|shape| ((shape.worker, shape.id), ()))
+        .arrange_by_key();
+
+    let mut shape_outputs =
+        shapes
+            .flat_map(|shape| {
+                shape.outputs.clone().into_iter().map(move |output_port| {
+                    ((shape.worker, output_port, shape.addr.clone()), shape.id)
+                })
+            })
+            .join_map(
+                &produced,
+                |&(worker, output_port, ref _addr), &operator_id, &(input_port, channel, diff)| {
+                    (
+                        ((worker, operator_id, output_port, input_port, channel), ()),
+                        diff as isize,
+                    )
+                },
+            )
+            .explode(iter::once)
+            .count_total()
+            .map(
+                |(((worker, operator, output, _input, channel), ()), messages)| {
+                    ((worker, operator), (output, (messages, channel)))
+                },
+            )
+            .reduce(|_, counts, output| {
+                output.push((
+                    counts.iter().map(|(&count, _)| count).collect::<Vec<_>>(),
+                    1isize,
+                ));
+            })
+            .debug_with("Shape Outputs");
+
+    shape_outputs = shape_ids
+        .antijoin(&shape_outputs.keys())
+        .map(|((worker, operator), ())| ((worker, operator), Vec::new()))
+        .concat(&shape_outputs);
+
+    let mut shape_inputs =
+        shapes
+            .flat_map(|shape| {
+                shape.inputs.clone().into_iter().map(move |input_port| {
+                    ((shape.worker, input_port, shape.addr.clone()), shape.id)
+                })
+            })
+            .join_map(
+                &produced,
+                |&(worker, input_port, ref _addr), &operator_id, &(output_port, channel, diff)| {
+                    (
+                        ((worker, operator_id, input_port, output_port, channel), ()),
+                        diff as isize,
+                    )
+                },
+            )
+            .explode(iter::once)
+            .count_total()
+            .map(
+                |(((worker, operator, input, _output, channel), ()), messages)| {
+                    ((worker, operator), (input, (messages, channel)))
+                },
+            )
+            .reduce(|_, counts, output| {
+                output.push((
+                    counts.iter().map(|(&count, _)| count).collect::<Vec<_>>(),
+                    1isize,
+                ));
+            })
+            .debug_with("Shape Inputs");
+
+    shape_inputs = shape_ids
+        .antijoin(&shape_inputs.keys())
+        .map(|((worker, operator), ())| ((worker, operator), Vec::new()))
+        .concat(&shape_inputs);
+
+    shape_inputs
+        .join(&shape_outputs)
+        .map(|((worker, operator), (inputs, outputs))| {
+            OperatorProgress::new(
+                operator,
+                worker,
+                inputs.into_iter().collect(),
+                outputs.into_iter().collect(),
+            )
         })
-        .flat_map(|((node, port, mut addr), info)| {
-            vec![
-                (addr.push_imm(node), info),
-                (
-                    {
-                        addr.push(port);
-                        addr
-                    },
-                    info,
-                ),
-            ]
-        })
+        .debug_with("Messages")
 }
