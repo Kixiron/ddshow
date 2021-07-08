@@ -161,24 +161,6 @@ where
                     }
                 },
             )
-            // Note: Replaced by the above `.filter_map()`
-            // .filter(|(_, (_, path))| path.len() >= 2)
-            // .map(
-            //     |(
-            //         (worker, source_addr, _source_port),
-            //         ((target_addr, _target_port), channel_ids_along_path),
-            //     )| {
-            //         (
-            //             worker,
-            //             Channel::ScopeCrossing {
-            //                 channel_id: ChannelId::new(channel_ids_along_path[0].into_inner()),
-            //                 source_addr,
-            //                 target_addr,
-            //             },
-            //         )
-            //     },
-            // )
-            // .map(|(worker, channel)| ((worker, channel.target_addr()), channel))
             .antijoin_arranged(&subgraphs)
             .map(|((worker, _), channel)| (worker, channel))
             .leave_region()
@@ -201,7 +183,7 @@ where
             subgraphs.enter_region(region),
         );
 
-        channels
+        let channels = channels
             .filter_map(|(worker, channel)| {
                 if channel.source[0] != PortId::zero() && channel.target[0] != PortId::zero() {
                     let mut source_addr = channel.scope_addr.clone();
@@ -219,7 +201,9 @@ where
             .map(|((worker, source_addr), (channel_id, target_addr))| {
                 ((worker, target_addr), (channel_id, source_addr))
             })
-            .antijoin_arranged(&subgraphs)
+            .antijoin_arranged(&subgraphs);
+
+        channels
             .map(|((worker, target_addr), (channel_id, source_addr))| {
                 (
                     worker,

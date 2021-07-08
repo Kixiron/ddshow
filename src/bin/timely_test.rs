@@ -132,11 +132,11 @@ fn set_loggers<A: Allocate>(worker: &mut Worker<A>) {
         }
     }
 
-    // if let Ok(dir) = env::var("TIMELY_PROGRESS_DISK_LOG") {
-    //     if !dir.is_empty() {
-    //         ddshow_sink::save_timely_progress_to_disk(worker, &dir).unwrap();
-    //     }
-    // }
+    if let Ok(dir) = env::var("TIMELY_PROGRESS_DISK_LOG") {
+        if !dir.is_empty() {
+            ddshow_sink::save_timely_progress_to_disk(worker, &dir).unwrap();
+        }
+    }
 
     if let Ok(addr) = env::var("TIMELY_LOG_ADDR") {
         if !addr.is_empty() {

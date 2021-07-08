@@ -3,9 +3,10 @@ use crate::{
         constants::DEFAULT_EXTRACTOR_CAPACITY,
         operator_stats::{AggregatedOperatorStats, OperatorStats},
         operators::{CrossbeamExtractor, Fuel},
-        progress_stats::{Channel, ProgressInfo},
+        progress_stats::{Channel, OperatorProgress, ProgressInfo},
         utils::{channel_sink, Diff, Time},
         worker_timeline::TimelineEvent,
+        OperatorShape,
     },
     ui::{DataflowStats, ProgramStats, WorkerStats},
 };
@@ -316,4 +317,6 @@ make_send_recv! {
     name_lookup: NameLookupData,
     addr_lookup: AddrLookupData,
     channel_progress: ChannelProgressData,
+    operator_shapes: OperatorShape,
+    operator_progress: OperatorProgress,
 }

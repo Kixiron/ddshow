@@ -8,6 +8,7 @@ mod progress_stats;
 #[cfg(feature = "timely-next")]
 mod reachability;
 mod send_recv;
+mod shape;
 mod subgraphs;
 mod summation;
 mod tests;
@@ -18,8 +19,10 @@ mod worker_timeline;
 
 pub use constants::PROGRAM_NS_GRANULARITY;
 pub use operator_stats::OperatorStats;
+pub use progress_stats::OperatorProgress;
 pub use progress_stats::{Channel, ProgressInfo};
 pub use send_recv::{DataflowData, DataflowExtractor, DataflowReceivers, DataflowSenders};
+pub use shape::OperatorShape;
 pub use worker::worker_runtime;
 pub use worker_timeline::{EventKind, TimelineEvent};
 
@@ -27,7 +30,7 @@ use crate::{
     args::Args,
     dataflow::{
         operator_stats::AggregatedOperatorStats,
-        operators::{FilterMap, InspectExt, JoinArranged, Multiply, SortBy},
+        operators::{FilterMap, JoinArranged, Multiply, SortBy},
         send_recv::ChannelAddrs,
         subgraphs::rewire_channels,
         utils::{
@@ -102,9 +105,6 @@ where
         timeline_events,
     ) = timely_source::extract_timely_info(scope, timely_stream, args.disable_timeline);
 
-    let channel_progress = progress_stream
-        .map(|progress_stream| progress_stats::aggregate_channel_messages(progress_stream));
-
     // FIXME: `invocations` looks off, figure that out
     let operator_stats =
         operator_stats::operator_stats(scope, &operator_activations, differential_stream);
@@ -131,6 +131,11 @@ where
     let channels = rewire_channels(scope, &raw_channels, &subgraphs_arranged);
     let edges = attach_operators(scope, &raw_operators, &channels, &leaves_arranged);
 
+    let operator_shapes = shape::operator_shapes(&raw_operators, &raw_channels);
+    let operator_progress = progress_stream.map(|progress_stream| {
+        progress_stats::aggregate_channel_messages(progress_stream, &operator_shapes)
+    });
+
     // TODO: Make `extract_timely_info()` get the relevant event information
     // TODO: Grabbing events absolutely shits the bed when it comes to large dataflows,
     //       it needs a serious, intrinsic rework and/or disk backed arrangements
@@ -139,7 +144,6 @@ where
     });
 
     let addressed_operators = raw_operators
-        .debug()
         .map(|(worker, operator)| ((worker, operator.addr.clone()), operator))
         .arrange_by_key_named("ArrangeByKey: Addressed Operators");
 
@@ -175,7 +179,9 @@ where
         timeline_events,
         operator_names,
         operator_ids,
-        channel_progress,
+        None,
+        &operator_shapes,
+        operator_progress.as_ref(),
     );
 
     // TODO: Save ddflow logs
@@ -225,6 +231,8 @@ fn install_data_extraction<S>(
     operator_names: ArrangedVal<S, (WorkerId, OperatorId), String, Diff>,
     operator_ids: ArrangedVal<S, (WorkerId, OperatorId), OperatorAddr, Diff>,
     channel_progress: Option<Collection<S, (OperatorAddr, ProgressInfo), Diff>>,
+    operator_shapes: &Collection<S, OperatorShape, Diff>,
+    operator_progress: Option<&Collection<S, OperatorProgress, Diff>>,
 ) where
     S: Scope<Timestamp = Duration>,
 {
@@ -238,10 +246,18 @@ fn install_data_extraction<S>(
         let addressed_operators = addressed_operators.enter_region(region);
         let aggregated_operator_stats = aggregated_operator_stats.enter_region(region);
         let dataflow_stats = dataflow_stats.enter_region(region);
-        let timeline_events = timeline_events.map(|events| events.enter_region(region));
+        let timeline_events = timeline_events
+            .map(|events| events.enter_region(region))
+            .unwrap_or_else(|| operator::empty(region).as_collection());
         let operator_names = operator_names.enter_region(region);
         let operator_ids = operator_ids.enter_region(region);
-        let channel_progress = channel_progress.map(|channels| channels.enter_region(region));
+        let channel_progress = channel_progress
+            .map(|channels| channels.enter_region(region))
+            .unwrap_or_else(|| operator::empty(region).as_collection());
+        let operator_shapes = operator_shapes.enter_region(region);
+        let operator_progress = operator_progress
+            .map(|progress| progress.enter_region(region))
+            .unwrap_or_else(|| operator::empty(region).as_collection());
 
         let worker_stats = worker_stats
             .map(|(worker, stats)| ((), (worker, stats)))
@@ -271,16 +287,12 @@ fn install_data_extraction<S>(
             (&operator_stats, true),
             (&aggregated_operator_stats, true),
             (&dataflow_stats, true),
-            (
-                &timeline_events.unwrap_or_else(|| operator::empty(region).as_collection()),
-                false,
-            ),
+            (&timeline_events, false),
             (&operator_names, false),
             (&operator_ids, false),
-            (
-                &channel_progress.unwrap_or_else(|| operator::empty(region).as_collection()),
-                true,
-            ),
+            (&channel_progress, true),
+            (&operator_shapes, true),
+            (&operator_progress, true),
         );
     })
 }
@@ -417,7 +429,7 @@ where
             .map(|(addr, ())| addr)
             .leave_region();
 
-        (leaf_operators.debug(), observed_subgraphs.debug())
+        (leaf_operators, observed_subgraphs)
     })
 }
 
