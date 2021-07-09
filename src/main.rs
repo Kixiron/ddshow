@@ -273,7 +273,8 @@ fn main() -> Result<()> {
         html_edges,
         palette_colors,
         timeline_events,
-        data.channel_progress,
+        data.operator_shapes,
+        data.operator_progress,
     )?;
 
     println!(" done!");

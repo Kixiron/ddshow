@@ -2,7 +2,7 @@
 
 use crate::{
     args::Args,
-    dataflow::{ProgressInfo, TimelineEvent as RawTimelineEvent},
+    dataflow::{OperatorProgress, OperatorShape, TimelineEvent as RawTimelineEvent},
 };
 use abomonation_derive::Abomonation;
 use anyhow::{Context as _, Result};
@@ -20,6 +20,7 @@ const D3_JS: &str = include_str!("d3.v5.js");
 const DAGRE_JS: &str = include_str!("dagre-d3.js");
 const ECHARTS_JS: &str = include_str!("echarts.min.js");
 
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     args: &Args,
     nodes: Vec<Node>,
@@ -27,7 +28,8 @@ pub fn render(
     edges: Vec<Edge>,
     palette_colors: Vec<String>,
     timeline_events: Vec<RawTimelineEvent>,
-    channel_progress: Vec<(OperatorAddr, ProgressInfo)>,
+    operator_shapes: Vec<OperatorShape>,
+    operator_progress: Vec<OperatorProgress>,
 ) -> Result<()> {
     let output_dir = &args.output_dir;
     tracing::info!(output_dir = ?output_dir, "writing graph files to disk");
@@ -55,7 +57,8 @@ pub fn render(
         edges,
         palette_colors,
         timeline_events,
-        channel_progress,
+        operator_shapes,
+        operator_progress,
     };
 
     // // TODO: This shouldn't be here
@@ -517,7 +520,8 @@ pub struct GraphData {
     pub edges: Vec<Edge>,
     pub palette_colors: Vec<String>,
     pub timeline_events: Vec<RawTimelineEvent>,
-    pub channel_progress: Vec<(OperatorAddr, ProgressInfo)>,
+    pub operator_shapes: Vec<OperatorShape>,
+    pub operator_progress: Vec<OperatorProgress>,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]

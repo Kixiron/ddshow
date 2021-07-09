@@ -64,9 +64,19 @@
  * }} ProgressInfo
  * 
  * @typedef {{
- *     messages: number;
- *     capability_updates: number;
- * }} ProgressStats
+ *     id: number;
+ *     addr: number[];
+ *     worker: number;
+ *     inputs: number[];
+ *     outputs: number[];
+ * }} OperatorShape
+ * 
+ * @typedef {{
+ *     operator: number;
+ *     worker: number;
+ *     input_messages: [number, [number, number]][];
+ *     output_messages: [number, [number, number]][];
+ * }} OperatorProgress
  * #}
  */
 
@@ -85,8 +95,11 @@ const palette_colors = {{ palette_colors | json_encode() }};
 /** @type {TimelineEvent[]} */
 const timeline_events = {{ timeline_events | json_encode() }};
 
-/** @type {[number[], ProgressInfo][]} */
-const channel_progress = {{ channel_progress | json_encode() }};
+/** @type {OperatorShape[]} */
+const operator_shapes = {{ operator_shapes | json_encode() }};
+
+/** @type {OperatorProgress[]} */
+const operator_progress = {{ operator_progress | json_encode() }};
 
 const dataflow_svg = d3.select("#dataflow-graph");
 const svg = dataflow_svg.append("g");
@@ -135,36 +148,10 @@ const create_error_node = target_addr => {
 
 const slash_regexp = new RegExp("\\\\", "g");
 
-for (const node of raw_nodes) {
-    worker_ids.add(node.worker);
-    operator_addrs.add(node.addr);
-    
-    const node_name = node.name;
-    operator_names.set(node.id, node_name);
-
-    const node_id = format_addr(node.addr);
-    graph.setNode(
-        node_id,
-        {
-            label: `${node_name.replace(slash_regexp, "\\\\")} @ ${node.id}, ${format_addr(node_id)}`,
-            style: `fill: ${node.fill_color}`,
-            labelStyle: `fill: ${node.text_color}`,
-            data: { kind: "Node", ...node },
-        },
-    );
-
-    const parent_addr = format_addr(node.addr.slice(0, node.addr.length - 1));
-    if (!node_id_exists(parent_addr)) {
-        create_error_node(parent_addr);
-    }
-
-    graph.setParent(node_id, parent_addr);
-}
-
 for (const subgraph of raw_subgraphs) {
     worker_ids.add(subgraph.worker);
     operator_addrs.add(subgraph.addr);
-    
+
     const subgraph_name = subgraph.name;
     operator_names.set(subgraph.id, subgraph_name);
 
@@ -187,6 +174,32 @@ for (const subgraph of raw_subgraphs) {
 
         graph.setParent(subgraph_id, parent_addr);
     }
+}
+
+for (const node of raw_nodes) {
+    worker_ids.add(node.worker);
+    operator_addrs.add(node.addr);
+
+    const node_name = node.name;
+    operator_names.set(node.id, node_name);
+
+    const node_id = format_addr(node.addr);
+    graph.setNode(
+        node_id,
+        {
+            label: `${node_name.replace(slash_regexp, "\\\\")} @ ${node.id}, ${node_id}`,
+            style: `fill: ${node.fill_color}`,
+            labelStyle: `fill: ${node.text_color}`,
+            data: { kind: "Node", ...node },
+        },
+    );
+
+    const parent_addr = format_addr(node.addr.slice(0, node.addr.length - 1));
+    if (!node_id_exists(parent_addr)) {
+        create_error_node(parent_addr);
+    }
+
+    graph.setParent(node_id, parent_addr);
 }
 
 for (const edge of raw_edges) {
@@ -257,12 +270,32 @@ svg.selectAll("g.node")
                 min arrangement size: ${node.min_arrangement_size}`;
         }
 
-        const channel_stats = channel_progress.filter(([addr, _]) => node.addr === addr);
-        for (const [_addr, info] of channel_stats) {
-            html += `<br>Produced ${info.produced.messages} messages and \
-                ${info.produced.capability_updates} capability updates
-                <br>and consumed ${info.consumed.messages} messages and \
-                ${info.consumed.capability_updates} capability updates`;
+        let operator_inputs = [];
+        let operator_outputs = [];
+        for (const progress of operator_progress) {
+            if (progress.operator === node.id) {
+                for (const [input_port, [messages, _channel]] of Object.entries(progress.input_messages)) {
+                    if (messages !== 0) {
+                        operator_inputs.push([input_port, messages]);
+                    }
+                }
+
+                for (const [output_port, [messages, _channel]] of Object.entries(progress.output_messages)) {
+                    if (messages !== 0) {
+                        operator_outputs.push([output_port, messages]);
+                    }
+                }
+            }
+        }
+
+        operator_inputs.sort(([port1, _msg1], [port2, _msg2]) => port1 - port2);
+        operator_outputs.sort(([port1, _msg1], [port2, _msg2]) => port1 - port2);
+
+        for (const [port, messages] of operator_inputs) {
+            html += `<br>Consumed ${messages} messages at port ${port}`;
+        }
+        for (const [port, messages] of operator_outputs) {
+            html += `<br>Produced ${messages} messages at port ${port}`;
         }
 
         tooltip
@@ -284,10 +317,11 @@ svg.selectAll("g.edgePath")
             return;
         }
 
+        /** @type Edge */
         const edge = unsafe_edge.data;
 
         const get_node_name = node_addr => {
-            const node = graph.node(node_addr);
+            const node = graph.node(format_addr(node_addr));
 
             let node_name = "";
             if (!node || !node.data || !node.data.name || !node.data.kind || node.data.kind === "Error") {
@@ -304,12 +338,30 @@ svg.selectAll("g.edgePath")
 
         let html = `channel from ${src_name} to ${dest_name}`;
 
-        const channel_stats = channel_progress.find(stats => edge.channel_id === stats[0]);
-        if (channel_stats) {
-            html += `<br>Produced ${channel_stats[1].produced.messages} messages and \
-                ${channel_stats[1].produced.capability_updates} capability updates
-                <br>and consumed ${channel_stats[1].consumed.messages} messages and \
-                ${channel_stats[1].consumed.capability_updates} capability updates`;
+        let channel_inputs = [];
+        let channel_outputs = [];
+        for (const progress of operator_progress) {
+            for (const [input_port, [messages, channel]] of Object.entries(progress.input_messages)) {
+                if (channel === edge.channel_id) {
+                    channel_inputs.push([input_port, messages]);
+                }
+            }
+
+            for (const [output_port, [messages, channel]] of Object.entries(progress.output_messages)) {
+                if (channel === edge.channel_id) {
+                    channel_outputs.push([output_port, messages]);
+                }
+            }
+        }
+
+        channel_inputs.sort(([port1, _msg1], [port2, _msg2]) => port1 - port2);
+        channel_outputs.sort(([port1, _msg1], [port2, _msg2]) => port1 - port2);
+
+        for (const [port, messages] of channel_inputs) {
+            html += `<br>Consumed ${messages} messages from port ${port}`;
+        }
+        for (const [port, messages] of channel_outputs) {
+            html += `<br>Produced ${messages} messages from port ${port}`;
         }
 
         tooltip
@@ -480,9 +532,9 @@ function format_addr(addr) {
     for (const segment of addr) {
         if (started) {
             buf += `, ${segment}`;
-            started = true;
         } else {
             buf += `${segment}`;
+            started = true;
         }
     }
     buf += "]";

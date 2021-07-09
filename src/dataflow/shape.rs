@@ -1,7 +1,4 @@
-use crate::dataflow::{
-    operators::{InspectExt, Keys},
-    Diff,
-};
+use crate::dataflow::{operators::Keys, Diff};
 use abomonation_derive::Abomonation;
 use ddshow_types::{
     timely_logging::{ChannelsEvent, OperatesEvent},
@@ -66,15 +63,12 @@ where
         .arrange_by_key();
     let operator_addrs = operators
         .map(|(worker, operator)| ((worker, operator.addr), operator.id))
-        .debug_with("Operator Addrs")
         .arrange_by_key();
 
-    let inputs = channels
-        .map(|(worker, mut channel)| {
-            channel.scope_addr.push(channel.target[0]);
-            ((worker, channel.scope_addr), channel.target[1])
-        })
-        .debug_with("Operator Inputs");
+    let inputs = channels.map(|(worker, mut channel)| {
+        channel.scope_addr.push(channel.target[0]);
+        ((worker, channel.scope_addr), channel.target[1])
+    });
 
     let mut operator_inputs = inputs
         .join_core(
@@ -89,15 +83,12 @@ where
     operator_inputs = operator_ids
         .antijoin(&operator_inputs.keys())
         .map(|((worker, operator_id), ())| ((worker, operator_id), Vec::new()))
-        .concat(&operator_inputs)
-        .debug_with("Reduced Operator Inputs");
+        .concat(&operator_inputs);
 
-    let outputs = channels
-        .map(|(worker, mut channel)| {
-            channel.scope_addr.push(channel.source[0]);
-            ((worker, channel.scope_addr), channel.source[1])
-        })
-        .debug_with("Operator Outputs");
+    let outputs = channels.map(|(worker, mut channel)| {
+        channel.scope_addr.push(channel.source[0]);
+        ((worker, channel.scope_addr), channel.source[1])
+    });
 
     let mut operator_outputs = outputs
         .join_core(
@@ -112,8 +103,7 @@ where
     operator_outputs = operator_ids
         .antijoin(&operator_outputs.keys())
         .map(|((worker, operator_id), ())| ((worker, operator_id), Vec::new()))
-        .concat(&operator_outputs)
-        .debug_with("Reduced Operator Outputs");
+        .concat(&operator_outputs);
 
     operators
         .map(|(worker, operator)| ((worker, operator.id), operator.addr))
@@ -122,5 +112,4 @@ where
         .map(|((worker, operator_id), ((scope_addr, inputs), outputs))| {
             OperatorShape::new(operator_id, scope_addr, worker, inputs, outputs)
         })
-        .debug_with("Operator Shapes")
 }
