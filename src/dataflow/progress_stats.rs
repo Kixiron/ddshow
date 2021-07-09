@@ -1,5 +1,5 @@
 use crate::dataflow::{
-    operators::{FlatSplit, InspectExt, Keys},
+    operators::{FlatSplit, Keys},
     utils::ProgressLogBundle,
     Diff, OperatorShape,
 };
@@ -10,7 +10,7 @@ use differential_dataflow::{
     AsCollection, Collection,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, iter, time::Duration};
+use std::{iter, time::Duration};
 use timely::dataflow::{Scope, Stream};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
@@ -80,17 +80,17 @@ pub struct OperatorProgress {
     pub operator: OperatorId,
     pub worker: WorkerId,
     /// Input port -> (messages, channel)
-    pub input_messages: BTreeMap<PortId, (isize, ChannelId)>,
+    pub input_messages: Vec<(PortId, (isize, ChannelId))>,
     /// Output port -> (messages, channel)
-    pub output_messages: BTreeMap<PortId, (isize, ChannelId)>,
+    pub output_messages: Vec<(PortId, (isize, ChannelId))>,
 }
 
 impl OperatorProgress {
     pub const fn new(
         operator: OperatorId,
         worker: WorkerId,
-        input_messages: BTreeMap<PortId, (isize, ChannelId)>,
-        output_messages: BTreeMap<PortId, (isize, ChannelId)>,
+        input_messages: Vec<(PortId, (isize, ChannelId))>,
+        output_messages: Vec<(PortId, (isize, ChannelId))>,
     ) -> Self {
         Self {
             operator,
@@ -180,10 +180,7 @@ where
                 (empty, messages)
             }
         });
-
     let (produced, consumed) = (produced.as_collection(), consumed.as_collection());
-    produced.debug_with("Progress Inputs");
-    consumed.debug_with("Progress Outputs");
 
     let shape_ids = shapes
         .map(|shape| ((shape.worker, shape.id), ()))
@@ -217,8 +214,7 @@ where
                     counts.iter().map(|(&count, _)| count).collect::<Vec<_>>(),
                     1isize,
                 ));
-            })
-            .debug_with("Shape Outputs");
+            });
 
     shape_outputs = shape_ids
         .antijoin(&shape_outputs.keys())
@@ -233,7 +229,7 @@ where
                 })
             })
             .join_map(
-                &produced,
+                &consumed,
                 |&(worker, input_port, ref _addr), &operator_id, &(output_port, channel, diff)| {
                     (
                         ((worker, operator_id, input_port, output_port, channel), ()),
@@ -253,8 +249,7 @@ where
                     counts.iter().map(|(&count, _)| count).collect::<Vec<_>>(),
                     1isize,
                 ));
-            })
-            .debug_with("Shape Inputs");
+            });
 
     shape_inputs = shape_ids
         .antijoin(&shape_inputs.keys())
@@ -271,5 +266,4 @@ where
                 outputs.into_iter().collect(),
             )
         })
-        .debug_with("Messages")
 }
