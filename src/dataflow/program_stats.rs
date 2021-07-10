@@ -54,9 +54,6 @@ pub fn aggregate_worker_stats<S>(
 where
     S: Scope<Timestamp = Duration>,
 {
-    subgraph_addresses.as_collection(|&(worker, ref channel), &()| (worker, channel.clone()));
-    operator_addrs_by_self.as_collection(|&(worker, ref addr), &()| (worker, addr.clone()));
-
     let only_operators = operator_addrs_by_self.antijoin_arranged(subgraph_addresses);
     let only_subgraphs = operator_addrs_by_self
         .semijoin_arranged(subgraph_addresses)

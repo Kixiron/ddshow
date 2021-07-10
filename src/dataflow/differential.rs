@@ -8,6 +8,7 @@ use ddshow_types::{differential_logging::DifferentialEvent, OperatorId, WorkerId
 #[cfg(not(feature = "timely-next"))]
 use differential_dataflow::difference::DiffPair;
 use differential_dataflow::{operators::CountTotal, AsCollection, Collection};
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use timely::dataflow::{operators::Enter, Scope, Stream};
 
@@ -108,7 +109,9 @@ where
     })
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
+#[derive(
+    Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation, Deserialize, Serialize,
+)]
 pub struct ArrangementStats {
     pub max_size: usize,
     pub min_size: usize,

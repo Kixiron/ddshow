@@ -18,6 +18,7 @@ use differential_dataflow::{
     trace::implementations::ord::OrdKeySpine,
     Collection,
 };
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, convert::identity, iter::Cycle, time::Duration};
 use strum::{EnumIter, IntoEnumIterator};
 use timely::{
@@ -260,7 +261,7 @@ macro_rules! make_send_recv {
             }
         }
 
-        #[derive(Clone, Debug)]
+        #[derive(Clone, Debug, Serialize, Deserialize)]
         pub struct DataflowData {
             $(pub $name: Vec<$ty>,)*
         }

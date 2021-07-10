@@ -35,7 +35,9 @@ pub struct ChannelCapabilityStats {
     pub invocations: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation, Deserialize, Serialize,
+)]
 pub enum Channel {
     ScopeCrossing {
         /// The channel ids of all channels that are part of this single path

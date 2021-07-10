@@ -70,7 +70,7 @@ pub struct Args {
     /// The path to dump the json data to
     ///
     /// The format is currently unstable, so don't depend on it too hard
-    #[structopt(long)]
+    #[structopt(long, hidden(true))]
     pub dump_json: Option<PathBuf>,
 
     /// The folder to save the target process's logs to
