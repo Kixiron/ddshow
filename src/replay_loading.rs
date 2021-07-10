@@ -734,6 +734,7 @@ pub fn wait_for_input(
 
     tracing::debug!("extracting all remaining data from the dataflow");
     let data = extractor.extract_all();
+    println!(" done!");
 
     Ok(data)
 }

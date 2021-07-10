@@ -1,6 +1,6 @@
 use crate::dataflow::{
     differential::{self, ArrangementStats},
-    operators::{DiffDuration, Max, Maybe, Min},
+    operators::{DiffDuration, HierarchicalReduce, Keys, Max, Maybe, Min},
     summation::{summation, Summation},
     utils::{Diff, DifferentialLogBundle, Time},
     OperatorId, WorkerId,
@@ -8,13 +8,16 @@ use crate::dataflow::{
 use abomonation_derive::Abomonation;
 use differential_dataflow::{
     difference::DiffPair,
-    operators::{CountTotal, Join},
+    operators::{Consolidate, CountTotal, Join, Reduce},
     Collection,
 };
+use serde::{Deserialize, Serialize};
 use std::{iter, time::Duration};
 use timely::dataflow::{operators::Enter, Scope, Stream};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Abomonation)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Abomonation, Deserialize, Serialize,
+)]
 pub struct OperatorStats {
     pub id: OperatorId,
     pub worker: WorkerId,
@@ -30,7 +33,9 @@ pub struct OperatorStats {
     // pub messages_received: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Abomonation)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Abomonation, Deserialize, Serialize,
+)]
 pub struct AggregatedOperatorStats {
     pub id: OperatorId,
     pub max: Duration,
@@ -64,17 +69,35 @@ where
         let execution_statistics =
             summation(&activation_times.map(|(operator, (_start, duration))| (operator, duration)));
 
-        let operator_stats = execution_statistics.map(
-            |(
-                (worker, id),
-                Summation {
-                    max,
-                    min,
-                    total,
-                    average,
-                    count: activations,
-                },
-            )| {
+        let mut activation_durations = activation_times.reduce_named(
+            "Aggregate Activation Times",
+            |_, activations, output| {
+                let mut activations: Vec<_> = activations
+                    .iter()
+                    .map(|&(&activation, _)| activation)
+                    .collect();
+                activations.sort_unstable_by_key(|activation| activation.0);
+
+                output.push((activations, 1));
+            },
+        );
+        activation_durations = activation_durations
+            .map(|(operator, _)| (operator, Vec::new()))
+            .antijoin(&activation_durations.keys())
+            .concat(&activation_durations)
+            .consolidate_named("Consolidate Activation Durations");
+
+        let operator_stats = execution_statistics.join_map(
+            &activation_durations,
+            |&(worker, id),
+             &Summation {
+                 max,
+                 min,
+                 total,
+                 average,
+                 count: activations,
+             },
+             activation_durations| {
                 let stats = OperatorStats {
                     id,
                     worker,
@@ -83,7 +106,8 @@ where
                     average,
                     total,
                     activations,
-                    activation_durations: Vec::new(),
+                    // TODO: Populate this
+                    activation_durations: activation_durations.clone(),
                     arrangement_size: None,
                 };
 
@@ -121,9 +145,40 @@ pub(crate) fn aggregate_operator_stats<S>(
 where
     S: Scope<Timestamp = Time>,
 {
-    let operator_stats = operator_stats.map(|((_worker, operator), stats)| (operator, stats));
+    let operator_stats_without_worker =
+        operator_stats.map(|((_worker, operator), stats)| (operator, stats));
 
-    operator_stats
+    let mut activation_durations = operator_stats
+        .map(|((_, operator), stats)| (operator, stats.activation_durations))
+        .hierarchical_reduce_named(
+            "Aggregate Operator Activation Durations",
+            |_, activations, output| {
+                let activations: Vec<_> = activations
+                    .iter()
+                    .flat_map(|&(activation, _)| activation)
+                    .copied()
+                    .collect();
+
+                output.push((activations, 1));
+            },
+            |_, activations, output| {
+                let mut activations: Vec<_> = activations
+                    .iter()
+                    .flat_map(|&(activation, _)| activation)
+                    .copied()
+                    .collect();
+                activations.sort_unstable_by_key(|activation| activation.0);
+
+                output.push((activations, 1));
+            },
+        );
+    activation_durations = operator_stats
+        .map(|((_, operator), _)| (operator, Vec::new()))
+        .antijoin(&activation_durations.keys())
+        .concat(&activation_durations)
+        .consolidate_named("Consolidate Aggregated Activation Durations");
+
+    let aggregated = operator_stats_without_worker
         .explode(
             |(
                 operator,
@@ -228,19 +283,18 @@ where
 
                 let arrangement_size = {
                     let max_size = Option::from(arrangement_max_size);
-                    let min_size = Option::from(arrangement_min_size);
-                    let batches = Option::from(arrangement_total_batches);
+                    let Min { value: min_size } = Option::from(arrangement_min_size).unwrap_or_else(|| Min::new(0));
+                    let batches = Option::from(arrangement_total_batches).unwrap_or(0isize);
 
-                    max_size
-                        .zip(min_size)
-                        .zip(batches)
-                        .map(|((Max { value: max_size }, Min { value: min_size }), batches): (_, isize)| {
-                            ArrangementStats {
+                    if let Some(Max { value: max_size }) = max_size {
+                          Some(ArrangementStats {
                                 max_size: max_size as usize,
                                 min_size: min_size as usize,
                                 batches: batches as usize,
-                            }
-                        })
+                            })
+                    } else {
+                        None
+                    }
                 };
 
                 let stats = AggregatedOperatorStats {
@@ -256,5 +310,14 @@ where
 
                 (operator, stats)
             },
-        )
+        );
+
+    aggregated.join_map(&activation_durations, |&operator, stats, activations| {
+        let stats = AggregatedOperatorStats {
+            activation_durations: activations.clone(),
+            ..stats.clone()
+        };
+
+        (operator, stats)
+    })
 }

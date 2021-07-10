@@ -61,17 +61,6 @@ pub fn render(
         operator_progress,
     };
 
-    // // TODO: This shouldn't be here
-    // if let Some(json_path) = args.dump_json.as_ref() {
-    //     tracing::info!(json_path = ?json_path, "dumping json to file");
-    //
-    //     let json_file = File::create(json_path)
-    //         .with_context(|| format!("failed to create json file at {}", json_path.display()))?;
-    //
-    //     serde_json::to_writer(BufWriter::new(json_file), &graph_data)
-    //         .context("failed to write json data to file")?;
-    // }
-
     let context =
         Context::from_serialize(graph_data).context("failed to render graph context as json")?;
 
