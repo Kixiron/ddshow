@@ -122,9 +122,9 @@ where
 
                 let modified_stats = operator_stats.join_map(
                     &arrangement_stats,
-                    |&operator, stats, &arrangement_stats| {
+                    |&operator, stats, arrangement_stats| {
                         let mut stats = stats.clone();
-                        stats.arrangement_size = Some(arrangement_stats);
+                        stats.arrangement_size = Some(arrangement_stats.clone());
 
                         (operator, stats)
                     },
@@ -207,15 +207,18 @@ where
                                         DiffPair::new(
                                             Maybe::from(
                                                 arrangement_size
+                                                    .as_ref()
                                                     .map(|arr| Max::new(arr.max_size as isize)),
                                             ),
                                             DiffPair::new(
                                                 Maybe::from(
                                                     arrangement_size
+                                                        .as_ref()
                                                         .map(|arr| Min::new(arr.min_size as isize)),
                                                 ),
                                                 Maybe::from(
                                                     arrangement_size
+                                                        .as_ref()
                                                         .map(|arr| arr.batches as isize),
                                                 ),
                                             ),
@@ -291,6 +294,8 @@ where
                                 max_size: max_size as usize,
                                 min_size: min_size as usize,
                                 batches: batches as usize,
+                                // FIXME: Aggregate all spline levels?
+                                spline_levels: Vec::new(),
                             })
                     } else {
                         None

@@ -297,7 +297,8 @@ fn arrangement_stats(
         .filter_map(|&(operator, ref stats)| {
             stats
                 .arrangement_size
-                .map(|arrange| (operator, stats.clone(), arrange))
+                .as_ref()
+                .map(|arrange| (operator, stats, arrange))
         })
         .collect();
 

@@ -5,6 +5,7 @@ mod logging;
 mod replay_loading;
 mod report;
 mod ui;
+mod vega;
 
 use crate::{
     args::Args,
@@ -122,41 +123,11 @@ fn main() -> Result<()> {
     // Build & emit the textual report
     report::build_report(&*args, &data, &name_lookup, &addr_lookup)?;
 
+    vega::make_data(&args, &data)?;
+
     if let Some(file) = args.dump_json.as_ref() {
         dump_program_json(&*args, file, &data, &name_lookup, &addr_lookup)?;
     }
-
-    // if let Some(path) = args.dump_json.as_ref() {
-    //     let path = path
-    //         .canonicalize()
-    //         .with_context(|| format!("could not canonicalize {}", path.display()))?;
-    //
-    //     if let Some(parent) = path.parent() {
-    //         if let Err(err) = fs::create_dir_all(parent) {
-    //             tracing::warn!(
-    //                 path = ?path,
-    //                 parent = ?parent,
-    //                 "failed to create directory {} for json dump to {}: {:?}",
-    //                 parent.display(),
-    //                 path.display(),
-    //                 err,
-    //             );
-    //         }
-    //     }
-    //
-    //     let file = BufWriter::new(
-    //         File::create(&path).with_context(|| format!("could not open {}", path.display()))?,
-    //     );
-    //
-    //     serde_json::to_writer_pretty(file, &data)
-    //         .with_context(|| format!("could not write json dump to {}", path.display()))?;
-    //
-    //     let mut dump_path = path.display().to_string();
-    //     if cfg!(windows) && dump_path.starts_with(r"\\?\") {
-    //         dump_path.replace_range(..r"\\?\".len(), "");
-    //     }
-    //     println!("Wrote json dump to {}", dump_path);
-    // }
 
     // Extract the data from timely
     let mut subgraph_ids = Vec::new();
