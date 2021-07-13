@@ -7,7 +7,10 @@ use abomonation_derive::Abomonation;
 use ddshow_types::{differential_logging::DifferentialEvent, OperatorId, WorkerId};
 #[cfg(not(feature = "timely-next"))]
 use differential_dataflow::difference::DiffPair;
-use differential_dataflow::{operators::CountTotal, AsCollection, Collection};
+use differential_dataflow::{
+    operators::{CountTotal, Join, Reduce},
+    AsCollection, Collection,
+};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use timely::dataflow::{operators::Enter, Scope, Stream};
@@ -42,6 +45,32 @@ where
                 | DifferentialEvent::TraceShare(_) => None,
             })
             .as_collection();
+
+        let spline_levels = differential_trace
+            .filter_map(|(time, worker, event)| match event {
+                DifferentialEvent::Merge(merge) => merge.complete.map(|complete_size| {
+                    (
+                        ((worker, merge.operator), (time, merge.scale, complete_size)),
+                        time,
+                        1isize,
+                    )
+                }),
+
+                DifferentialEvent::Batch(_)
+                | DifferentialEvent::MergeShortfall(_)
+                | DifferentialEvent::Drop(_)
+                | DifferentialEvent::TraceShare(_) => None,
+            })
+            .as_collection()
+            .reduce(|_, levels, output| {
+                output.push((
+                    levels
+                        .iter()
+                        .flat_map(|&(&scale, diff)| (0..diff).map(move |_| scale))
+                        .collect::<Vec<_>>(),
+                    1isize,
+                ));
+            });
 
         #[cfg(feature = "timely-next")]
         let merge_stats = merge_diffs
@@ -99,23 +128,35 @@ where
                         max_size: max.value as usize,
                         min_size: min.value as usize,
                         batches: batches as usize,
+                        spline_levels: Vec::new(),
                     };
 
                     (key, stats)
                 },
             );
 
-        merge_stats.leave_region()
+        merge_stats
+            .join_map(&spline_levels, |&key, stats, spline_levels| {
+                let stats = ArrangementStats {
+                    spline_levels: spline_levels.clone(),
+                    ..stats.clone()
+                };
+
+                (key, stats)
+            })
+            .leave_region()
     })
 }
 
 #[derive(
-    Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation, Deserialize, Serialize,
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation, Deserialize, Serialize,
 )]
 pub struct ArrangementStats {
     pub max_size: usize,
     pub min_size: usize,
     pub batches: usize,
+    /// Merge time, merge scale and the completed size of the merge
+    pub spline_levels: Vec<(Duration, usize, usize)>,
     // TODO: Max/min/average batch size
     // TODO: Arrangement growth trend (Linear, logarithmic, quadratic, etc.)?
 }

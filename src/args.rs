@@ -97,7 +97,7 @@ pub struct Args {
     pub color: TerminalColor,
 
     /// Enable profiling for ddshow's internal dataflow
-    #[structopt(long)]
+    #[structopt(long, hidden(true))]
     pub dataflow_profiling: bool,
 
     /// Disables dataflow timeline analysis, can vastly improve performance

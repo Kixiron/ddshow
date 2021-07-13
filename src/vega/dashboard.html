@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html>
+
+    <head>
+        <title>DDShow Dashboard</title>
+
+        <meta charset="utf-8" />
+
+        <script src="https://cdn.jsdelivr.net/npm/vega@5.20.2"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vega-lite@5.1.0"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vega-embed@6.17.0"></script>
+    </head>
+
+    <body>
+        <div id="main-viz" style="width: 100%; height: 100%"></div>
+
+        <script type="text/javascript">
+            /**
+            * Formats a duration into a human-readable string
+            * @param {number} input_nanos The input time to format
+            * @returns string The formatted duration
+            */
+            function format_duration(input_nanos) {
+
+                /**
+                * @param {string} buf The buffer to write info
+                * @param {boolean} started Whether or not this is the first in the series
+                * @param {string} name The name of the time unit
+                * @param {number} value The value of the time unit
+                */
+                function item_plural(buf, started, name, value) {
+                    if (value > 0) {
+                        buf += `${value}${name}`;
+                        if (value > 1) {
+                            buf += "s";
+                        }
+
+                        return [true, buf];
+                    } else {
+                        return [started, buf];
+                    }
+                }
+
+                /**
+                * @param {string} buf The buffer to write info
+                * @param {boolean} started Whether or not this is the first in the series
+                * @param {string} name The name of the time unit
+                * @param {number} value The value of the time unit
+                */
+                function item(buf, started, name, value) {
+                    if (value > 0) {
+                        if (started) {
+                            buf += " ";
+                        }
+                        buf += `${value}${name}`;
+
+                        return [true, buf];
+                    } else {
+                        return [started, buf];
+                    }
+                }
+
+                const YEAR = 31_557_600;
+                const MONTH = 2_630_016;
+                const DAY = 86_400;
+                const HOUR = 3_600;
+                const MINUTE = 60;
+                const MILLISECOND = 1_000_000;
+                const MICRO_IN_MILLIS = 1_000;
+                const NANOSECOND = 1_000_000_000;
+
+                let buf = "";
+
+                let secs = Math.trunc(input_nanos / NANOSECOND);
+                let nanos = input_nanos % NANOSECOND;
+
+                if (secs === 0 && nanos === 0) {
+                    return "0s";
+                }
+
+                let years = Math.trunc(secs / YEAR);  // 365.25d
+                let ydays = secs % YEAR;
+                let months = Math.trunc(ydays / MONTH);  // 30.44d
+                let mdays = ydays % MONTH;
+                let days = Math.trunc(mdays / DAY);
+                let day_secs = mdays % DAY;
+                let hours = Math.trunc(day_secs / HOUR);
+                let minutes = Math.trunc(day_secs % HOUR / MINUTE);
+                let seconds = day_secs % MINUTE;
+
+                let millis = Math.trunc(nanos / MILLISECOND);
+                let micros = Math.trunc(nanos / MICRO_IN_MILLIS % MICRO_IN_MILLIS);
+                let nanosec = nanos % MICRO_IN_MILLIS;
+
+                let started = false;
+                [started, buf] = item_plural(buf, started, "year", years);
+                [started, buf] = item_plural(buf, started, "month", months);
+                [started, buf] = item_plural(buf, started, "day", days);
+
+                [started, buf] = item(buf, started, "h", hours);
+                [started, buf] = item(buf, started, "m", minutes);
+                [started, buf] = item(buf, started, "s", seconds);
+                [started, buf] = item(buf, started, "ms", millis);
+                [started, buf] = item(buf, started, "µs", micros);
+                [started, buf] = item(buf, started, "ns", nanosec);
+
+                return buf;
+            }
+
+            const ddshow_spec = {
+                "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+                "data": {
+                    "name": "aggregated_stats",
+                    "values": {{ aggregated_stats | json_encode() }}
+                },
+                "config": {
+                    "customFormatTypes": true
+                },
+                "transform": [
+                    {
+                        "calculate": "[datum.name, datum.id]",
+                        "as": "name_and_id"
+                    }
+                ],
+                "params": [
+                    {
+                        "name": "filter_subgraphs",
+                        "value": false,
+                        "bind": {
+                            "input": "checkbox"
+                        }
+                    },
+                    {
+                        "name": "enable_activation_graphs",
+                        "value": true,
+                        "bind": {
+                            "input": "checkbox"
+                        }
+                    },
+                    {
+                        "name": "enable_compaction_graphs",
+                        "value": true,
+                        "bind": {
+                            "input": "checkbox"
+                        }
+                    }
+                ],
+                "vconcat": [
+                    {
+                        "title": "Total Operator Runtime",
+                        "mark": "bar",
+                        "width": 1000,
+                        "transform": [
+                            {
+                                "filter": "!filter_subgraphs || datum.node_kind != \"Subgraph\""
+                            }
+                        ],
+                        "encoding": {
+                            "y": {
+                                "field": "name_and_id",
+                                "title": "Operator",
+                                "type": "nominal",
+                                "sort": "-x",
+                                "axis": {
+                                    "labelExpr": "join([datum.value[0], datum.value[1]], \", \")"
+                                }
+                            },
+                            "x": {
+                                "field": "total_runtime",
+                                "title": "Total Runtime",
+                                "aggregate": "sum",
+                                "type": "quantitative",
+                                "axis": {
+                                    "formatType": "format_duration"
+                                }
+                            },
+                            "color": {
+                                "field": "name_and_id",
+                                "title": null,
+                                "legend": {
+                                    "labelExpr": "join([datum.value[0], datum.value[1]], \", \")"
+                                }
+                            },
+                            "tooltip": [
+                                {
+                                    "field": "name_and_id[0]",
+                                    "title": "Operator"
+                                },
+                                {
+                                    "field": "name_and_id[1]",
+                                    "title": "Operator ID"
+                                },
+                                {
+                                    "field": "total_runtime",
+                                    "title": "Total Runtime",
+                                    "formatType": "format_duration"
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "title": "Maximum Arrangement Size",
+                        "transform": [
+                            {
+                                "filter": "!filter_subgraphs || datum.node_kind != \"Subgraph\""
+                            },
+                            {
+                                "filter": "datum.max_arrangement_size != null && datum.max_arrangement_size > 0"
+                            },
+                            {
+                                "calculate": "[datum.max_arrangement_size, datum.min_arrangement_size || 0, datum.arrangement_batches || 0]",
+                                "as": "arrangement_stats"
+                            }
+                        ],
+                        "mark": "bar",
+                        "width": 900,
+                        "encoding": {
+                            "y": {
+                                "field": "name_and_id",
+                                "title": "Operator",
+                                "type": "nominal",
+                                "sort": "-x",
+                                "axis": {
+                                    "labelExpr": "join([datum.value[0], datum.value[1]], \", \")"
+                                }
+                            },
+                            "x": {
+                                "field": "max_arrangement_size",
+                                "title": "Arrangement Size",
+                                "aggregate": "sum",
+                                "type": "quantitative"
+                            },
+                            "tooltip": [
+                                {
+                                    "field": "name_and_id[0]",
+                                    "title": "Operator"
+                                },
+                                {
+                                    "field": "name_and_id[1]",
+                                    "title": "Operator ID"
+                                },
+                                {
+                                    "field": "max_arrangement_size",
+                                    "title": "Max Size"
+                                },
+                                {
+                                    "field": "arrangement_stats[1]",
+                                    "title": "Min Size"
+                                },
+                                {
+                                    "field": "arrangement_stats[2]",
+                                    "title": "Batches"
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "title": "Total Arrangement Batches",
+                        "transform": [
+                            {
+                                "filter": "!filter_subgraphs || datum.node_kind != \"Subgraph\""
+                            },
+                            {
+                                "filter": "datum.arrangement_batches != null && datum.arrangement_batches > 0"
+                            },
+                            {
+                                "calculate": "[datum.max_arrangement_size, datum.min_arrangement_size || 0, datum.arrangement_batches || 0]",
+                                "as": "arrangement_stats"
+                            }
+                        ],
+                        "mark": "bar",
+                        "width": 900,
+                        "encoding": {
+                            "y": {
+                                "field": "name_and_id",
+                                "title": "Operator",
+                                "type": "nominal",
+                                "sort": "-x",
+                                "axis": {
+                                    "labelExpr": "join([datum.value[0], datum.value[1]], \", \")"
+                                }
+                            },
+                            "x": {
+                                "field": "arrangement_batches",
+                                "title": "Batches",
+                                "aggregate": "sum",
+                                "type": "quantitative"
+                            },
+                            "tooltip": [
+                                {
+                                    "field": "name_and_id[0]",
+                                    "title": "Operator"
+                                },
+                                {
+                                    "field": "name_and_id[1]",
+                                    "title": "Operator ID"
+                                },
+                                {
+                                    "field": "arrangement_batches",
+                                    "title": "Batches"
+                                },
+                                {
+                                    "field": "max_arrangement_size",
+                                    "title": "Max Size"
+                                },
+                                {
+                                    "field": "arrangement_stats[1]",
+                                    "title": "Min Size"
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "title": "Operator Activation Durations",
+                        "transform": [
+                            {
+                                "filter": "enable_activation_graphs && (!filter_subgraphs || datum.node_kind != \"Subgraph\")"
+                            },
+                            {
+                                "flatten": [
+                                    "activation_durations"
+                                ]
+                            },
+                            {
+                                "calculate": "datum.activation_durations[0]",
+                                "as": "start_time"
+                            },
+                            {
+                                "calculate": "datum.activation_durations[1]",
+                                "as": "duration"
+                            }
+                        ],
+                        "mark": "point",
+                        "width": 1000,
+                        "height": 1000,
+                        "params": [
+                            {
+                                "name": "brush",
+                                "select": {
+                                    "type": "interval",
+                                    "resolve": "union",
+                                    "on": "[mousedown[event.shiftKey], window:mouseup] > window:mousemove!",
+                                    "translate": "[mousedown[event.shiftKey], window:mouseup] > window:mousemove!",
+                                    "zoom": "wheel![event.shiftKey]"
+                                }
+                            },
+                            {
+                                "name": "grid",
+                                "select": {
+                                    "type": "interval",
+                                    "resolve": "global",
+                                    "translate": "[mousedown[!event.shiftKey], window:mouseup] > window:mousemove!",
+                                    "zoom": "wheel![!event.shiftKey]"
+                                },
+                                "bind": "scales"
+                            }
+                        ],
+                        "encoding": {
+                            "x": {
+                                "field": "start_time",
+                                "title": "Time Activated",
+                                "type": "quantitative",
+                                "axis": {
+                                    "formatType": "format_duration"
+                                }
+                            },
+                            "y": {
+                                "field": "duration",
+                                "title": "Activation Duration",
+                                "type": "quantitative",
+                                "axis": {
+                                    "labelAngle": 0,
+                                    "labelAlign": "center",
+                                    "formatType": "format_duration"
+                                }
+                            },
+                            "color": {
+                                "field": "name_and_id",
+                                "type": "nominal",
+                            },
+                            "tooltip": [
+                                {
+                                    "field": "name_and_id[0]",
+                                    "title": "Operator"
+                                },
+                                {
+                                    "field": "name_and_id[1]",
+                                    "title": "Operator ID"
+                                },
+                                {
+                                    "field": "start_time",
+                                    "title": "Activated at",
+                                    "formatType": "format_duration"
+                                },
+                                {
+                                    "field": "duration",
+                                    "title": "Activated for",
+                                    "formatType": "format_duration"
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "title": "Arrangement Compaction",
+                        "transform": [
+                            {
+                                "filter": "enable_compaction_graphs && (!filter_subgraphs || datum.node_kind != \"Subgraph\")"
+                            },
+                            {
+                                "flatten": ["per_worker"]
+                            },
+                            {
+                                "filter": "datum.per_worker[1].spline_levels != null && datum.per_worker[1].spline_levels.length > 0"
+                            },
+                            {
+                                "calculate": "datum.per_worker[1].spline_levels",
+                                "as": "spline_levels"
+                            },
+                            {
+                                "flatten": ["spline_levels"]
+                            },
+                            {
+                                "calculate": "datum.spline_levels[0]",
+                                "as": "merge_time"
+                            },
+                            {
+                                "calculate": "datum.spline_levels[1]",
+                                "as": "merge_scale"
+                            },
+                            {
+                                "calculate": "datum.spline_levels[2]",
+                                "as": "merge_complete_size"
+                            }
+                        ],
+                        "mark": "point",
+                        "encoding": {
+                            "x": {
+                                "field": "merge_scale",
+                                "title": "Merge Scale",
+                                "type": "quantitative"
+                            },
+                            "y": {
+                                "field": "merge_complete_size",
+                                "title": "Completed Merge Size",
+                                "type": "quantitative",
+                                "aggregate": "count"
+                            },
+                            "tooltip": [
+                                {
+                                    "field": "name_and_id[0]",
+                                    "title": "Operator"
+                                },
+                                {
+                                    "field": "name_and_id[1]",
+                                    "title": "Operator ID"
+                                },
+                                {
+                                    "field": "merge_scale",
+                                    "title": "Merge Scale"
+                                },
+                                {
+                                    "field": "merge_complete_size",
+                                    "title": "Completed Merge Size"
+                                },
+                                {
+                                    "field": "merge_time",
+                                    "title": "Merge Occurred At",
+                                    "formatType": "format_duration"
+                                }
+
+                            ]
+                        }
+                    }
+                ]
+            };
+
+            vega.expressionFunction(
+                "format_duration",
+                (datum, params) => format_duration(datum),
+            );
+
+            vegaEmbed(
+                "#main-viz",
+                ddshow_spec,
+                {
+                    logLevel: vega.Debug,
+                    actions: {
+                        export: true,
+                        source: false,
+                        compiled: false,
+                        editor: false,
+                    },
+                },
+            );
+        </script>
+    </body>
+
+</html>
