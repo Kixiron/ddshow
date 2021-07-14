@@ -1,34 +1,40 @@
 //! The [`OperatorAddr`] type
 
 use crate::ids::{OperatorId, PortId};
-#[cfg(feature = "enable_abomonation")]
-use abomonation::Abomonation;
-use bytecheck::handle_error;
-#[cfg(feature = "rkyv")]
-use bytecheck::{CheckBytes, StructCheckError};
-#[cfg(feature = "rkyv")]
-use rkyv_dep::{
-    Archive, Archived, Deserialize as RkyvDeserialize, Fallible, Resolver,
-    Serialize as RkyvSerialize,
-};
-#[cfg(feature = "serde")]
-use serde_dep::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
-#[cfg(feature = "enable_abomonation")]
-use std::io;
 use std::{
     convert::TryFrom,
     fmt::{self, Debug, Display},
     iter::{FromIterator, IntoIterator},
-    mem::{ManuallyDrop, MaybeUninit},
+    mem::ManuallyDrop,
     ops::Deref,
     slice,
 };
 use tinyvec::{ArrayVec, TinyVec};
 
+#[cfg(feature = "enable_abomonation")]
+use abomonation::Abomonation;
+#[cfg(feature = "enable_abomonation")]
+use std::io;
+
+#[cfg(feature = "serde")]
+use serde_dep::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
+
+#[cfg(feature = "rkyv")]
+use rkyv_dep::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+
 // TODO: Change this to use `OperatorId` instead of `usize`
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep", transparent))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep", transparent)
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep", repr(transparent)),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[repr(transparent)]
 pub struct OperatorAddr {
     addr: TinyVec<[OperatorId; 8]>,
@@ -213,90 +219,5 @@ impl Abomonation for OperatorAddr {
             TinyVec::Inline(array) => array.into_inner().extent(),
             TinyVec::Heap(vec) => vec.extent(),
         }
-    }
-}
-
-///An archived `OperatorAddr`
-#[repr(C)]
-pub struct ArchivedOperatorAddr
-where
-    Vec<OperatorId>: Archive,
-{
-    ///The archived counterpart of `OperatorAddr::addr`
-    addr: Archived<Vec<OperatorId>>,
-}
-
-impl<C: ?Sized> CheckBytes<C> for ArchivedOperatorAddr
-where
-    Vec<OperatorId>: Archive,
-    Archived<Vec<OperatorId>>: CheckBytes<C>,
-{
-    type Error = StructCheckError;
-
-    unsafe fn check_bytes<'a>(
-        value: *const Self,
-        context: &mut C,
-    ) -> Result<&'a Self, Self::Error> {
-        let bytes = value.cast::<u8>();
-        <Archived<Vec<OperatorId>> as CheckBytes<C>>::check_bytes(
-            bytes
-                .add(rkyv_dep::offset_of!(ArchivedOperatorAddr, addr))
-                .cast(),
-            context,
-        )
-        .map_err(|e| StructCheckError {
-            field_name: "addr",
-            inner: handle_error(e),
-        })?;
-
-        Ok(&*value)
-    }
-}
-
-/// The resolver for an archived [`OperatorAddr`]
-pub struct OperatorAddrResolver
-where
-    Vec<OperatorId>: Archive,
-{
-    addr: Resolver<Vec<OperatorId>>,
-}
-
-impl Archive for OperatorAddr
-where
-    Vec<OperatorId>: Archive,
-{
-    type Archived = ArchivedOperatorAddr;
-    type Resolver = OperatorAddrResolver;
-
-    #[inline]
-    fn resolve(&self, pos: usize, resolver: Self::Resolver, out: &mut MaybeUninit<Self::Archived>) {
-        self.addr.to_vec().resolve(
-            pos,
-            resolver.addr,
-            rkyv_dep::project_struct!(out: Self::Archived => addr: Archived<Vec<OperatorId>>),
-        );
-    }
-}
-
-impl<S: Fallible + ?Sized> RkyvSerialize<S> for OperatorAddr
-where
-    Vec<OperatorId>: RkyvSerialize<S>,
-{
-    #[inline]
-    fn serialize(&self, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
-        Ok(OperatorAddrResolver {
-            addr: RkyvSerialize::<S>::serialize(&self.addr.to_vec(), serializer)?,
-        })
-    }
-}
-
-impl<D: Fallible + ?Sized> RkyvDeserialize<OperatorAddr, D> for Archived<OperatorAddr>
-where
-    Vec<OperatorId>: Archive,
-    Archived<Vec<OperatorId>>: RkyvDeserialize<Vec<OperatorId>, D>,
-{
-    #[inline]
-    fn deserialize(&self, deserializer: &mut D) -> Result<OperatorAddr, D::Error> {
-        Ok(OperatorAddr::from_vec(self.addr.deserialize(deserializer)?))
     }
 }

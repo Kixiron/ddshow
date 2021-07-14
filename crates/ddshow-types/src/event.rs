@@ -1,24 +1,30 @@
 //! Timely progress events
 
 use crate::WorkerId;
-#[cfg(feature = "enable_abomonation")]
-use abomonation_derive::Abomonation;
-#[cfg(feature = "rkyv")]
-use bytecheck::CheckBytes;
 use core::time::Duration;
-#[cfg(feature = "rkyv")]
-use rkyv_dep as rkyv;
-#[cfg(feature = "rkyv")]
-use rkyv_dep::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-#[cfg(feature = "serde")]
-use serde_dep::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 use timely::dataflow::operators::capture::event::Event as TimelyEvent;
 
+#[cfg(feature = "enable_abomonation")]
+use abomonation_derive::Abomonation;
+
+#[cfg(feature = "rkyv")]
+use rkyv_dep::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+
+#[cfg(feature = "serde")]
+use serde_dep::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct Bundle<D, Id = WorkerId> {
     pub time: Duration,
@@ -59,10 +65,17 @@ impl<D, Id> From<Bundle<D, Id>> for (Duration, Id, D) {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct CapabilityBundle<T> {
     pub time: T,
@@ -89,10 +102,17 @@ impl<T> From<CapabilityBundle<T>> for (T, i64) {
 
 /// Data and progress events of a captured stream.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub enum Event<T, D> {
     /// Progress received via `push_external_progress`

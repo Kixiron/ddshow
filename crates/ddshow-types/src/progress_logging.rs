@@ -4,23 +4,29 @@ use crate::{
     ids::{ChannelId, PortId, WorkerId},
     OperatorAddr,
 };
-#[cfg(feature = "enable_abomonation")]
-use abomonation_derive::Abomonation;
-#[cfg(feature = "rkyv")]
-use bytecheck::CheckBytes;
-#[cfg(feature = "rkyv")]
-use rkyv_dep as rkyv;
-#[cfg(feature = "rkyv")]
-use rkyv_dep::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-#[cfg(feature = "serde")]
-use serde_dep::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 use timely::logging::TimelyProgressEvent as RawTimelyProgressEvent;
 
+#[cfg(feature = "enable_abomonation")]
+use abomonation_derive::Abomonation;
+
+#[cfg(feature = "rkyv")]
+use rkyv_dep::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+
+#[cfg(feature = "serde")]
+use serde_dep::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct TimelyProgressEvent {
     /// `true` if the event is a send, and `false` if it is a receive.
@@ -104,10 +110,17 @@ impl From<RawTimelyProgressEvent> for TimelyProgressEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct MessageUpdate {
     pub node: PortId,
@@ -139,10 +152,17 @@ impl MessageUpdate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct CapabilityUpdate {
     pub node: PortId,

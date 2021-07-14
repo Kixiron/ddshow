@@ -6,16 +6,6 @@ use crate::{
     ids::{ChannelId, OperatorId, PortId},
     OperatorAddr,
 };
-#[cfg(feature = "enable_abomonation")]
-use abomonation_derive::Abomonation;
-#[cfg(feature = "rkyv")]
-use bytecheck::CheckBytes;
-#[cfg(feature = "rkyv")]
-use rkyv_dep as rkyv;
-#[cfg(feature = "rkyv")]
-use rkyv_dep::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-#[cfg(feature = "serde")]
-use serde_dep::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 use std::{fmt::Debug, time::Duration};
 use timely::logging::{
     ApplicationEvent as TimelyApplicationEvent, ChannelsEvent as TimelyChannelsEvent,
@@ -28,11 +18,27 @@ use timely::logging::{
     StartStop as TimelyStartStop,
 };
 
+#[cfg(feature = "rkyv")]
+use rkyv_dep::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+
+#[cfg(feature = "serde")]
+use serde_dep::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
+
+#[cfg(feature = "enable_abomonation")]
+use abomonation_derive::Abomonation;
+
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct OperatesEvent {
     pub id: OperatorId,
@@ -60,10 +66,17 @@ impl From<TimelyOperatesEvent> for OperatesEvent {
 
 /// The creation of a channel between two operators
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct ChannelsEvent {
     /// The id of the channel
@@ -109,10 +122,17 @@ impl From<TimelyChannelsEvent> for ChannelsEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct PushProgressEvent {
     pub op_id: OperatorId,
@@ -128,10 +148,17 @@ impl From<TimelyPushProgressEvent> for PushProgressEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct MessagesEvent {
     /// `true` if send event, `false` if receive event.
@@ -163,10 +190,17 @@ impl From<TimelyMessagesEvent> for MessagesEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub enum StartStop {
     /// Operator starts
@@ -210,10 +244,17 @@ impl From<TimelyStartStop> for StartStop {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct ScheduleEvent {
     pub id: OperatorId,
@@ -231,10 +272,17 @@ impl From<TimelyScheduleEvent> for ScheduleEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct ShutdownEvent {
     pub id: OperatorId,
@@ -250,10 +298,17 @@ impl From<TimelyShutdownEvent> for ShutdownEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct ApplicationEvent {
     pub id: usize,
@@ -272,10 +327,17 @@ impl From<TimelyApplicationEvent> for ApplicationEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct GuardedMessageEvent {
     // TODO: Make this a `RkyvStartStop`?
@@ -292,10 +354,17 @@ impl From<TimelyGuardedMessageEvent> for GuardedMessageEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct GuardedProgressEvent {
     // TODO: Make this a `RkyvStartStop`?
@@ -312,10 +381,17 @@ impl From<TimelyGuardedProgressEvent> for GuardedProgressEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct CommChannelsEvent {
     pub identifier: usize,
@@ -333,10 +409,17 @@ impl From<TimelyCommChannelsEvent> for CommChannelsEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub enum CommChannelKind {
     Progress,
@@ -368,10 +451,17 @@ impl From<TimelyCommChannelKind> for CommChannelKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub struct InputEvent {
     pub start_stop: StartStop,
@@ -394,10 +484,17 @@ impl From<TimelyInputEvent> for InputEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, RkyvSerialize, RkyvDeserialize))]
-#[cfg_attr(feature = "rkyv", archive(strict, derive(CheckBytes)))]
-#[cfg_attr(feature = "serde", derive(SerdeSerialize, SerdeDeserialize))]
-#[cfg_attr(feature = "serde", serde(crate = "serde_dep"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(SerdeSerialize, SerdeDeserialize),
+    serde(crate = "serde_dep")
+)]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(Archive, RkyvSerialize, RkyvDeserialize),
+    archive(crate = "rkyv_dep"),
+    archive_attr(derive(bytecheck::CheckBytes))
+)]
 #[cfg_attr(feature = "enable_abomonation", derive(Abomonation))]
 pub enum ParkEvent {
     Park(Option<Duration>),
