@@ -2,8 +2,8 @@ use crate::dataflow::operators::EventIterator;
 use bytecheck::CheckBytes;
 use ddshow_types::Event;
 use rkyv::{
-    check_archived_root, de::deserializers::AllocDeserializer, validation::DefaultArchiveValidator,
-    AlignedVec, Archive, Deserialize,
+    check_archived_root, de::deserializers::SharedDeserializeMap,
+    validation::validators::DefaultValidator, AlignedVec, Archive, Deserialize,
 };
 use std::{
     convert::TryInto,
@@ -22,6 +22,7 @@ pub struct RkyvEventReader<T, D, R> {
     buffer2: AlignedVec,
     consumed: usize,
     peer_finished: bool,
+    shared: SharedDeserializeMap,
     __type: PhantomData<(T, D)>,
 }
 
@@ -35,6 +36,7 @@ impl<T, D, R> RkyvEventReader<T, D, R> {
             buffer2: AlignedVec::new(),
             consumed: 0,
             peer_finished: false,
+            shared: SharedDeserializeMap::new(),
             __type: PhantomData,
         }
     }
@@ -44,9 +46,9 @@ impl<T, D, R> EventIterator<T, D> for RkyvEventReader<T, D, R>
 where
     R: Read,
     T: Archive,
-    T::Archived: Deserialize<T, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
+    T::Archived: Deserialize<T, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
     D: Archive,
-    D::Archived: Deserialize<D, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
+    D::Archived: Deserialize<D, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
 {
     fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<TimelyEvent<T, D>>> {
         if self.peer_finished && self.buffer1[self.consumed..].is_empty() && self.buffer2.is_empty()
@@ -82,16 +84,35 @@ where
                 // return Ok(Some(event.into()));
 
                 match check_archived_root::<Event<T, D>>(slice) {
-                    Ok(archive) => {
-                        let event = archive
-                            .deserialize(&mut AllocDeserializer)
-                            .unwrap_or_else(|unreachable| match unreachable {})
-                            .into();
+                    Ok(archive) => match archive.deserialize(&mut self.shared) {
+                        Ok(event) => {
+                            let event: Event<T, D> = event;
+                            let event = TimelyEvent::from(event);
 
-                        self.consumed += alignment_offset + archive_length + mem::size_of::<u128>();
+                            self.consumed +=
+                                alignment_offset + archive_length + mem::size_of::<u128>();
 
-                        return Ok(Some(event));
-                    }
+                            return Ok(Some(event));
+                        }
+
+                        Err(err) => {
+                            tracing::error!(
+                                type_name = std::any::type_name::<Event<T, D>>(),
+                                consumed = self.consumed,
+                                alignment_offset = alignment_offset,
+                                archive_length = archive_length,
+                                header_size = mem::size_of::<u128>(),
+                                new_consumed = self.consumed
+                                    + alignment_offset
+                                    + archive_length
+                                    + mem::size_of::<u128>(),
+                                "failed to deserialize archived event: {:?}",
+                                err,
+                            );
+
+                            panic!("failed to check archived event: {:?}", err);
+                        }
+                    },
 
                     Err(err) => {
                         tracing::error!(
@@ -141,9 +162,9 @@ impl<T, D, R> Iterator for RkyvEventReader<T, D, R>
 where
     R: Read,
     T: Archive,
-    T::Archived: Deserialize<T, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
+    T::Archived: Deserialize<T, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
     D: Archive,
-    D::Archived: Deserialize<D, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
+    D::Archived: Deserialize<D, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
 {
     type Item = TimelyEvent<T, D>;
 
@@ -160,6 +181,15 @@ impl<T, D, R> Debug for RkyvEventReader<T, D, R> {
             .field("peer_finished", &self.peer_finished)
             .finish()
     }
+}
+
+// FIXME: https://github.com/djkoloski/rkyv/issues/174
+unsafe impl<T, D, R> Send for RkyvEventReader<T, D, R>
+where
+    T: Send,
+    D: Send,
+    R: Send,
+{
 }
 
 #[cfg(test)]

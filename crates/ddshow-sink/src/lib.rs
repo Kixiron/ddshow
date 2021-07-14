@@ -2,7 +2,7 @@ mod batch_logger;
 mod writer;
 
 pub use batch_logger::BatchLogger;
-pub use writer::EventWriter;
+pub use writer::{EventSerializer, EventWriter};
 
 #[cfg(feature = "ddflow")]
 use ddshow_types::differential_logging::DifferentialEvent;

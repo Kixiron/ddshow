@@ -16,14 +16,22 @@ tracing = ["tracing_dep"]
 
 [dependencies]
 byteorder = "1.4.3"
-bytecheck = "0.5.2"
-rkyv = { version = "0.6.6", features = ["validation"] } # TODO: "strict"
+bytecheck = "0.6.1"
 timely = { version = "0.12.0", default-features = false }
 differential-dataflow = { version = "0.12.0", default-features = false, optional = true }
-ddshow-types = { version = "0.1.1", path = "../ddshow-types", features = ["rkyv", "enable_abomonation"] }
 
-[dependencies.tracing_dep]
-package = "tracing"
-version = "0.1.26"
-optional = true
-default-features = false
+    [dependencies.rkyv]
+    version = "0.7.2"
+    # TODO: "strict"
+    features = ["validation", "tinyvec", "tinyvec_alloc"]
+
+    [dependencies.ddshow-types]
+    version = "0.1.1"
+    path = "../ddshow-types"
+    features = ["rkyv", "enable_abomonation"]
+
+    [dependencies.tracing_dep]
+    package = "tracing"
+    version = "0.1.26"
+    optional = true
+    default-features = false

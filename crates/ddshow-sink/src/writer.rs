@@ -1,21 +1,39 @@
 use bytecheck::CheckBytes;
 use ddshow_types::Event;
 use rkyv::{
-    ser::{serializers::AlignedSerializer, Serializer},
-    validation::DefaultArchiveValidator,
+    ser::{
+        serializers::{
+            AlignedSerializer, AllocScratch, CompositeSerializer, FallbackScratch, HeapScratch,
+            SharedSerializeMap,
+        },
+        Serializer,
+    },
+    validation::validators::DefaultValidator,
     AlignedVec, Serialize,
 };
-use std::{fmt::Debug, io::Write, marker::PhantomData, mem};
+use std::{
+    fmt::{self, Debug},
+    io::Write,
+    marker::PhantomData,
+    mem,
+};
 use timely::dataflow::operators::capture::event::{
     Event as TimelyEvent, EventPusher as TimelyEventPusher,
 };
 
+pub type EventSerializer<'a> = CompositeSerializer<
+    AlignedSerializer<&'a mut AlignedVec>,
+    FallbackScratch<HeapScratch<2048>, AllocScratch>,
+    SharedSerializeMap,
+>;
+
 /// A wrapper for a writer that serializes [`rkyv`] encoded types that are FFI compatible
-#[derive(Debug)]
 pub struct EventWriter<T, D, W> {
     stream: W,
     buffer: AlignedVec,
     position: usize,
+    scratch: FallbackScratch<HeapScratch<2048>, AllocScratch>,
+    shared: SharedSerializeMap,
     __type: PhantomData<(T, D)>,
 }
 
@@ -26,6 +44,8 @@ impl<T, D, W> EventWriter<T, D, W> {
             stream,
             buffer: AlignedVec::with_capacity(512),
             position: 0,
+            scratch: FallbackScratch::default(),
+            shared: SharedSerializeMap::new(),
             __type: PhantomData,
         }
     }
@@ -34,10 +54,10 @@ impl<T, D, W> EventWriter<T, D, W> {
 impl<T, D, W> TimelyEventPusher<T, D> for EventWriter<T, D, W>
 where
     W: Write,
-    T: for<'a> Serialize<AlignedSerializer<&'a mut AlignedVec>> + Debug,
-    T::Archived: CheckBytes<DefaultArchiveValidator>,
-    D: for<'a> Serialize<AlignedSerializer<&'a mut AlignedVec>> + Debug,
-    D::Archived: CheckBytes<DefaultArchiveValidator>,
+    T: for<'a> Serialize<EventSerializer<'a>> + Debug,
+    T::Archived: for<'a> CheckBytes<DefaultValidator<'a>>,
+    D: for<'a> Serialize<EventSerializer<'a>> + Debug,
+    D::Archived: for<'a> CheckBytes<DefaultValidator<'a>>,
 {
     fn push(&mut self, event: TimelyEvent<T, D>) {
         let event: Event<T, D> = event.into();
@@ -67,10 +87,23 @@ where
         // Write archive
         self.buffer.clear();
 
-        let mut serializer = AlignedSerializer::new(&mut self.buffer);
-        serializer
-            .serialize_value(&event)
-            .unwrap_or_else(|unreachable| match unreachable {});
+        let mut serializer = CompositeSerializer::new(
+            AlignedSerializer::new(&mut self.buffer),
+            // FIXME: Get implementations to allow using `&mut`s within `CompositeSerializer`
+            mem::take(&mut self.scratch),
+            mem::take(&mut self.shared),
+        );
+
+        if let Err(err) = serializer.serialize_value(&event) {
+            #[cfg(feature = "tracing")]
+            tracing_dep::error!("failed to serialize event: {:?}", err);
+
+            return;
+        }
+
+        let (serializer, scratch, shared) = serializer.into_components();
+        self.scratch = scratch;
+        self.shared = shared;
 
         let archive_len = serializer.pos() as u128;
         let result = self
@@ -91,5 +124,18 @@ where
         }
 
         self.position += mem::size_of::<u128>() + archive_len as usize;
+    }
+}
+
+// FIXME: https://github.com/djkoloski/rkyv/issues/173
+impl<T, D, W> Debug for EventWriter<T, D, W> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EventWriter")
+            .field("stream", &(&self.stream as *const W))
+            .field("buffer", &self.buffer)
+            .field("position", &self.position)
+            .field("fallback", &(&self.scratch as *const _))
+            .field("shared", &(&self.shared as *const _))
+            .finish()
     }
 }

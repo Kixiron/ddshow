@@ -30,7 +30,7 @@ tera = "1.6.1"
 anyhow = "1.0.38"
 tracing = "0.1.25"
 colorous = "1.0.3"
-bytecheck = "0.5.2"
+bytecheck = "0.6.1"
 byteorder = "1.4.3"
 structopt = "0.3.21"
 serde_json = "1.0.64"
@@ -42,17 +42,28 @@ abomonation_derive = "0.5.0"
 tracing-subscriber = "0.2.16"
 strum = { version = "0.21.0", features = ["derive"] }
 serde = { version = "1.0.123", features = ["derive"] }
-rkyv = { version = "0.6.7", features = ["validation"] } # TODO: "strict"
 tinyvec = { version = "1.2.0", features = ["alloc", "serde"] }
 indicatif = { version = "0.16.2", features = ["improved_unicode"] }
-
-ddshow-sink = { version = "0.1.1", path="crates/ddshow-sink", features = ["ddflow", "tracing"] }
-ddshow-types = { version = "0.1.1", path="crates/ddshow-types", features = ["rkyv", "serde", "enable_abomonation"] }
 
 timely = "0.12.0"
 differential-dataflow = { version = "0.12.0", default-features = false }
 # timely = { git = "https://github.com/TimelyDataflow/timely-dataflow" }
 # differential-dataflow = { git = "https://github.com/TimelyDataflow/differential-dataflow" }
+
+    [dependencies.ddshow-sink]
+    version = "0.1.1"
+    path = "crates/ddshow-sink"
+    features = ["ddflow", "tracing"]
+
+    [dependencies.ddshow-types]
+    version = "0.1.1"
+    path = "crates/ddshow-types"
+    features = ["rkyv", "serde", "enable_abomonation"]
+
+    [dependencies.rkyv]
+    version = "0.7.2"
+    # TODO: "strict" and "copy" once that's stable
+    features = ["validation", "tinyvec", "tinyvec_alloc"]
 
 [dev-dependencies]
 rand = "0.8.0"

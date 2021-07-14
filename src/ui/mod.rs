@@ -94,7 +94,7 @@ pub fn render(
     RkyvDeserialize,
 )]
 #[allow(clippy::upper_case_acronyms)]
-#[archive(strict, derive(CheckBytes))]
+#[archive_attr(derive(CheckBytes))]
 pub struct DDShowStats {
     pub program: ProgramStats,
     // TODO: Should/would these be better as trees?
@@ -140,7 +140,7 @@ pub struct DDShowStats {
     RkyvSerialize,
     RkyvDeserialize,
 )]
-#[archive(strict, derive(CheckBytes))]
+#[archive_attr(derive(CheckBytes))]
 pub struct ProgramStats {
     pub workers: usize,
     pub dataflows: usize,
@@ -181,7 +181,7 @@ pub struct ProgramStats {
     RkyvSerialize,
     RkyvDeserialize,
 )]
-#[archive(strict, derive(CheckBytes))]
+#[archive_attr(derive(CheckBytes))]
 pub struct WorkerStats {
     pub id: WorkerId,
     pub dataflows: usize,
@@ -217,7 +217,7 @@ pub struct WorkerStats {
     RkyvSerialize,
     RkyvDeserialize,
 )]
-#[archive(strict, derive(CheckBytes))]
+#[archive_attr(derive(CheckBytes))]
 pub struct DataflowStats {
     pub id: OperatorId,
     pub addr: OperatorAddr,
@@ -261,7 +261,7 @@ pub struct DataflowStats {
     RkyvSerialize,
     RkyvDeserialize,
 )]
-#[archive(strict, derive(CheckBytes))]
+#[archive_attr(derive(CheckBytes))]
 pub struct NodeStats {
     pub id: OperatorId,
     pub addr: OperatorAddr,
@@ -290,7 +290,7 @@ pub struct NodeStats {
     RkyvSerialize,
     RkyvDeserialize,
 )]
-#[archive(strict, derive(CheckBytes))]
+#[archive_attr(derive(CheckBytes))]
 pub enum NodeKind {
     Operator,
     Subgraph,
@@ -320,7 +320,7 @@ impl Default for NodeKind {
     RkyvSerialize,
     RkyvDeserialize,
 )]
-#[archive(strict, derive(CheckBytes))]
+#[archive_attr(derive(CheckBytes))]
 pub struct Lifespan {
     pub birth: Duration,
     pub death: Duration,
@@ -363,7 +363,7 @@ impl Lifespan {
     RkyvSerialize,
     RkyvDeserialize,
 )]
-#[archive(strict, derive(CheckBytes))]
+#[archive_attr(derive(CheckBytes))]
 pub struct ChannelStats {
     // TODO: Do these two actually even exist?
     pub id: ChannelId,
@@ -392,7 +392,7 @@ pub struct ChannelStats {
     RkyvSerialize,
     RkyvDeserialize,
 )]
-#[archive(strict, derive(CheckBytes))]
+#[archive_attr(derive(CheckBytes))]
 pub enum ChannelKind {
     Ingress,
     Egress,
@@ -435,7 +435,7 @@ impl Default for ChannelKind {
     RkyvSerialize,
     RkyvDeserialize,
 )]
-#[archive(strict, derive(CheckBytes))]
+#[archive_attr(derive(CheckBytes))]
 pub struct ArrangementStats {
     pub operator_addr: OperatorAddr,
     pub size_stats: AggregatedStats<usize>,
@@ -461,7 +461,7 @@ pub struct ArrangementStats {
     RkyvSerialize,
     RkyvDeserialize,
 )]
-#[archive(strict, derive(CheckBytes))]
+#[archive_attr(derive(CheckBytes))]
 pub struct AggregatedStats<T> {
     pub total: usize,
     pub max: T,
@@ -494,7 +494,7 @@ pub struct AggregatedStats<T> {
     RkyvSerialize,
     RkyvDeserialize,
 )]
-#[archive(strict, derive(CheckBytes))]
+#[archive_attr(derive(CheckBytes))]
 pub struct TimelineEvent {
     pub worker: WorkerId,
     // TODO: Events

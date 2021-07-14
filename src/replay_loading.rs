@@ -17,7 +17,8 @@ use ddshow_types::progress_logging::TimelyProgressEvent;
 use differential_dataflow::logging::DifferentialEvent as RawDifferentialEvent;
 use indicatif::{ProgressBar, ProgressStyle};
 use rkyv::{
-    de::deserializers::AllocDeserializer, validation::DefaultArchiveValidator, Archive, Deserialize,
+    de::deserializers::SharedDeserializeMap, validation::validators::DefaultValidator, Archive,
+    Deserialize,
 };
 use std::{
     collections::HashMap,
@@ -237,9 +238,9 @@ where
     Event<T, D2>: Clone,
     D2: Abomonation + Send + 'static,
     T: Archive + Abomonation + Send + 'static,
-    T::Archived: Deserialize<T, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
+    T::Archived: Deserialize<T, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
     D1: Archive + Send + 'static,
-    D1::Archived: Deserialize<D1, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
+    D1::Archived: Deserialize<D1, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
 {
     let mut num_sources = 0;
 
@@ -530,9 +531,9 @@ pub fn wait_for_rkyv_connections<T, D, A>(
 ) -> Result<ConnectedRkyvSource<T, D, A>>
 where
     T: Archive,
-    T::Archived: Deserialize<T, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
+    T::Archived: Deserialize<T, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
     D: Archive,
-    D::Archived: Deserialize<D, AllocDeserializer> + CheckBytes<DefaultArchiveValidator>,
+    D::Archived: Deserialize<D, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
 {
     progress.set_message(format!(
         "connected to 0/{} socket{}",
@@ -749,15 +750,12 @@ mod tests {
         Args,
     };
     use bytecheck::CheckBytes;
-    use ddshow_sink::{BatchLogger, EventWriter as RkyvEventWriter};
+    use ddshow_sink::{BatchLogger, EventSerializer, EventWriter as RkyvEventWriter};
     use ddshow_types::{
         timely_logging::{InputEvent, StartStop, TimelyEvent},
         WorkerId,
     };
-    use rkyv::{
-        ser::serializers::AlignedSerializer, validation::DefaultArchiveValidator, AlignedVec,
-        Serialize,
-    };
+    use rkyv::{validation::validators::DefaultValidator, Serialize};
     use std::{
         fmt::Debug,
         net::{SocketAddr, TcpStream},
@@ -854,8 +852,8 @@ mod tests {
 
     fn target_program<E>(barrier: Arc<Barrier>, address: SocketAddr, events: Vec<E>)
     where
-        E: for<'a> Serialize<AlignedSerializer<&'a mut AlignedVec>> + Send + Debug + 'static,
-        E::Archived: CheckBytes<DefaultArchiveValidator>,
+        E: for<'a> Serialize<EventSerializer<'a>> + Send + Debug + 'static,
+        E::Archived: for<'a> CheckBytes<DefaultValidator<'a>>,
     {
         thread::spawn(move || {
             barrier.wait();
