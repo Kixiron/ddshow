@@ -173,7 +173,7 @@ impl<K, V> Node<K, V> {
             "┌─┬ "
         } else if total_first {
             "┬ "
-        } else if !self.leaves.is_empty() {
+        } else if !self.leaves.is_empty() && needs_continuity {
             "├─┬ "
         } else {
             "├ "

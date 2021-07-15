@@ -5,6 +5,7 @@ use std::{
     convert::identity,
     fmt::Debug,
     io::{self, Read, Write},
+    iter,
     marker::PhantomData,
     mem,
     panic::Location,
@@ -156,6 +157,7 @@ where
     D: Data,
 {
     /// Replays `self` into the provided scope, as a `Stream<S, D>`.
+    #[track_caller]
     fn replay_with_shutdown_into<S>(
         self,
         scope: &mut S,
@@ -175,6 +177,7 @@ where
         )
     }
 
+    #[track_caller]
     fn replay_with_shutdown_into_named<N, S>(
         self,
         name: N,
@@ -233,12 +236,18 @@ where
         N: Into<String>,
         S: Scope<Timestamp = T>,
     {
-        if let Some(bar) = progress_bar.as_ref() {
-            bar.tick();
-        }
-
         let worker_index = scope.index();
         let caller = Location::caller();
+        let mut event_streams = self.into_iter().collect::<Vec<_>>();
+
+        tracing::trace!(
+            caller = ?caller,
+            worker_index = worker_index,
+            fuel = ?fuel,
+            reactivation_delay = ?reactivation_delay,
+            "started up ReplayWithShutdown instance with {} event streams",
+            event_streams.len(),
+        );
 
         let mut builder = OperatorBuilder::new(
             format!(
@@ -258,7 +267,6 @@ where
         let (targets, stream) = builder.new_output();
 
         let mut output = PushBuffer::new(PushCounter::new(targets));
-        let mut event_streams = self.into_iter().collect::<Vec<_>>();
 
         let mut antichain = MutableAntichain::new();
         let (mut started, mut streams_finished) = (false, vec![false; event_streams.len()]);
@@ -283,9 +291,10 @@ where
                 // our very first action.
                 progress.internals[0]
                     .update(S::Timestamp::minimum(), (event_streams.len() as i64) - 1);
-                antichain.update_iter(
-                    Some((Default::default(), event_streams.len() as i64 - 1)).into_iter(),
-                );
+                antichain.update_iter(iter::once((
+                    S::Timestamp::minimum(),
+                    event_streams.len() as i64 - 1,
+                )));
 
                 started = true;
             }
@@ -302,7 +311,7 @@ where
                                 fuel.exert(1);
 
                                 progress.internals[0].extend(vec.iter().cloned());
-                                antichain.update_iter(vec.into_iter());
+                                antichain.update_iter(vec);
                             }
 
                             Event::Messages(time, mut data) => {

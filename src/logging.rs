@@ -3,7 +3,7 @@ use anyhow::Result;
 use ddshow_sink::{
     DIFFERENTIAL_ARRANGEMENT_LOGGER_NAME, TIMELY_LOGGER_NAME, TIMELY_PROGRESS_LOGGER_NAME,
 };
-use std::{env, net::TcpStream};
+use std::env;
 use timely::{communication::Allocate, worker::Worker};
 use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
@@ -30,43 +30,30 @@ pub(crate) fn init_dataflow_logging<A>(worker: &mut Worker<A>) -> Result<()>
 where
     A: Allocate,
 {
-    let (differential_log_addr, timely_disk_log, _progress_disk_log, differential_disk_log) = (
-        env::var("DIFFERENTIAL_LOG_ADDR"),
+    let (timely_disk_log, _progress_disk_log, differential_disk_log) = (
         env::var("TIMELY_DISK_LOG"),
         env::var("TIMELY_PROGRESS_DISK_LOG"),
         env::var("DIFFERENTIAL_DISK_LOG"),
     );
 
-    if timely_disk_log.as_ref().map_or(true, |dir| dir.is_empty()) {
-        if let Ok(addr) = differential_log_addr {
-            if let Ok(stream) = TcpStream::connect(&addr) {
-                differential_dataflow::logging::enable(worker, stream);
-
-                tracing::info!("connected to differential log stream at {}", addr);
-            } else {
-                anyhow::bail!("Could not connect to differential log address: {:?}", addr);
-            }
+    if let Ok(dir) = timely_disk_log {
+        if !dir.is_empty() {
+            ddshow_sink::save_timely_logs_to_disk(worker, &dir).unwrap();
+            tracing::info!("saving timely logs to {}", dir);
         }
-    } else {
-        if let Ok(dir) = timely_disk_log {
-            if !dir.is_empty() {
-                ddshow_sink::save_timely_logs_to_disk(worker, &dir).unwrap();
-                tracing::info!("saving timely logs to {}", dir);
-            }
-        }
+    }
 
-        // if let Ok(dir) = progress_disk_log {
-        //     if !dir.is_empty() {
-        //         ddshow_sink::save_timely_progress_to_disk(worker, &dir).unwrap();
-        //         tracing::info!("saving timely progress logs to {}", dir);
-        //     }
-        // }
+    // if let Ok(dir) = progress_disk_log {
+    //     if !dir.is_empty() {
+    //         ddshow_sink::save_timely_progress_to_disk(worker, &dir).unwrap();
+    //         tracing::info!("saving timely progress logs to {}", dir);
+    //     }
+    // }
 
-        if let Ok(dir) = differential_disk_log {
-            if !dir.is_empty() {
-                ddshow_sink::save_differential_logs_to_disk(worker, &dir).unwrap();
-                tracing::info!("saving differential logs to {}", dir);
-            }
+    if let Ok(dir) = differential_disk_log {
+        if !dir.is_empty() {
+            ddshow_sink::save_differential_logs_to_disk(worker, &dir).unwrap();
+            tracing::info!("saving differential logs to {}", dir);
         }
     }
 
