@@ -2,7 +2,7 @@ use abomonation_derive::Abomonation;
 #[cfg(feature = "timely-next")]
 use differential_dataflow::difference::Multiply;
 use differential_dataflow::difference::{Monoid, Semigroup};
-use num::Bounded;
+use num_traits::Bounded;
 use ordered_float::OrderedFloat;
 use std::{
     cmp,

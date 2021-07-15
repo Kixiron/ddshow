@@ -2,7 +2,7 @@ use crate::{
     args::{Args, StreamEncoding},
     dataflow::{
         constants::{IDLE_EXTRACTION_FUEL, TCP_READ_TIMEOUT},
-        operators::{EventReader, Fuel, RkyvEventReader},
+        operators::{EventIterator, EventReader, Fuel, RkyvEventReader},
         utils::{self, DifferentialLogBundle, ProgressLogBundle, TimelyLogBundle},
         DataflowData, DataflowReceivers,
     },
@@ -26,7 +26,7 @@ use std::{
     fmt::Debug,
     fs::{self, File},
     hint,
-    io::{self, BufReader, Read, Write},
+    io::{self, BufReader, BufWriter, Read, Write},
     iter,
     net::{SocketAddr, TcpListener, TcpStream},
     num::NonZeroUsize,
@@ -237,9 +237,9 @@ pub fn acquire_replay_sources<T, D1, D2>(
 where
     Event<T, D2>: Clone,
     D2: Abomonation + Send + 'static,
-    T: Archive + Abomonation + Send + 'static,
+    T: Debug + Archive + Abomonation + Send + 'static,
     T::Archived: Deserialize<T, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
-    D1: Archive + Send + 'static,
+    D1: Debug + Archive + Send + 'static,
     D1::Archived: Deserialize<D1, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
 {
     let mut num_sources = 0;
@@ -309,13 +309,36 @@ where
                 progress.set_message(replay_file.display().to_string());
                 progress.inc_length(1);
 
+                if args.debug_replay_files {
+                    let input_file = File::open(&replay_file).with_context(|| {
+                        format!("failed to open {} log file within replay directory", target)
+                    })?;
+                    let mut output_file = BufWriter::new(
+                        File::create(entry.path().with_extension("ddshow.debug"))
+                            .context("failed to create event debug file")?,
+                    );
+
+                    let mut reader =
+                        RkyvEventReader::<T, D1, _>::new(Box::new(BufReader::new(input_file)));
+
+                    let mut is_finished = false;
+                    while !is_finished {
+                        if let Some(event) = EventIterator::next(&mut reader, &mut is_finished)
+                            .context("failed to replay event for debugging")?
+                        {
+                            writeln!(&mut output_file, "{:#?}", event)
+                                .context("failed to write event for debugging")?;
+                        }
+                    }
+                }
+
                 tracing::debug!("loading {} replay from {}", target, replay_file.display());
-                let timely_file = File::open(&replay_file).with_context(|| {
+                let replay_file = File::open(&replay_file).with_context(|| {
                     format!("failed to open {} log file within replay directory", target)
                 })?;
 
                 replays.push(RkyvEventReader::new(
-                    Box::new(BufReader::new(timely_file)) as Box<dyn Read + Send + 'static>
+                    Box::new(BufReader::new(replay_file)) as Box<dyn Read + Send + 'static>
                 ));
 
                 progress.inc(1);
