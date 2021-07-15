@@ -3,11 +3,19 @@ use differential_dataflow::{
     operators::{arrange::ArrangeBySelf, Consolidate, Iterate, Threshold},
     AsCollection,
 };
-use std::{env, fs, net::TcpStream};
+use std::{
+    any::Any,
+    fmt::{self, Display},
+    net::{SocketAddr, TcpStream},
+    num::NonZeroUsize,
+    str::FromStr,
+};
+use structopt::StructOpt;
 use timely::{
-    communication::Allocate,
+    communication::allocator::{Generic, GenericBuilder},
     dataflow::{operators::Exchange, Scope},
     worker::Worker,
+    CommunicationConfig, WorkerConfig,
 };
 use tracing_subscriber::{
     fmt::time::Uptime, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
@@ -18,6 +26,8 @@ type Time = usize;
 type Diff = isize;
 
 fn main() {
+    let args = TestArgs::from_args();
+
     let filter_layer = EnvFilter::from_env("DDSHOW_LOG");
     let fmt_layer = tracing_subscriber::fmt::layer()
         .pretty()
@@ -31,15 +41,14 @@ fn main() {
         .with(fmt_layer)
         .try_init();
 
-    if let Ok(dir) = env::var("TIMELY_DISK_LOG") {
-        let _ = fs::remove_dir_all(dir);
-    }
-    if let Ok(dir) = env::var("DIFFERENTIAL_LOG") {
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    timely::execute_from_args(env::args(), |worker| {
-        set_loggers(worker);
+    let (builders, others, worker_config) = args.timely_config();
+    timely::execute::execute_from(builders, others, worker_config, move |worker| {
+        println!(
+            "started up worker {}/{}",
+            worker.index() + 1,
+            worker.peers(),
+        );
+        args.set_hooks(worker);
 
         // create a new input, exchange data, and inspect its output
         let (mut input, mut probe, mut trace) = worker.dataflow::<Time, _, _>(|scope| {
@@ -109,56 +118,168 @@ fn main() {
             }
 
             input.advance_to(i);
+            input.flush();
+
+            if worker.index() == 0 {
+                println!("ingested epoch {}/{}", i + 1, 100);
+            }
         }
 
-        input.flush();
         worker.step_or_park_while(None, || probe.less_than(input.time()));
+
+        println!("worker {}/{} finished", worker.index() + 1, worker.peers());
     })
     .unwrap();
 }
 
-fn set_loggers<A: Allocate>(worker: &mut Worker<A>) {
-    let use_rkyv = matches!(env::var("DDSHOW_USE_RKYV").as_deref(), Ok("1"));
+#[derive(Debug, Clone, StructOpt)]
+struct TestArgs {
+    #[structopt(long, short = "w")]
+    workers: NonZeroUsize,
 
-    if let Ok(dir) = env::var("TIMELY_DISK_LOG") {
-        if !dir.is_empty() {
-            ddshow_sink::save_timely_logs_to_disk(worker, &dir).unwrap();
+    #[structopt(long)]
+    differential: bool,
+
+    #[structopt(long, default_value = "abomonation")]
+    stream_encoding: StreamEncoding,
+
+    #[structopt(long = "address", default_value = "127.0.0.1:51317")]
+    timely_address: SocketAddr,
+
+    #[structopt(long, default_value = "127.0.0.1:51318")]
+    differential_address: SocketAddr,
+}
+
+impl TestArgs {
+    pub fn timely_config(&self) -> (Vec<GenericBuilder>, Box<dyn Any + Send>, WorkerConfig) {
+        let (builders, others) = match self.workers.get() {
+            0 | 1 => CommunicationConfig::Thread,
+            workers => CommunicationConfig::Process(workers),
         }
+        .try_build()
+        .unwrap();
+
+        let worker_conf = WorkerConfig::default();
+
+        (builders, others, worker_conf)
     }
 
-    if let Ok(dir) = env::var("DIFFERENTIAL_DISK_LOG") {
-        if !dir.is_empty() {
-            ddshow_sink::save_differential_logs_to_disk(worker, &dir).unwrap();
-        }
-    }
+    pub fn set_hooks(&self, worker: &mut Worker<Generic>) {
+        match self.stream_encoding {
+            StreamEncoding::Abomonation => {
+                use differential_dataflow::logging::DifferentialEvent;
+                use timely::{
+                    dataflow::operators::capture::EventWriter,
+                    logging::{BatchLogger, TimelyEvent},
+                };
 
-    if let Ok(dir) = env::var("TIMELY_PROGRESS_DISK_LOG") {
-        if !dir.is_empty() {
-            ddshow_sink::save_timely_progress_to_disk(worker, &dir).unwrap();
-        }
-    }
+                if let Ok(stream) = TcpStream::connect(&self.timely_address) {
+                    println!(
+                        "connected to timely abomonated host at {}",
+                        self.timely_address,
+                    );
 
-    if let Ok(addr) = env::var("TIMELY_LOG_ADDR") {
-        if !addr.is_empty() {
-            if let Ok(stream) = TcpStream::connect(&addr) {
-                ddshow_sink::enable_timely_logging(worker, stream);
-            } else {
-                panic!("Could not connect to differential log address: {:?}", addr);
-            }
-        }
-    }
+                    let writer = EventWriter::new(stream);
+                    let mut logger = BatchLogger::new(writer);
 
-    if let Ok(addr) = env::var("DIFFERENTIAL_LOG_ADDR") {
-        if !addr.is_empty() {
-            if let Ok(stream) = TcpStream::connect(&addr) {
-                if use_rkyv {
-                    ddshow_sink::enable_differential_logging(worker, stream);
+                    worker
+                        .log_register()
+                        .insert::<TimelyEvent, _>("timely", move |time, data| {
+                            logger.publish_batch(time, data)
+                        });
                 } else {
-                    differential_dataflow::logging::enable(worker, stream);
+                    panic!(
+                        "Could not connect timely abomonated logging stream to: {:?}",
+                        self.timely_address,
+                    );
                 }
-            } else {
-                panic!("Could not connect to differential log address: {:?}", addr);
+
+                if self.differential {
+                    if let Ok(stream) = TcpStream::connect(&self.differential_address) {
+                        println!(
+                            "connected to differential abomonated host at {}",
+                            self.differential_address,
+                        );
+
+                        let writer = EventWriter::new(stream);
+                        let mut logger = BatchLogger::new(writer);
+
+                        worker.log_register().insert::<DifferentialEvent, _>(
+                            "differential/arrange",
+                            move |time, data| logger.publish_batch(time, data),
+                        );
+                    } else {
+                        panic!(
+                            "Could not connect differential abomonated logging stream to: {:?}",
+                            self.differential_address,
+                        );
+                    }
+                }
+            }
+
+            StreamEncoding::Rkyv => {
+                if let Ok(stream) = TcpStream::connect(&self.timely_address) {
+                    println!("connected to timely rkyv host at {}", self.timely_address);
+                    ddshow_sink::enable_timely_logging(worker, stream);
+                } else {
+                    panic!(
+                        "Could not connect timely rkyv logging stream to: {:?}",
+                        self.timely_address,
+                    );
+                }
+
+                if self.differential {
+                    if let Ok(stream) = TcpStream::connect(&self.differential_address) {
+                        println!(
+                            "connected to differential rkyv host at {}",
+                            self.differential_address,
+                        );
+                        ddshow_sink::enable_differential_logging(worker, stream);
+                    } else {
+                        panic!(
+                            "Could not connect differential rkyv logging stream to: {:?}",
+                            self.differential_address,
+                        );
+                    }
+                }
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StreamEncoding {
+    Abomonation,
+    Rkyv,
+}
+
+impl FromStr for StreamEncoding {
+    type Err = String;
+
+    fn from_str(string: &str) -> Result<Self, Self::Err> {
+        let lowercase = string.to_lowercase();
+        match lowercase.as_str() {
+            "abomonation" => Ok(Self::Abomonation),
+            "rkyv" => Ok(Self::Rkyv),
+            _ => Err(format!(
+                "invalid terminal color {:?}, only `rkyv` and `abomonation` are supported",
+                string,
+            )),
+        }
+    }
+}
+
+impl Display for StreamEncoding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Abomonation => f.write_str("abomonation"),
+            Self::Rkyv => f.write_str("rkyv"),
+        }
+    }
+}
+
+impl Default for StreamEncoding {
+    fn default() -> Self {
+        Self::Abomonation
     }
 }

@@ -383,12 +383,20 @@ where
     } else {
         let listener = listener.expect("a listener must be supplied for stream sources");
 
+        tracing::debug!(
+            stream_encoding = ?args.stream_encoding,
+            address = ?address,
+            connections = ?connections,
+            "connecting to source of encoding {}",
+            args.stream_encoding,
+        );
+
         let source = match args.stream_encoding {
             StreamEncoding::Abomonation => {
-                wait_for_abominated_connections(listener, &address, connections, &progress)?
+                wait_for_abominated_connections(args, listener, &address, connections, &progress)?
             }
             StreamEncoding::Rkyv => {
-                wait_for_rkyv_connections(listener, &address, connections, &progress)?
+                wait_for_rkyv_connections(args, listener, &address, connections, &progress)?
             }
         };
 
@@ -484,6 +492,7 @@ pub fn make_streams<R, A>(
 /// in non-blocking mode
 #[tracing::instrument(skip(progress))]
 pub fn wait_for_abominated_connections<T, D, R>(
+    args: &Args,
     listener: TcpListener,
     addr: &SocketAddr,
     connections: NonZeroUsize,
@@ -494,6 +503,12 @@ where
     T: Abomonation + Send + 'static,
     D: Abomonation + Send + 'static,
 {
+    assert_eq!(
+        args.stream_encoding,
+        StreamEncoding::Abomonation,
+        "abominated connections come from abominated stream encodings",
+    );
+
     progress.set_message(format!(
         "connected to 0/{} socket{}",
         connections,
@@ -520,6 +535,7 @@ where
 
             tracing::info!(
                 socket = ?socket,
+                stream_encoding = ?StreamEncoding::Abomonation,
                 "connected to socket {}/{}",
                 idx + 1,
                 connections,
@@ -547,6 +563,7 @@ type ConnectedRkyvSource<T, D, A> =
 /// in non-blocking mode
 #[tracing::instrument(skip(progress))]
 pub fn wait_for_rkyv_connections<T, D, A>(
+    args: &Args,
     listener: TcpListener,
     addr: &SocketAddr,
     connections: NonZeroUsize,
@@ -558,6 +575,12 @@ where
     D: Archive,
     D::Archived: Deserialize<D, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
 {
+    assert_eq!(
+        args.stream_encoding,
+        StreamEncoding::Rkyv,
+        "rkyv connections come from rkyv stream encodings",
+    );
+
     progress.set_message(format!(
         "connected to 0/{} socket{}",
         connections,

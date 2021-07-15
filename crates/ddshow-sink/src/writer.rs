@@ -110,7 +110,11 @@ where
             .stream
             // This will keep 16-byte alignment because archive_len is a u128
             .write_all(&archive_len.to_le_bytes())
-            .and_then(|_| self.stream.write_all(&self.buffer));
+            .and_then(|()| {
+                self.position += mem::size_of::<u128>();
+                self.stream.write_all(&self.buffer)
+            })
+            .map(|()| self.position += archive_len as usize);
 
         if let Err(err) = result {
             #[cfg(feature = "tracing")]
@@ -119,11 +123,7 @@ where
                 "failed to write buffer data to stream: {:?}",
                 err,
             );
-
-            return;
         }
-
-        self.position += mem::size_of::<u128>() + archive_len as usize;
     }
 }
 

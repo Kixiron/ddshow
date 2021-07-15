@@ -1,6 +1,12 @@
 pub use colorous::Gradient;
 
-use std::{net::SocketAddr, num::NonZeroUsize, path::PathBuf, str::FromStr};
+use std::{
+    fmt::{self, Display},
+    net::SocketAddr,
+    num::NonZeroUsize,
+    path::PathBuf,
+    str::FromStr,
+};
 use structopt::StructOpt;
 use timely::{CommunicationConfig, WorkerConfig};
 
@@ -200,6 +206,15 @@ impl FromStr for StreamEncoding {
                 "invalid terminal color {:?}, only `rkyv` and `abomonation` are supported",
                 string,
             )),
+        }
+    }
+}
+
+impl Display for StreamEncoding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Abomonation => f.write_str("abomonation"),
+            Self::Rkyv => f.write_str("rkyv"),
         }
     }
 }
