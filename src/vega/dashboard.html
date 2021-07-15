@@ -116,12 +116,6 @@
                 "config": {
                     "customFormatTypes": true
                 },
-                "transform": [
-                    {
-                        "calculate": "[datum.name, datum.id]",
-                        "as": "name_and_id"
-                    }
-                ],
                 "params": [
                     {
                         "name": "filter_subgraphs",
@@ -143,6 +137,26 @@
                         "bind": {
                             "input": "checkbox"
                         }
+                    },
+                    {
+                        "name": "operators_to_display",
+                        "value": 10,
+                        "bind": {
+                            "input": "range",
+                            "min": 1,
+                            // TODO: Get a dynamic max
+                            "max": 1000,
+                            "step": 1,
+                        }
+                    }
+                ],
+                "transform": [
+                    {
+                        "calculate": "[datum.name, datum.id]",
+                        "as": "name_and_id"
+                    },
+                    {
+                        "filter": "!filter_subgraphs || datum.node_kind != \"Subgraph\""
                     }
                 ],
                 "vconcat": [
@@ -152,7 +166,14 @@
                         "width": 1000,
                         "transform": [
                             {
-                                "filter": "!filter_subgraphs || datum.node_kind != \"Subgraph\""
+                                "window": [{
+                                    "op": "rank",
+                                    "as": "rank"
+                                }],
+                                "sort": [{ "field": "total_runtime", "order": "descending" }]
+                            },
+                            {
+                                "filter": "datum.rank <= operators_to_display"
                             }
                         ],
                         "encoding": {
@@ -168,7 +189,6 @@
                             "x": {
                                 "field": "total_runtime",
                                 "title": "Total Runtime",
-                                "aggregate": "sum",
                                 "type": "quantitative",
                                 "axis": {
                                     "formatType": "format_duration"
@@ -198,14 +218,22 @@
                             ]
                         }
                     },
+                    // TODO: hconcat these two
                     {
                         "title": "Maximum Arrangement Size",
                         "transform": [
                             {
-                                "filter": "!filter_subgraphs || datum.node_kind != \"Subgraph\""
+                                "filter": "datum.max_arrangement_size != null && datum.max_arrangement_size > 0"
                             },
                             {
-                                "filter": "datum.max_arrangement_size != null && datum.max_arrangement_size > 0"
+                                "window": [{
+                                    "op": "rank",
+                                    "as": "rank"
+                                }],
+                                "sort": [{ "field": "max_arrangement_size", "order": "descending" }]
+                            },
+                            {
+                                "filter": "datum.rank <= operators_to_display"
                             },
                             {
                                 "calculate": "[datum.max_arrangement_size, datum.min_arrangement_size || 0, datum.arrangement_batches || 0]",
@@ -227,7 +255,6 @@
                             "x": {
                                 "field": "max_arrangement_size",
                                 "title": "Arrangement Size",
-                                "aggregate": "sum",
                                 "type": "quantitative"
                             },
                             "tooltip": [
@@ -258,10 +285,17 @@
                         "title": "Total Arrangement Batches",
                         "transform": [
                             {
-                                "filter": "!filter_subgraphs || datum.node_kind != \"Subgraph\""
+                                "filter": "datum.arrangement_batches != null && datum.arrangement_batches > 0"
                             },
                             {
-                                "filter": "datum.arrangement_batches != null && datum.arrangement_batches > 0"
+                                "window": [{
+                                    "op": "rank",
+                                    "as": "rank"
+                                }],
+                                "sort": [{ "field": "arrangement_batches", "order": "descending" }]
+                            },
+                            {
+                                "filter": "datum.rank <= operators_to_display"
                             },
                             {
                                 "calculate": "[datum.max_arrangement_size, datum.min_arrangement_size || 0, datum.arrangement_batches || 0]",
@@ -313,9 +347,6 @@
                     {
                         "title": "Operator Activation Durations",
                         "transform": [
-                            {
-                                "filter": "enable_activation_graphs && (!filter_subgraphs || datum.node_kind != \"Subgraph\")"
-                            },
                             {
                                 "flatten": [
                                     "activation_durations"
@@ -404,7 +435,7 @@
                         "title": "Arrangement Compaction",
                         "transform": [
                             {
-                                "filter": "enable_compaction_graphs && (!filter_subgraphs || datum.node_kind != \"Subgraph\")"
+                                "filter": "enable_compaction_graphs"
                             },
                             {
                                 "flatten": ["per_worker"]

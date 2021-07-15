@@ -80,7 +80,13 @@ pub struct Args {
     /// The directory to replay a recorded set of logs from
     #[structopt(
         long,
-        conflicts_with_all(&["save-logs", "connections", "address", "differential-address", "progress-address"]),
+        conflicts_with_all(&[
+            "save-logs",
+            "connections",
+            "address",
+            "differential-address",
+            "progress-address",
+        ]),
     )]
     pub replay_logs: Option<PathBuf>,
 
@@ -119,6 +125,9 @@ pub struct Args {
     /// Disables ddshow's terminal output
     #[structopt(long, short = "q", hidden(true))]
     pub quiet: bool,
+
+    #[structopt(long, hidden(true), requires("replay-logs"))]
+    pub debug_replay_files: bool,
 }
 
 impl Args {
@@ -168,6 +177,7 @@ impl Default for Args {
             stream_encoding: StreamEncoding::Abomonation,
             report_update_duration: None,
             quiet: false,
+            debug_replay_files: false,
         }
     }
 }
