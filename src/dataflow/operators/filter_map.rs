@@ -53,7 +53,7 @@ where
 
                     output
                         .session(&capability)
-                        .give_iterator(buffer.drain(..).filter_map(|data| logic(data)))
+                        .give_iterator(buffer.drain(..).filter_map(|data| logic(data)));
                 });
             }
         })

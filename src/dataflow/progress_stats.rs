@@ -261,11 +261,6 @@ where
     shape_inputs
         .join(&shape_outputs)
         .map(|((worker, operator), (inputs, outputs))| {
-            OperatorProgress::new(
-                operator,
-                worker,
-                inputs.into_iter().collect(),
-                outputs.into_iter().collect(),
-            )
+            OperatorProgress::new(operator, worker, inputs, outputs)
         })
 }
