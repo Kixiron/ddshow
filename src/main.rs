@@ -20,7 +20,7 @@ use indicatif::MultiProgress;
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io::BufWriter,
+    io::{self, BufWriter},
     path::Path,
     sync::{
         atomic::{AtomicBool, AtomicUsize},
@@ -40,6 +40,13 @@ fn main() -> Result<()> {
     logging::init_logging(&args);
 
     tracing::trace!("initialized and received cli args: {:?}", args);
+
+    if let Some(shell) = args.completions {
+        tracing::trace!("generating completions for {}", shell);
+        Args::clap().gen_completions_to(env!("CARGO_PKG_NAME"), shell, &mut io::stdout());
+
+        return Ok(());
+    }
 
     let (communication_config, worker_config) = args.timely_config();
 

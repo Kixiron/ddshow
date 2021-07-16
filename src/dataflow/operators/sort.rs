@@ -147,16 +147,14 @@ where
     //       by using k-way merges https://en.wikipedia.org/wiki/K-way_merge_algorithm
     //       See also https://docs.rs/itertools/0.10.0/src/itertools/kmerge_impl.rs.html
     input.reduce_named::<_, Vec<(D, R)>, R>("SortByBucket", move |_key, input, output| {
-        let mut data: Vec<(D, R)> = input
-            .iter()
-            .flat_map(|(data, diff)| {
-                data.iter()
-                    .cloned()
-                    .map(move |(data, inner_diff)| (data, diff.clone() * inner_diff))
-            })
-            .collect();
+        let mut data = Vec::with_capacity(input.iter().map(|(data, _)| data.len()).sum());
+        data.extend(input.iter().flat_map(|(data, diff)| {
+            data.iter()
+                .cloned()
+                .map(move |(data, inner_diff)| (data, diff.clone() * inner_diff))
+        }));
 
-        data.sort_by_key(|(data, _diff)| key(data));
+        data.sort_unstable_by_key(|(data, _diff)| key(data));
 
         let mut idx = 0;
         while idx + 1 < data.len() {

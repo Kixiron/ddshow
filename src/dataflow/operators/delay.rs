@@ -1,5 +1,8 @@
-use differential_dataflow::{difference::Semigroup, AsCollection, Collection, Data};
-use std::{collections::HashMap, panic::Location};
+use differential_dataflow::{consolidation, difference::Semigroup, AsCollection, Collection, Data};
+use std::{
+    collections::{BinaryHeap, HashMap},
+    panic::Location,
+};
 use timely::{
     dataflow::{channels::pact::Pipeline, operators::Operator, Scope},
     progress::Timestamp,
@@ -38,6 +41,7 @@ where
 
         let mut elements = HashMap::new();
         let mut idle_buffers = Vec::new();
+        let mut dirty = BinaryHeap::new();
 
         self.inner
             .unary_notify(Pipeline, &name, None, move |input, output, notificator| {
@@ -50,11 +54,16 @@ where
                     assert!(time.time().less_equal(&new_time));
 
                     // Apply the delay to the ddflow collection's timestamps
-                    for (_data, time, _diff) in buffer.iter_mut() {
-                        let new_time = delay(&*time);
-                        debug_assert!(time.less_equal(&new_time));
+                    // FIXME: We probably want to do this in activation time instead of
+                    //        during inputs to try and mitigate input overload
+                    for (_data, differential_time, _diff) in buffer.iter_mut() {
+                        let new_time = delay(&*differential_time);
+                        debug_assert!(
+                            differential_time.less_equal(&new_time),
+                            "new time is greater than the differential time",
+                        );
 
-                        *time = new_time;
+                        *differential_time = new_time;
                     }
 
                     elements
@@ -64,7 +73,34 @@ where
                             Vec::new()
                         })
                         .push(buffer);
+                    dirty.push(new_time);
                 });
+
+                // Perform some cleanup on the data we have just sitting around
+                let mut did_something = false;
+                if let Some(dirty_time) = dirty.pop() {
+                    while !did_something {
+                        if let Some(updates) = elements.get_mut(&dirty_time) {
+                            if let Some(mut consolidated) = updates.pop() {
+                                did_something = true;
+
+                                // FIXME: A k-way merge would be more efficient
+                                consolidated
+                                    .reserve(updates.iter().map(|updates| updates.len()).sum());
+                                for mut updates in updates.drain(..) {
+                                    consolidated.extend(updates.drain(..));
+
+                                    // Give the freshly empty buffer back to the list of
+                                    // idle buffers we maintain
+                                    idle_buffers.push(updates);
+                                }
+
+                                consolidation::consolidate_updates(&mut consolidated);
+                                updates.push(consolidated);
+                            }
+                        }
+                    }
+                }
 
                 // for each available notification, send corresponding set
                 notificator.for_each(|time, _, _| {
@@ -72,11 +108,9 @@ where
                         for mut data in buffers.drain(..) {
                             output.session(&time).give_vec(&mut data);
 
-                            if data.capacity() > 256 {
-                                // Give the freshly empty buffer back to the list of
-                                // idle buffers we maintain
-                                idle_buffers.push(data);
-                            }
+                            // Give the freshly empty buffer back to the list of
+                            // idle buffers we maintain
+                            idle_buffers.push(data);
                         }
                     }
                 });
@@ -93,87 +127,207 @@ where
     }
 }
 
-/*
-struct OverAlignedDurationSoA<D, T> {
-    // TODO: Manual SoA impl for this
-    datum: Vec<D>,
-    times: Vec<T>,
-    // `seconds` and `nanos` will have the same number of elements,
-    // but the lengths of `datum` and `times` indicate the actual
-    // number of user elements
-    seconds: Vec<u64>,
-    nanos: Vec<u32>,
-    // There may be more elements in the `seconds`/`nanos` vec than any other
-    // to allow operating over it simd-wise
-    length: usize,
-}
+#[allow(dead_code)]
+mod simd {
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::{
+        __m256i, _mm256_add_epi32, _mm256_add_epi64, _mm256_and_si256, _mm256_andnot_si256,
+        _mm256_castsi256_si128, _mm256_cmpgt_epi32, _mm256_cvtepu32_epi64,
+        _mm256_extracti128_si256, _mm256_min_epi32, _mm256_or_si256, _mm256_set1_epi32,
+        _mm256_set1_epi64x,
+    };
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::{
+        __m256i, _mm256_add_epi32, _mm256_add_epi64, _mm256_and_si256, _mm256_andnot_si256,
+        _mm256_castsi256_si128, _mm256_cmpgt_epi32, _mm256_cvtepu32_epi64,
+        _mm256_extracti128_si256, _mm256_min_epi32, _mm256_or_si256, _mm256_set1_epi32,
+        _mm256_set1_epi64x,
+    };
 
-impl<D, T> OverAlignedDurationSoA<D, T> {
-    pub const fn new() -> Self {
-        Self {
-            datum: Vec::new(),
-            times: Vec::new(),
-            seconds: Vec::new(),
-            nanos: Vec::new(),
-            length: 0,
-        }
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    #[allow(non_camel_case_types)]
+    type u64x4 = __m256i;
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    #[allow(non_camel_case_types)]
+    type u32x8 = __m256i;
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    const NANOS_PER_SEC: u32 = 1_000_000_000;
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn duration_saturating_add_x86_64_avx2(
+        lhs_seconds1: u64x4,
+        lhs_seconds2: u64x4,
+        lhs_nanos: u32x8,
+        rhs_seconds1: u64x4,
+        rhs_seconds2: u64x4,
+        rhs_nanos: u32x8,
+    ) -> (u64x4, u64x4, u32x8) {
+        let one = _mm256_set1_epi64x(1);
+
+        // Add the left and right hand nanoseconds
+        let nanos = _mm256_add_epi32(lhs_nanos, rhs_nanos);
+        // Clamp the nanosecond values to be a maximum of `NANOS_PER_SEC`
+        let final_nanos = _mm256_min_epi32(nanos, _mm256_set1_epi32(NANOS_PER_SEC as i32));
+
+        // Since x86 doesn't have `>=` for some ungodly reason we have to
+        // use a manual implementation of that uses `x > (MAX - 1)`
+        let max_nanos = _mm256_set1_epi32((NANOS_PER_SEC - 1) as i32);
+        let greater_eq_max_nanos = _mm256_cmpgt_epi32(nanos, max_nanos);
+
+        // Split the higher and lower halves of the comparison lanes
+        // and extend them from 32 to 64 bits so that we can blend
+        // them with our 64 bit values in `seconds1` & `seconds2`
+        let high_greater = _mm256_cvtepu32_epi64(_mm256_extracti128_si256(greater_eq_max_nanos, 1));
+        let low_greater = _mm256_cvtepu32_epi64(_mm256_castsi256_si128(greater_eq_max_nanos));
+
+        // We add 1 to the seconds count unconditionally and then blend the two based
+        // on the comparison mask
+        let seconds1 = _mm256_add_epi64(lhs_seconds1, one);
+        let seconds2 = _mm256_add_epi64(lhs_seconds2, one);
+
+        // Select between `lhs_seconds1`/`lhs_seconds2` and `seconds1`/`seconds2`
+        // based off of `greater_eq_max_nanos` (`high_greater` & `low_greater`)
+        let selected_seconds1 = _mm256_or_si256(
+            _mm256_and_si256(high_greater, seconds1),
+            _mm256_andnot_si256(high_greater, lhs_seconds1),
+        );
+        let selected_seconds2 = _mm256_or_si256(
+            _mm256_and_si256(low_greater, seconds2),
+            _mm256_andnot_si256(low_greater, lhs_seconds2),
+        );
+
+        // Add the selected seconds (left hand seconds + 1 if there
+        // was a nanosecond overflow) and the right hand seconds
+        let final_seconds1 = _mm256_add_epi64(selected_seconds1, rhs_seconds1);
+        let final_seconds2 = _mm256_add_epi64(selected_seconds2, rhs_seconds2);
+
+        (final_seconds1, final_seconds2, final_nanos)
     }
 
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            datum: Vec::with_capacity(capacity),
-            times: Vec::with_capacity(capacity),
-            seconds: Vec::with_capacity(capacity),
-            nanos: Vec::with_capacity(capacity),
-            length: 0,
+    #[cfg(test)]
+    mod tests {
+        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+        use crate::dataflow::operators::delay::simd::{
+            duration_saturating_add_x86_64_avx2, u32x8, u64x4,
+        };
+        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+        use std::{intrinsics::transmute, time::Duration};
+
+        #[cfg(target_arch = "x86")]
+        use core::arch::x86::{_mm256_set_epi32, _mm256_set_epi64x};
+        #[cfg(target_arch = "x86_64")]
+        use core::arch::x86_64::{_mm256_set_epi32, _mm256_set_epi64x};
+
+        #[test]
+        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+        fn x86_64_avx2_add() {
+            if is_x86_feature_detected!("avx2") {
+                let lhs_durations = vec![
+                    Duration::new(0, 5),
+                    Duration::new(5, 10),
+                    Duration::new(10, 15),
+                    Duration::new(50, 55),
+                    Duration::new(100, 0),
+                    Duration::new(200, 45243),
+                    Duration::new(100, 0),
+                    Duration::new(2843, 45645644),
+                ];
+                let rhs_durations = vec![
+                    Duration::new(0, 0),
+                    Duration::new(5, 5),
+                    Duration::new(20, 20),
+                    Duration::new(15, 55),
+                    Duration::new(1, 0),
+                    Duration::new(20, 45),
+                    Duration::new(10870, 90),
+                    Duration::new(23, 9432195),
+                ];
+
+                unsafe {
+                    let lhs_seconds1 = _mm256_set_epi64x(
+                        lhs_durations[0].as_secs() as _,
+                        lhs_durations[1].as_secs() as _,
+                        lhs_durations[2].as_secs() as _,
+                        lhs_durations[3].as_secs() as _,
+                    );
+                    let lhs_seconds2 = _mm256_set_epi64x(
+                        lhs_durations[4].as_secs() as _,
+                        lhs_durations[5].as_secs() as _,
+                        lhs_durations[6].as_secs() as _,
+                        lhs_durations[7].as_secs() as _,
+                    );
+                    let lhs_nanos = _mm256_set_epi32(
+                        lhs_durations[0].subsec_nanos() as _,
+                        lhs_durations[1].subsec_nanos() as _,
+                        lhs_durations[2].subsec_nanos() as _,
+                        lhs_durations[3].subsec_nanos() as _,
+                        lhs_durations[4].subsec_nanos() as _,
+                        lhs_durations[5].subsec_nanos() as _,
+                        lhs_durations[6].subsec_nanos() as _,
+                        lhs_durations[7].subsec_nanos() as _,
+                    );
+
+                    let rhs_seconds1 = _mm256_set_epi64x(
+                        rhs_durations[0].as_secs() as _,
+                        rhs_durations[1].as_secs() as _,
+                        rhs_durations[2].as_secs() as _,
+                        rhs_durations[3].as_secs() as _,
+                    );
+                    let rhs_seconds2 = _mm256_set_epi64x(
+                        rhs_durations[4].as_secs() as _,
+                        rhs_durations[5].as_secs() as _,
+                        rhs_durations[6].as_secs() as _,
+                        rhs_durations[7].as_secs() as _,
+                    );
+                    let rhs_nanos = _mm256_set_epi32(
+                        rhs_durations[0].subsec_nanos() as _,
+                        rhs_durations[1].subsec_nanos() as _,
+                        rhs_durations[2].subsec_nanos() as _,
+                        rhs_durations[3].subsec_nanos() as _,
+                        rhs_durations[4].subsec_nanos() as _,
+                        rhs_durations[5].subsec_nanos() as _,
+                        rhs_durations[6].subsec_nanos() as _,
+                        rhs_durations[7].subsec_nanos() as _,
+                    );
+
+                    let (seconds1, seconds2, nanos) = duration_saturating_add_x86_64_avx2(
+                        lhs_seconds1,
+                        lhs_seconds2,
+                        lhs_nanos,
+                        rhs_seconds1,
+                        rhs_seconds2,
+                        rhs_nanos,
+                    );
+                    let (seconds1, seconds2, nanos) = (
+                        transmute::<u64x4, [u64; 4]>(seconds1),
+                        transmute::<u64x4, [u64; 4]>(seconds2),
+                        transmute::<u32x8, [u32; 8]>(nanos),
+                    );
+
+                    let output_seconds = vec![
+                        Duration::new(seconds1[3], nanos[7]),
+                        Duration::new(seconds1[2], nanos[6]),
+                        Duration::new(seconds1[1], nanos[5]),
+                        Duration::new(seconds1[0], nanos[4]),
+                        Duration::new(seconds2[3], nanos[3]),
+                        Duration::new(seconds2[2], nanos[2]),
+                        Duration::new(seconds2[1], nanos[1]),
+                        Duration::new(seconds2[0], nanos[0]),
+                    ];
+                    let expected_seconds: Vec<_> = lhs_durations
+                        .into_iter()
+                        .zip(rhs_durations)
+                        .map(|(lhs, rhs)| lhs.checked_add(rhs).unwrap_or(Duration::MAX))
+                        .collect();
+
+                    assert_eq!(output_seconds, expected_seconds);
+                }
+            } else {
+                println!("avx2 isn't enabled, skipping test");
+            }
         }
     }
 }
-
-#[cfg(target_arch = "x86_64")]
-use core::arch::x86_64::{
-    __m128i, __m256i, _mm256_add_epi32, _mm256_add_epi64, _mm256_blend_epi32, _mm256_cmpeq_epi32,
-    _mm256_cmpgt_epi32, _mm256_set1_epi32, _mm256_set1_epi64x, _pdep_u32,
-};
-
-#[cfg(target_arch = "x86_64")]
-#[allow(non_camel_case_types)]
-type u64x4 = __m256i;
-
-#[cfg(target_arch = "x86_64")]
-#[allow(non_camel_case_types)]
-type u32x8 = __m256i;
-
-const NANOS_PER_SEC: u32 = 1_000_000_000;
-const ABAB_MASK: u32 = 0b10101010101010101010101010101010;
-const BABA_MASK: u32 = 0b01010101010101010101010101010101;
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2", enable = "bmi2")]
-unsafe fn duration_saturating_add_u64_x86_avx2_bmi2(
-    lhs_seconds1: u64x4,
-    lhs_seconds2: u64x4,
-    lhs_nanos: u32x8,
-    rhs_seconds1: u64x4,
-    rhs_seconds2: u64x4,
-    rhs_nanos: u32x8,
-) -> (u64x4, u64x4, u32x8) {
-    let nanos = _mm256_add_epi32(lhs_nanos, rhs_nanos);
-
-    // Since x86 doesn't have `>=` for some ungodly reason we have to
-    // use a manual implementation of that uses `x > (MAX - 1)`
-    let max_nanos = _mm256_set1_epi32((NANOS_PER_SEC - 1) as i32);
-    let greater_eq_max_nanos = _mm256_cmpgt_epi32(nanos, max_nanos);
-
-    // We add 1 to the seconds count unconditionally and then blend the two based
-    // on the comparison mask
-    let one = _mm256_set1_epi64x(1);
-    let seconds1 = _mm256_add_epi64(lhs_seconds1, one);
-    let seconds2 = _mm256_add_epi64(lhs_seconds2, one);
-
-    // Select between `lhs_seconds1`/`lhs_seconds2` and `seconds1`/`seconds2`
-    // based off of `greater_eq_max_nanos`
-
-    todo!()
-}
-*/

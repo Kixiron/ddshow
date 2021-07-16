@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
     str::FromStr,
 };
-use structopt::StructOpt;
+use structopt::{clap::Shell, StructOpt};
 use timely::{CommunicationConfig, WorkerConfig};
 
 /// Tools for profiling and visualizing Timely Dataflow & Differential Dataflow Programs
@@ -134,6 +134,10 @@ pub struct Args {
 
     #[structopt(long, hidden(true), requires("replay-logs"))]
     pub debug_replay_files: bool,
+
+    /// Generates shell completions for the given shell
+    #[structopt(long, possible_values = &["bash", "fish", "zsh", "powershell", "elvish"])]
+    pub completions: Option<Shell>,
 }
 
 impl Args {
@@ -184,6 +188,7 @@ impl Default for Args {
             report_update_duration: None,
             quiet: false,
             debug_replay_files: false,
+            completions: None,
         }
     }
 }
