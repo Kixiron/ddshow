@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added the `--stream-encoding` CLI arg to allow choosing between Rkyv and Abomonation encoded network streams (Set to `abomonation` by default for compatibility reasons)
 - Added the `--disable-timeline` CLI flag to allow disabling timeline generation, speeding up ddshow and the generated webpage
+- Allowed `--replay-logs` to be given multiple times, allowing multiple target folders to be given
+- Added vega-based dashboard
+- Added the `--completions` arg to allow generating shell completions for ddshow
 
 ### Fixed
 

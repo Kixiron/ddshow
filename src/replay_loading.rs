@@ -30,7 +30,7 @@ use std::{
     iter,
     net::{SocketAddr, TcpListener, TcpStream},
     num::NonZeroUsize,
-    path::Path,
+    path::PathBuf,
     sync::{
         atomic::{self, AtomicBool, AtomicUsize, Ordering},
         Arc, Barrier,
@@ -230,7 +230,7 @@ pub fn acquire_replay_sources<T, D1, D2>(
     listener: Option<TcpListener>,
     connections: NonZeroUsize,
     workers: NonZeroUsize,
-    log_dir: Option<&Path>,
+    log_dirs: Option<&[PathBuf]>,
     file_prefix: &str,
     target: &str,
 ) -> Result<(AcquiredStreams<T, D1, D2>, bool, usize)>
@@ -245,8 +245,13 @@ where
     let mut num_sources = 0;
 
     let plural = if connections.get() == 1 { "" } else { "s" };
-    let prefix = if let Some(log_dir) = log_dir {
-        format!("Loading {} replay from {}", target, log_dir.display(),)
+    let prefix = if let Some(log_dirs) = log_dirs {
+        format!(
+            "Loading {} replays from {} folder{}",
+            target,
+            log_dirs.len(),
+            if log_dirs.len() == 1 { "s" } else { "" },
+        )
     } else {
         tracing::info!(
             "started waiting for {} {} connections on {}",
@@ -275,100 +280,108 @@ where
 
     utils::set_steady_tick(&progress, connections.get());
 
-    let replay_sources = if let Some(log_dir) = log_dir {
+    let replay_sources = if let Some(log_dirs) = log_dirs {
         let mut replays = Vec::with_capacity(connections.get());
 
-        // Load all files in the directory that have the `.ddshow` extension and a
-        // prefix that matches `file_prefix`
-        // TODO: Probably want some sort of method to allow distinguishing between
-        //       different runs saved to the same folder
-        // TODO: Add support for decompressing archived log files
-        let dir = fs::read_dir(log_dir).context("failed to read log directory")?;
-        for entry in dir.into_iter().filter_map(|entry| {
-            entry.map_or_else(
-                |err| {
-                    tracing::error!(dir = ?log_dir, "failed to open file: {:?}", err);
-                    eprintln!("failed to open file: {:?}", err);
+        for log_dir in log_dirs {
+            progress.set_prefix(format!(
+                "Loading {} replay from {}",
+                target,
+                log_dir.display()
+            ));
 
-                    None
-                },
-                Some,
-            )
-        }) {
-            let replay_file = entry.path();
+            // Load all files in the directory that have the `.ddshow` extension and a
+            // prefix that matches `file_prefix`
+            // TODO: Probably want some sort of method to allow distinguishing between
+            //       different runs saved to the same folder
+            // TODO: Add support for decompressing archived log files
+            let dir = fs::read_dir(log_dir).context("failed to read log directory")?;
+            for entry in dir.into_iter().filter_map(|entry| {
+                entry.map_or_else(
+                    |err| {
+                        tracing::error!(dir = ?log_dir, "failed to open file: {:?}", err);
+                        eprintln!("failed to open file: {:?}", err);
 
-            let is_file = entry.file_type().map_or(false, |file| file.is_file());
-            let ends_with_ddshow = replay_file.extension() == Some(OsStr::new("ddshow"));
-            let starts_with_prefix = replay_file
-                .file_name()
-                .and_then(OsStr::to_str)
-                .and_then(|file| file.split('.').next())
-                .map_or(false, |prefix| prefix == file_prefix);
+                        None
+                    },
+                    Some,
+                )
+            }) {
+                let replay_file = entry.path();
 
-            if is_file && ends_with_ddshow && starts_with_prefix {
-                progress.set_message(replay_file.display().to_string());
-                progress.inc_length(1);
+                let is_file = entry.file_type().map_or(false, |file| file.is_file());
+                let ends_with_ddshow = replay_file.extension() == Some(OsStr::new("ddshow"));
+                let starts_with_prefix = replay_file
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .and_then(|file| file.split('.').next())
+                    .map_or(false, |prefix| prefix == file_prefix);
 
-                if args.debug_replay_files {
-                    let input_file = File::open(&replay_file).with_context(|| {
-                        format!("failed to open {} log file within replay directory", target)
-                    })?;
-                    let mut output_file = BufWriter::new(
-                        File::create(entry.path().with_extension("ddshow.debug"))
-                            .context("failed to create event debug file")?,
-                    );
+                if is_file && ends_with_ddshow && starts_with_prefix {
+                    progress.set_message(replay_file.display().to_string());
+                    progress.inc_length(1);
 
-                    let mut reader =
-                        RkyvEventReader::<T, D1, _>::new(Box::new(BufReader::new(input_file)));
+                    if args.debug_replay_files {
+                        let input_file = File::open(&replay_file).with_context(|| {
+                            format!("failed to open {} log file within replay directory", target)
+                        })?;
+                        let mut output_file = BufWriter::new(
+                            File::create(entry.path().with_extension("ddshow.debug"))
+                                .context("failed to create event debug file")?,
+                        );
 
-                    let mut is_finished = false;
-                    while !is_finished {
-                        if let Some(event) = EventIterator::next(&mut reader, &mut is_finished)
-                            .context("failed to replay event for debugging")?
-                        {
-                            writeln!(&mut output_file, "{:#?}", event)
-                                .context("failed to write event for debugging")?;
+                        let mut reader =
+                            RkyvEventReader::<T, D1, _>::new(Box::new(BufReader::new(input_file)));
+
+                        let mut is_finished = false;
+                        while !is_finished {
+                            if let Some(event) = EventIterator::next(&mut reader, &mut is_finished)
+                                .context("failed to replay event for debugging")?
+                            {
+                                writeln!(&mut output_file, "{:#?}", event)
+                                    .context("failed to write event for debugging")?;
+                            }
                         }
                     }
-                }
 
-                tracing::debug!("loading {} replay from {}", target, replay_file.display());
-                let replay_file = File::open(&replay_file).with_context(|| {
-                    format!("failed to open {} log file within replay directory", target)
-                })?;
+                    tracing::debug!("loading {} replay from {}", target, replay_file.display());
+                    let replay_file = File::open(&replay_file).with_context(|| {
+                        format!("failed to open {} log file within replay directory", target)
+                    })?;
 
-                replays.push(RkyvEventReader::new(
-                    Box::new(BufReader::new(replay_file)) as Box<dyn Read + Send + 'static>
-                ));
+                    replays.push(RkyvEventReader::new(
+                        Box::new(BufReader::new(replay_file)) as Box<dyn Read + Send + 'static>
+                    ));
 
-                progress.inc(1);
-                num_sources += 1;
-            } else {
-                tracing::warn!(
-                    dir = ?log_dir,
-                    file = ?replay_file,
-                    is_file = is_file,
-                    ends_with_ddshow = ends_with_ddshow,
-                    starts_with_prefix = starts_with_prefix,
-                    "the file {} didn't match replay file criteria",
-                    replay_file.display(),
-                );
-
-                let reason = if is_file {
-                    "replay files must be files".to_owned()
-                } else if ends_with_ddshow {
-                    "did not end with the `.ddshow` extension".to_owned()
-                } else if starts_with_prefix {
-                    format!("did not start with the prefix {}", file_prefix)
+                    progress.inc(1);
+                    num_sources += 1;
                 } else {
-                    "unknown error".to_owned()
-                };
+                    tracing::warn!(
+                        dir = ?log_dir,
+                        file = ?replay_file,
+                        is_file = is_file,
+                        ends_with_ddshow = ends_with_ddshow,
+                        starts_with_prefix = starts_with_prefix,
+                        "the file {} didn't match replay file criteria",
+                        replay_file.display(),
+                    );
 
-                progress.set_message(format!(
-                    "skipped {}, reason: {}",
-                    replay_file.display(),
-                    reason,
-                ));
+                    let reason = if is_file {
+                        "replay files must be files".to_owned()
+                    } else if ends_with_ddshow {
+                        "did not end with the `.ddshow` extension".to_owned()
+                    } else if starts_with_prefix {
+                        format!("did not start with the prefix {}", file_prefix)
+                    } else {
+                        "unknown error".to_owned()
+                    };
+
+                    progress.set_message(format!(
+                        "skipped {}, reason: {}",
+                        replay_file.display(),
+                        reason,
+                    ));
+                }
             }
         }
 
