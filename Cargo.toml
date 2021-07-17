@@ -28,7 +28,7 @@ timely-next = []
 anyhow = "1.0.38"
 tracing = "0.1.25"
 colorous = "1.0.3"
-bytecheck = "0.6.1"
+bytecheck = "0.6.3"
 byteorder = "1.4.3"
 structopt = "0.3.21"
 num-traits = "0.2.14"
@@ -68,7 +68,7 @@ differential-dataflow = { version = "0.12.0", default-features = false }
     features = ["rkyv", "serde", "enable_abomonation"]
 
     [dependencies.rkyv]
-    version = "0.7.2"
+    version = "0.7.3"
     # TODO: "strict" and "copy" once that's stable
     features = ["validation", "tinyvec", "tinyvec_alloc"]
 

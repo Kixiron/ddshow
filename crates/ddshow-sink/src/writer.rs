@@ -4,12 +4,11 @@ use rkyv::{
     ser::{
         serializers::{
             AlignedSerializer, AllocScratch, CompositeSerializer, FallbackScratch, HeapScratch,
-            SharedSerializeMap,
         },
         Serializer,
     },
     validation::validators::DefaultValidator,
-    AlignedVec, Serialize,
+    AlignedVec, Infallible, Serialize,
 };
 use std::{
     fmt::{self, Debug},
@@ -24,7 +23,7 @@ use timely::dataflow::operators::capture::event::{
 pub type EventSerializer<'a> = CompositeSerializer<
     AlignedSerializer<&'a mut AlignedVec>,
     FallbackScratch<HeapScratch<2048>, AllocScratch>,
-    SharedSerializeMap,
+    Infallible,
 >;
 
 /// A wrapper for a writer that serializes [`rkyv`] encoded types that are FFI compatible
@@ -33,7 +32,6 @@ pub struct EventWriter<T, D, W> {
     buffer: AlignedVec,
     position: usize,
     scratch: FallbackScratch<HeapScratch<2048>, AllocScratch>,
-    shared: SharedSerializeMap,
     __type: PhantomData<(T, D)>,
 }
 
@@ -45,7 +43,6 @@ impl<T, D, W> EventWriter<T, D, W> {
             buffer: AlignedVec::with_capacity(512),
             position: 0,
             scratch: FallbackScratch::default(),
-            shared: SharedSerializeMap::new(),
             __type: PhantomData,
         }
     }
@@ -91,7 +88,7 @@ where
             AlignedSerializer::new(&mut self.buffer),
             // FIXME: Get implementations to allow using `&mut`s within `CompositeSerializer`
             mem::take(&mut self.scratch),
-            mem::take(&mut self.shared),
+            Infallible,
         );
 
         if let Err(err) = serializer.serialize_value(&event) {
@@ -101,11 +98,11 @@ where
             return;
         }
 
-        let (serializer, scratch, shared) = serializer.into_components();
-        self.scratch = scratch;
-        self.shared = shared;
-
         let archive_len = serializer.pos() as u128;
+        let (_, scratch, _) = serializer.into_components();
+        debug_assert_eq!(self.buffer.len(), archive_len as usize);
+        self.scratch = scratch;
+
         let result = self
             .stream
             // This will keep 16-byte alignment because archive_len is a u128
@@ -135,7 +132,6 @@ impl<T, D, W> Debug for EventWriter<T, D, W> {
             .field("buffer", &self.buffer)
             .field("position", &self.position)
             .field("fallback", &(&self.scratch as *const _))
-            .field("shared", &(&self.shared as *const _))
             .finish()
     }
 }

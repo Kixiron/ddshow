@@ -27,7 +27,7 @@ differential-dataflow = { version = "0.12.0", default-features = false, optional
 
     [dependencies.rkyv_dep]
     package = "rkyv"
-    version = "0.7.2"
+    version = "0.7.3"
     # TODO: "strict"
     features = ["validation", "tinyvec", "tinyvec_alloc"]
     optional = true
