@@ -86,6 +86,8 @@ pub struct Args {
     /// The directory to replay a recorded set of logs from
     #[structopt(
         long,
+        multiple = true,
+        number_of_values = 1,
         conflicts_with_all(&[
             "save-logs",
             "connections",
@@ -94,7 +96,7 @@ pub struct Args {
             "progress-address",
         ]),
     )]
-    pub replay_logs: Option<PathBuf>,
+    pub replay_logs: Option<Vec<PathBuf>>,
 
     /// The file to output a text report to
     #[structopt(long, default_value = "report.txt")]
