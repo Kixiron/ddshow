@@ -27,7 +27,7 @@ differential-dataflow = { git = "https://github.com/ddlog-dev/differential-dataf
 
     [dependencies.rkyv_dep]
     package = "rkyv"
-    version = "0.7.2"
+    version = "0.7.3"
     # TODO: "strict"
     features = ["validation", "tinyvec", "tinyvec_alloc"]
     optional = true

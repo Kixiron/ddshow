@@ -16,12 +16,12 @@ tracing = ["tracing_dep"]
 
 [dependencies]
 byteorder = "1.4.3"
-bytecheck = "0.6.1"
+bytecheck = "0.6.3"
 timely = { git = "https://github.com/ddlog-dev/timely-dataflow", branch = "ddlog-4", default-features = false }
 differential-dataflow = { git = "https://github.com/ddlog-dev/differential-dataflow", branch = "ddlog-4", default-features = false, optional = true }
 
     [dependencies.rkyv]
-    version = "0.7.2"
+    version = "0.7.3"
     # TODO: "strict"
     features = ["validation", "tinyvec", "tinyvec_alloc"]
 

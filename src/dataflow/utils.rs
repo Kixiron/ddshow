@@ -107,9 +107,14 @@ where
     S: Scope<Timestamp = Duration>,
 {
     // Create the directory for log files to go to
-    fs::create_dir_all(&save_logs).context("failed to create `--save-logs` directory")?;
+    fs::create_dir_all(&save_logs).with_context(|| {
+        anyhow::format_err!(
+            "failed to create `--save-logs` directory '{}'",
+            save_logs.display(),
+        )
+    })?;
 
-    let timely_path = log_file_path(TIMELY_LOG_FILE, save_logs, scope.index());
+    let timely_path = log_file_path(TIMELY_LOG_FILE, save_logs, scope.index())?;
 
     tracing::debug!(
         "installing timely file sink on worker {} pointed at {}",
@@ -117,9 +122,12 @@ where
         timely_path.display(),
     );
 
-    let timely_file = BufWriter::new(
-        File::create(timely_path).context("failed to create `--save-logs` timely file")?,
-    );
+    let timely_file = BufWriter::new(File::create(&timely_path).with_context(|| {
+        anyhow::format_err!(
+            "failed to create `--save-logs` timely file '{}'",
+            timely_path.display(),
+        )
+    })?);
 
     timely_stream
         .probe_with(probe)
@@ -127,7 +135,7 @@ where
 
     if let Some(differential_stream) = differential_stream {
         let differential_path =
-            log_file_path(DIFFERENTIAL_ARRANGEMENT_LOG_FILE, save_logs, scope.index());
+            log_file_path(DIFFERENTIAL_ARRANGEMENT_LOG_FILE, save_logs, scope.index())?;
 
         tracing::debug!(
             "installing differential file sink on worker {} pointed at {}",
@@ -135,10 +143,13 @@ where
             differential_path.display(),
         );
 
-        let differential_file = BufWriter::new(
-            File::create(differential_path)
-                .context("failed to create `--save-logs` differential file")?,
-        );
+        let differential_file =
+            BufWriter::new(File::create(&differential_path).with_context(|| {
+                anyhow::format_err!(
+                    "failed to create `--save-logs` differential file '{}'",
+                    differential_path.display(),
+                )
+            })?);
 
         differential_stream
             .probe_with(probe)
@@ -149,11 +160,14 @@ where
 }
 
 /// Constructs the path to a logging file for the given worker
-pub(super) fn log_file_path(file_prefix: &str, dir: &Path, worker_id: usize) -> PathBuf {
-    dir.join(format!(
+pub(super) fn log_file_path(file_prefix: &str, dir: &Path, worker_id: usize) -> Result<PathBuf> {
+    let path = dir.join(format!(
         "{}.replay-worker-{}.ddshow",
         file_prefix, worker_id,
-    ))
+    ));
+
+    path.canonicalize()
+        .with_context(|| anyhow::format_err!("failed to canonicalize path '{}'", path.display()))
 }
 
 pub(crate) fn set_steady_tick(progress: &ProgressBar, delta: usize) {

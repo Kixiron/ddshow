@@ -110,9 +110,9 @@ fn main() {
                 .probe_with(&mut probe);
         });
 
-        for i in 1..100 {
+        for i in 1..=args.iterations.get() {
             if worker.index() == 0 {
-                for elem in 0..100_000 {
+                for elem in 0..args.records.get() {
                     input.insert(elem);
                 }
             }
@@ -121,18 +121,23 @@ fn main() {
             input.flush();
 
             if worker.index() == 0 {
-                println!("ingested epoch {}/{}", i + 1, 100);
+                println!("ingested epoch {}/{}", i + 1, args.iterations.get());
             }
         }
 
+        println!(
+            "worker {}/{} is processing",
+            worker.index() + 1,
+            worker.peers(),
+        );
         worker.step_or_park_while(None, || probe.less_than(input.time()));
-
         println!("worker {}/{} finished", worker.index() + 1, worker.peers());
     })
     .unwrap();
 }
 
 #[derive(Debug, Clone, StructOpt)]
+#[structopt(rename_all = "kebab-case")]
 struct TestArgs {
     #[structopt(long, short = "w")]
     workers: NonZeroUsize,
@@ -148,6 +153,12 @@ struct TestArgs {
 
     #[structopt(long, default_value = "127.0.0.1:51318")]
     differential_address: SocketAddr,
+
+    #[structopt(long, default_value = "100")]
+    iterations: NonZeroUsize,
+
+    #[structopt(long, default_value = "10000")]
+    records: NonZeroUsize,
 }
 
 impl TestArgs {
