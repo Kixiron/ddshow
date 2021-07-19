@@ -29,7 +29,7 @@ pub use delay::DelayExt;
 pub use filter_map::FilterMap;
 pub use filter_split::FilterSplit;
 pub use flat_split::FlatSplit;
-pub use inspect::InspectExt;
+pub use inspect::{DebugTuple, InspectExt};
 pub use iterate_ext::IterateExt;
 pub use keys::Keys;
 pub use map::{MapExt, MapInPlace};

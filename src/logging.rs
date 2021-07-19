@@ -1,4 +1,4 @@
-use crate::args::Args;
+use crate::args::{Args, TerminalColor};
 use anyhow::Result;
 use ddshow_sink::{
     DIFFERENTIAL_ARRANGEMENT_LOGGER_NAME, TIMELY_LOGGER_NAME, TIMELY_PROGRESS_LOGGER_NAME,
@@ -11,13 +11,19 @@ use tracing_subscriber::{
 };
 
 pub(crate) fn init_logging(args: &Args) {
+    let ansi_enabled = match args.color {
+        TerminalColor::Auto => atty::is(atty::Stream::Stdout),
+        TerminalColor::Never => false,
+        TerminalColor::Always => true,
+    };
+
     let filter_layer = EnvFilter::from_env("DDSHOW_LOG");
     let fmt_layer = tracing_subscriber::fmt::layer()
         .pretty()
         .with_timer(Uptime::default())
         .with_thread_names(true)
-        .with_ansi(args.color.is_always() || args.color.is_auto())
-        .with_level(false);
+        .with_ansi(ansi_enabled)
+        .with_level(!ansi_enabled);
 
     let _ = tracing_subscriber::registry()
         .with(filter_layer)

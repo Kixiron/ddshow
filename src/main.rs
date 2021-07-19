@@ -23,7 +23,7 @@ use std::{
     io::{self, BufWriter},
     path::Path,
     sync::{
-        atomic::{AtomicBool, AtomicUsize},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
@@ -64,10 +64,18 @@ fn main() -> Result<()> {
     let (running, workers_finished, progress_bars) = (
         Arc::new(AtomicBool::new(true)),
         Arc::new(AtomicUsize::new(0)),
-        Arc::new(MultiProgress::new()),
+        args.isnt_quiet().then(|| Arc::new(MultiProgress::new())),
     );
     let (replay_shutdown, moved_args, moved_workers_finished) =
         (running.clone(), args.clone(), workers_finished.clone());
+
+    // Set the ctrlc handler
+    let ctrlc_running = running.clone();
+    ctrlc::set_handler(move || {
+        tracing::info!("received ctrlc, terminating replay");
+        ctrlc_running.store(false, Ordering::Release);
+    })
+    .context("failed to set ctrl+c handler")?;
 
     // Create the *many* channels used for extracting data from the dataflow
     let (senders, receivers) = DataflowSenders::create();
@@ -90,21 +98,26 @@ fn main() -> Result<()> {
         timely::execute::execute_from(builders, others, worker_config, move |worker| {
             // Distribute the tcp streams across workers, converting each of them into an event reader
             let timely_traces = timely_event_receivers[worker.index()]
-                .clone()
                 .recv()
-                .expect("failed to receive timely event traces");
+                .context("failed to receive progress traces")?;
 
-            let differential_traces = differential_event_receivers.as_ref().map(|recv| {
-                recv[worker.index()]
-                    .recv()
-                    .expect("failed to receive differential event traces")
-            });
+            let differential_traces = differential_event_receivers
+                .as_ref()
+                .map(|recv| {
+                    recv[worker.index()]
+                        .recv()
+                        .context("failed to receive progress traces")
+                })
+                .transpose()?;
 
-            let progress_traces = progress_event_receivers.as_ref().map(|recv| {
-                recv[worker.index()]
-                    .recv()
-                    .expect("failed to receive progress traces")
-            });
+            let progress_traces = progress_event_receivers
+                .as_ref()
+                .map(|recv| {
+                    recv[worker.index()]
+                        .recv()
+                        .context("failed to receive progress traces")
+                })
+                .transpose()?;
 
             // Start the analysis worker's runtime
             dataflow::worker_runtime(
@@ -293,7 +306,9 @@ fn main() -> Result<()> {
             report_file.replace_range(..r"\\?\".len(), "");
         }
 
-        println!("Wrote report file to {}", report_file);
+        if args.isnt_quiet() {
+            println!("Wrote report file to {}", report_file);
+        }
     }
 
     let mut graph_file = fs::canonicalize(&args.output_dir)
@@ -302,10 +317,15 @@ fn main() -> Result<()> {
         .display()
         .to_string();
     if cfg!(windows) && graph_file.starts_with(r"\\?\") {
-        graph_file.replace_range(..r"\\?\".len(), "");
+        graph_file = graph_file
+            .strip_prefix(r"\\?\")
+            .expect("the string starts with the given pattern")
+            .replace('\\', "/");
     }
 
-    println!("Wrote output graph to file:///{}", graph_file);
+    if args.isnt_quiet() {
+        println!("Wrote output graph to file://{}", graph_file);
+    }
 
     Ok(())
 }

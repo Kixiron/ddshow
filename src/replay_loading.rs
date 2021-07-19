@@ -25,7 +25,6 @@ use std::{
     ffi::OsStr,
     fmt::Debug,
     fs::{self, File},
-    hint,
     io::{self, BufReader, BufWriter, Read, Write},
     iter,
     net::{SocketAddr, TcpListener, TcpStream},
@@ -33,9 +32,8 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{self, AtomicBool, AtomicUsize, Ordering},
-        Arc, Barrier,
+        Arc,
     },
-    thread,
     time::{Duration, Instant},
 };
 use timely::{
@@ -201,6 +199,7 @@ pub fn connect_to_sources(
     };
 
     // If no replay sources were provided, exit early
+    // FIXME: Something's buggy here
     if !are_timely_sources || !are_differential_sources || !are_progress_sources {
         tracing::warn!(
             are_timely_sources = are_timely_sources,
@@ -274,21 +273,26 @@ where
     let finished_style =
         ProgressStyle::default_spinner().template("[{elapsed}] {prefix}: {wide_msg}");
 
-    let progress = ProgressBar::new(connections.get() as u64)
-        .with_style(progress_style)
-        .with_prefix(prefix);
+    let progress = args.isnt_quiet().then(|| {
+        let progress = ProgressBar::new(connections.get() as u64)
+            .with_style(progress_style)
+            .with_prefix(prefix);
+        utils::set_steady_tick(&progress, connections.get());
 
-    utils::set_steady_tick(&progress, connections.get());
+        progress
+    });
 
     let replay_sources = if let Some(log_dirs) = log_dirs {
         let mut replays = Vec::with_capacity(connections.get());
 
         for log_dir in log_dirs {
-            progress.set_prefix(format!(
-                "Loading {} replay from {}",
-                target,
-                log_dir.display()
-            ));
+            if let Some(progress) = progress.as_ref() {
+                progress.set_prefix(format!(
+                    "Loading {} replay from {}",
+                    target,
+                    log_dir.display()
+                ));
+            }
 
             // Load all files in the directory that have the `.ddshow` extension and a
             // prefix that matches `file_prefix`
@@ -300,7 +304,10 @@ where
                 entry.map_or_else(
                     |err| {
                         tracing::error!(dir = ?log_dir, "failed to open file: {:?}", err);
-                        eprintln!("failed to open file: {:?}", err);
+
+                        if args.isnt_quiet() {
+                            eprintln!("failed to open file: {:?}", err);
+                        }
 
                         None
                     },
@@ -318,9 +325,12 @@ where
                     .map_or(false, |prefix| prefix == file_prefix);
 
                 if is_file && ends_with_ddshow && starts_with_prefix {
-                    progress.set_message(replay_file.display().to_string());
-                    progress.inc_length(1);
+                    if let Some(progress) = progress.as_ref() {
+                        progress.set_message(replay_file.display().to_string());
+                        progress.inc_length(1);
+                    }
 
+                    // FIXME: This is so inelegant
                     if args.debug_replay_files {
                         let input_file = File::open(&replay_file).with_context(|| {
                             format!("failed to open {} log file within replay directory", target)
@@ -353,7 +363,10 @@ where
                         Box::new(BufReader::new(replay_file)) as Box<dyn Read + Send + 'static>
                     ));
 
-                    progress.inc(1);
+                    if let Some(progress) = progress.as_ref() {
+                        progress.inc(1);
+                    }
+
                     num_sources += 1;
                 } else {
                     tracing::warn!(
@@ -366,31 +379,35 @@ where
                         replay_file.display(),
                     );
 
-                    let reason = if is_file {
-                        "replay files must be files".to_owned()
-                    } else if ends_with_ddshow {
-                        "did not end with the `.ddshow` extension".to_owned()
-                    } else if starts_with_prefix {
-                        format!("did not start with the prefix {}", file_prefix)
-                    } else {
-                        "unknown error".to_owned()
-                    };
+                    if let Some(progress) = progress.as_ref() {
+                        let reason = if is_file {
+                            "replay files must be files".to_owned()
+                        } else if ends_with_ddshow {
+                            "did not end with the `.ddshow` extension".to_owned()
+                        } else if starts_with_prefix {
+                            format!("did not start with the prefix {}", file_prefix)
+                        } else {
+                            "unknown error".to_owned()
+                        };
 
-                    progress.set_message(format!(
-                        "skipped {}, reason: {}",
-                        replay_file.display(),
-                        reason,
-                    ));
+                        progress.set_message(format!(
+                            "skipped {}, reason: {}",
+                            replay_file.display(),
+                            reason,
+                        ));
+                    }
                 }
             }
         }
 
-        progress.set_style(finished_style);
-        progress.finish_with_message(format!(
-            "loaded {} replay file{}",
-            progress.length(),
-            if progress.length() == 1 { "" } else { "s" },
-        ));
+        if let Some(progress) = progress.as_ref() {
+            progress.set_style(finished_style);
+            progress.finish_with_message(format!(
+                "loaded {} replay file{}",
+                progress.length(),
+                if progress.length() == 1 { "" } else { "s" },
+            ));
+        }
 
         ReplaySource::Rkyv(replays)
     } else {
@@ -405,21 +422,28 @@ where
         );
 
         let source = match args.stream_encoding {
-            StreamEncoding::Abomonation => {
-                wait_for_abominated_connections(args, listener, &address, connections, &progress)?
-            }
+            StreamEncoding::Abomonation => wait_for_abominated_connections(
+                args,
+                listener,
+                &address,
+                connections,
+                progress.as_ref(),
+            )?,
+
             StreamEncoding::Rkyv => {
-                wait_for_rkyv_connections(args, listener, &address, connections, &progress)?
+                wait_for_rkyv_connections(args, listener, &address, connections, progress.as_ref())?
             }
         };
 
         num_sources += connections.get();
 
-        progress.set_style(finished_style);
-        progress.finish_with_message(format!(
-            "connected to {} trace source{}",
-            connections, plural,
-        ));
+        if let Some(progress) = progress.as_ref() {
+            progress.set_style(finished_style);
+            progress.finish_with_message(format!(
+                "connected to {} trace source{}",
+                connections, plural,
+            ));
+        }
 
         source
     };
@@ -509,7 +533,7 @@ pub fn wait_for_abominated_connections<T, D, R>(
     listener: TcpListener,
     addr: &SocketAddr,
     connections: NonZeroUsize,
-    progress: &ProgressBar,
+    progress: Option<&ProgressBar>,
 ) -> Result<ReplaySource<R, EventReader<T, D, TcpStream>>>
 where
     Event<T, D>: Clone,
@@ -522,12 +546,14 @@ where
         "abominated connections come from abominated stream encodings",
     );
 
-    progress.set_message(format!(
-        "connected to 0/{} socket{}",
-        connections,
-        if connections.get() == 1 { "" } else { "s" },
-    ));
-    progress.set_length(connections.get() as u64);
+    if let Some(progress) = progress {
+        progress.set_message(format!(
+            "connected to 0/{} socket{}",
+            connections,
+            if connections.get() == 1 { "" } else { "s" },
+        ));
+        progress.set_length(connections.get() as u64);
+    }
 
     let timely_conns = (0..connections.get())
         .zip(listener.incoming())
@@ -554,13 +580,15 @@ where
                 connections,
             );
 
-            progress.set_message(format!(
-                "connected to {}/{} socket{}",
-                idx + 1,
-                connections,
-                if connections.get() == 1 { "" } else { "s" },
-            ));
-            progress.inc(1);
+            if let Some(progress) = progress {
+                progress.set_message(format!(
+                    "connected to {}/{} socket{}",
+                    idx + 1,
+                    connections,
+                    if connections.get() == 1 { "" } else { "s" },
+                ));
+                progress.inc(1);
+            }
 
             Ok(EventReader::new(socket))
         })
@@ -580,7 +608,7 @@ pub fn wait_for_rkyv_connections<T, D, A>(
     listener: TcpListener,
     addr: &SocketAddr,
     connections: NonZeroUsize,
-    progress: &ProgressBar,
+    progress: Option<&ProgressBar>,
 ) -> Result<ConnectedRkyvSource<T, D, A>>
 where
     T: Archive,
@@ -594,12 +622,14 @@ where
         "rkyv connections come from rkyv stream encodings",
     );
 
-    progress.set_message(format!(
-        "connected to 0/{} socket{}",
-        connections,
-        if connections.get() == 1 { "" } else { "s" },
-    ));
-    progress.set_length(connections.get() as u64);
+    if let Some(progress) = progress {
+        progress.set_message(format!(
+            "connected to 0/{} socket{}",
+            connections,
+            if connections.get() == 1 { "" } else { "s" },
+        ));
+        progress.set_length(connections.get() as u64);
+    }
 
     let timely_conns = (0..connections.get())
         .zip(listener.incoming())
@@ -625,13 +655,15 @@ where
                 connections,
             );
 
-            progress.set_message(format!(
-                "connected to {}/{} socket{}",
-                idx + 1,
-                connections,
-                if connections.get() == 1 { "" } else { "s" },
-            ));
-            progress.inc(1);
+            if let Some(progress) = progress {
+                progress.set_message(format!(
+                    "connected to {}/{} socket{}",
+                    idx + 1,
+                    connections,
+                    if connections.get() == 1 { "" } else { "s" },
+                ));
+                progress.inc(1);
+            }
 
             Ok(RkyvEventReader::new(
                 Box::new(socket) as Box<dyn Read + Send + 'static>
@@ -657,33 +689,17 @@ pub fn wait_for_input(
     worker_guards: WorkerGuards<Result<()>>,
     receivers: DataflowReceivers,
 ) -> Result<DataflowData> {
-    let mut stdin = io::stdin();
-
-    let (send, recv) = crossbeam_channel::bounded(1);
-    let barrier = Arc::new(Barrier::new(2));
-
-    let thread_barrier = barrier.clone();
-    thread::spawn(move || {
-        thread_barrier.wait();
-
-        // Wait for input
-        let _ = stdin.read(&mut [0]);
-
-        tracing::debug!("stdin thread got input from stdin");
-        send.send(()).unwrap();
-    });
-
-    // Write a prompt to the terminal for the user
-    let message = if args.is_file_sourced() {
-        "Press enter to finish loading trace data (this will cause data to not be fully processed)..."
-    } else {
-        "Press enter to finish collecting trace data (this will crash the source computation \
+    if args.isnt_quiet() {
+        // Write a prompt to the terminal for the user
+        let message = if args.is_file_sourced() {
+            "Press ctrl+C to stop loading trace data (this will cause data to not be fully processed)..."
+        } else {
+            "Press ctrl+C to stop collecting trace data (this will crash the source computation \
             if it's currently running and cause data to not be fully processed)..."
-    };
-    println!("{}", message);
+        };
 
-    // Sync up with the user input thread
-    barrier.wait();
+        println!("{}", message);
+    }
 
     let (mut fuel, mut extractor) = (
         Fuel::limited(IDLE_EXTRACTION_FUEL),
@@ -697,7 +713,17 @@ pub fn wait_for_input(
     let mut last_report_update = Instant::now();
 
     loop {
-        hint::spin_loop();
+        // If an error is encountered or the user hits ctrl+c
+        if !running.load(Ordering::Acquire) {
+            tracing::info!(
+                num_threads = num_threads,
+                workers_finished = workers_finished.load(Ordering::Acquire),
+                running = false,
+                "main thread got shutdown signal, `running` was set to false",
+            );
+
+            break;
+        }
 
         // If all workers finish their computations
         if workers_finished.load(Ordering::Acquire) == num_threads {
@@ -711,35 +737,11 @@ pub fn wait_for_input(
             break;
         }
 
-        // If an error is encountered and the dataflow shut down
-        if !running.load(Ordering::Acquire) {
-            tracing::info!(
-                num_threads = num_threads,
-                workers_finished = workers_finished.load(Ordering::Acquire),
-                running = false,
-                "main thread got shutdown signal, `running` was set to false",
-            );
-
-            break;
-        }
-
-        // If the user shuts down the dataflow
-        if recv.recv_timeout(Duration::from_millis(500)).is_ok() {
-            tracing::info!(
-                num_threads = num_threads,
-                workers_finished = workers_finished.load(Ordering::Acquire),
-                running = running.load(Ordering::Acquire),
-                "main thread got shutdown signal, received input from user",
-            );
-
-            break;
-        }
-
         // After we've checked all of our exit conditions we can pull some
         // data from out of the target dataflow
         extractor.extract_with_fuel(&mut fuel);
 
-        tracing::debug!(
+        tracing::trace!(
             used = ?fuel.used(),
             remaining = ?fuel.remaining(),
             "spent {} fuel within the main thread's wait loop",
@@ -774,7 +776,7 @@ pub fn wait_for_input(
     running.store(false, Ordering::Release);
     atomic::fence(Ordering::Acquire);
 
-    {
+    if args.isnt_quiet() {
         let mut stdout = io::stdout();
         write!(stdout, "Processing data...").context("failed to write to stdout")?;
         stdout.flush().context("failed to flush stdout")?;
@@ -794,7 +796,10 @@ pub fn wait_for_input(
 
     tracing::debug!("extracting all remaining data from the dataflow");
     let data = extractor.extract_all();
-    println!(" done!");
+
+    if args.isnt_quiet() {
+        println!(" done!");
+    }
 
     Ok(data)
 }

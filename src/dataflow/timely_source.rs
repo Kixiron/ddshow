@@ -96,7 +96,12 @@ where
         // Distribute events across all workers based on the worker they originated from
         // This should be done by default when the number of ddshow workers is the same
         // as the number of timely ones, but this ensures that it happens for disk replay
-        // and unbalanced numbers of workers to ensure work is fairly divided
+        // and unbalanced numbers of workers to ensure work is fairly divided.
+        //
+        // As a greater concern (and the reason why this continues to exist here), events
+        // are keyed with their worker id, meaning that if an end event goes to a worker
+        // where the input event wasn't previously received then the input event won't
+        // be closed off properly
         Exchange::new(|(_, worker, _): &TimelyLogBundle| worker.into_inner() as u64),
     );
 

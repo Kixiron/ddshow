@@ -57,7 +57,7 @@ where
             return Ok(None);
         }
 
-        // Align to read
+        // Align to 16 bytes for reading & deserializing
         let alignment_offset = match self.consumed & 15 {
             0 => 0,
             x => 16 - x,
@@ -75,14 +75,6 @@ where
                 .buffer1
                 .get(archive_start..archive_start + archive_length)
             {
-                // let archive = unsafe { archived_root::<Event<T, D>>(slice) };
-                // let event = archive
-                //     .deserialize(&mut AllocDeserializer)
-                //     .unwrap_or_else(|unreachable| match unreachable {});
-                //
-                // self.consumed += alignment_offset + archive_length + mem::size_of::<u128>();
-                // return Ok(Some(event.into()));
-
                 match check_archived_root::<Event<T, D>>(slice) {
                     Ok(archive) => match archive.deserialize(&mut self.shared) {
                         Ok(event) => {
@@ -110,6 +102,9 @@ where
                                 err,
                             );
 
+                            // TODO: Maybe we shouldn't panic and just make do
+                            //       with what we have to try and still produce
+                            //       an answer?
                             panic!("failed to check archived event: {:?}", err);
                         }
                     },
@@ -129,14 +124,17 @@ where
                             err,
                         );
 
+                        // TODO: Maybe we shouldn't panic and just make do
+                        //       with what we have to try and still produce
+                        //       an answer?
                         panic!("failed to check archived event: {:?}", err);
                     }
                 }
             }
         }
 
-        // if we exhaust data we should shift back while preserving our alignment
-        // of 16 bytes
+        // If we exhaust data we should swap buffers while still
+        // preserving our alignment of 16 bytes
         if self.consumed > 15 {
             self.buffer2
                 .extend_from_slice(&self.buffer1[self.consumed & !15..]);

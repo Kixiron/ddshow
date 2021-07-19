@@ -25,12 +25,14 @@ default = []
 timely-next = []
 
 [dependencies]
+atty = "0.2.14"
+ctrlc = "3.1.9"
 anyhow = "1.0.38"
-tracing = "0.1.25"
 colorous = "1.0.3"
 bytecheck = "0.6.3"
 byteorder = "1.4.3"
 structopt = "0.3.21"
+itertools = "0.10.1"
 num-traits = "0.2.14"
 serde_json = "1.0.64"
 abomonation = "0.7.3"
@@ -45,12 +47,17 @@ indicatif = { version = "0.16.2", features = ["improved_unicode"] }
 
 timely = "0.12.0"
 differential-dataflow = { version = "0.12.0", default-features = false }
-# timely = { git = "https://github.com/TimelyDataflow/timely-dataflow" }
-# differential-dataflow = { git = "https://github.com/TimelyDataflow/differential-dataflow" }
 
     [dependencies.tera]
     version = "1.6.1"
     default-features = false
+
+    [dependencies.tracing]
+    version = "0.1.25"
+    # For standard release mode: "release_max_level_info"
+    # For debugging in release mode: "release_max_level_trace"
+    default-features = false
+    features = ["std", "attributes", "release_max_level_info"]
 
     [dependencies.tracing-subscriber]
     version = "0.2.16"

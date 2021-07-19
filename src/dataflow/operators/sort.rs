@@ -1,10 +1,11 @@
-use std::panic::Location;
+use std::{ops::Add, panic::Location};
 
 use crate::dataflow::operators::Multiply;
 use differential_dataflow::{
     difference::Abelian, lattice::Lattice, operators::Reduce, AsCollection, Collection, Data,
     ExchangeData, Hashable,
 };
+use itertools::Itertools;
 use timely::dataflow::{operators::Map, Scope};
 
 #[allow(dead_code)]
@@ -84,7 +85,7 @@ where
     (K, Vec<D>): Hashable,
     ((u64, K), Vec<D>): ExchangeData,
     (u64, K): ExchangeData + Hashable,
-    R: Abelian + ExchangeData + Multiply<Output = R> + Into<isize> + From<i8>,
+    R: Abelian + ExchangeData + Add<Output = R> + Multiply<Output = R> + Into<isize> + From<i8>,
 {
     type Output = Collection<S, (K, Vec<D>), R>;
 
@@ -137,7 +138,7 @@ where
     Vec<(D, R)>: ExchangeData,
     ((u64, K), Vec<D>): ExchangeData,
     (u64, K): ExchangeData + Hashable,
-    R: Abelian + ExchangeData + Multiply<Output = R> + From<i8>,
+    R: Abelian + ExchangeData + Add<Output = R> + Multiply<Output = R> + From<i8>,
     F: Fn(&D) -> DK + 'static,
     DK: Ord,
 {
@@ -147,28 +148,27 @@ where
     //       by using k-way merges https://en.wikipedia.org/wiki/K-way_merge_algorithm
     //       See also https://docs.rs/itertools/0.10.0/src/itertools/kmerge_impl.rs.html
     input.reduce_named::<_, Vec<(D, R)>, R>("SortByBucket", move |_key, input, output| {
-        let mut data = Vec::with_capacity(input.iter().map(|(data, _)| data.len()).sum());
-        data.extend(input.iter().flat_map(|(data, diff)| {
-            data.iter()
-                .cloned()
-                .map(move |(data, inner_diff)| (data, diff.clone() * inner_diff))
-        }));
+        let data = input
+            .iter()
+            .map(|(data, diff)| {
+                data.iter()
+                    .cloned()
+                    .map(move |(data, inner_diff)| (data, diff.clone() * inner_diff))
+            })
+            .kmerge_by(|(left, _), (right, _)| key(left) < key(right))
+            .group_by(|(data, _)| key(data))
+            .into_iter()
+            .map(|(_key, mut group)| {
+                let (value, first_diff) = group.next().unwrap();
 
-        data.sort_unstable_by_key(|(data, _diff)| key(data));
-
-        let mut idx = 0;
-        while idx + 1 < data.len() {
-            if data[idx].1.is_zero() {
-                data.remove(idx);
-            } else if data[idx].0 == data[idx + 1].0 {
-                let diff = data[idx + 1].1.clone();
-                data[idx].1 += &diff;
-
-                data.remove(idx + 1);
-            } else {
-                idx += 1;
-            }
-        }
+                (
+                    value,
+                    group
+                        .map(|(_value, diff)| diff)
+                        .fold(first_diff, |accumulator, diff| accumulator + diff),
+                )
+            })
+            .collect();
 
         output.push((data, R::from(1)));
     })

@@ -5,7 +5,13 @@ use differential_dataflow::{
     operators::Threshold,
     Collection, Data,
 };
-use std::{collections::HashMap, fmt::Debug, hash::Hash, mem, num::NonZeroUsize};
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    fmt::Debug,
+    hash::Hash,
+    mem,
+    num::NonZeroUsize,
+};
 use timely::{
     dataflow::{
         operators::capture::{Event, EventPusher, Extract},
@@ -57,12 +63,13 @@ impl<T> CrossbeamExtractor<T> {
 impl<T, D, R> CrossbeamExtractor<Event<T, (D, T, R)>>
 where
     T: Debug + Ord + Hash + Clone,
-    D: Ord + Hash + Clone,
+    D: Debug + Ord + Hash + Clone,
     R: Semigroup,
 {
     /// Extracts in a non-blocking manner, exerting fuel for any data pulled from the channel
     /// and returning when the fuel is exhausted or the channel is empty. Returns `true` if
     /// channel's sending side disconnects and `false` otherwise
+    #[tracing::instrument]
     pub fn extract_with_fuel(
         &self,
         fuel: &mut Fuel,
@@ -90,14 +97,40 @@ where
                     // but may not be strictly necessary
                     data.sort_unstable_by_key(|(_, time, _)| time.clone());
 
+                    tracing::trace!(
+                        data = ?data,
+                        "exerted {} fuel and got a batch of {} events",
+                        complexity + 1, data.len(),
+                    );
+
                     // Add all the data to the given sink
                     for (data, _time, diff) in data {
-                        sink.entry(data).and_modify(|d| *d += &diff).or_insert(diff);
+                        match sink.entry(data) {
+                            Entry::Occupied(mut occupied) => {
+                                *occupied.get_mut() += &diff;
+
+                                if occupied.get().is_zero() {
+                                    occupied.remove();
+                                }
+                            }
+
+                            Entry::Vacant(vacant) => {
+                                if !diff.is_zero() {
+                                    vacant.insert(diff);
+                                }
+                            }
+                        }
                     }
                 }
 
                 // We pretty much ignore progress events here, no idea if that's bad or not
-                Ok(Event::Progress(progress)) => consumed.extend(progress.into_iter()),
+                Ok(Event::Progress(progress)) => {
+                    tracing::trace!(
+                        progress = ?progress,
+                        "exerted 1 fuel and got a batch of progress events",
+                    );
+                    consumed.extend(progress.into_iter());
+                }
 
                 // If the channel is empty then break
                 Err(TryRecvError::Empty) => break,

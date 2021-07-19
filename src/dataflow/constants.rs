@@ -5,7 +5,7 @@ use std::{num::NonZeroUsize, time::Duration};
 /// Only cause the program stats to update every N milliseconds to
 /// prevent this from absolutely thrashing the scheduler
 // TODO: Make this configurable by the user
-pub const PROGRAM_NS_GRANULARITY: u128 = 5_000_000_000;
+pub const PROGRAM_NS_GRANULARITY: u128 = 500_000;
 
 /// The default capacity to initialize extractor maps to
 pub(crate) const DEFAULT_EXTRACTOR_CAPACITY: usize = 1024;

@@ -23,6 +23,7 @@ pub use progress_stats::OperatorProgress;
 pub use progress_stats::{Channel, ProgressInfo};
 pub use send_recv::{DataflowData, DataflowExtractor, DataflowReceivers, DataflowSenders};
 pub use shape::OperatorShape;
+use timely::dataflow::operators::Probe;
 pub use worker::worker_runtime;
 pub use worker_timeline::{EventKind, TimelineEvent};
 
@@ -74,6 +75,8 @@ use timely::{
 // TODO: The PDG
 // TODO: Timely reachability logging
 
+type Observers = Vec<(&'static str, ProbeHandle<Time>)>;
+
 pub fn dataflow<S>(
     scope: &mut S,
     args: &Args,
@@ -81,17 +84,25 @@ pub fn dataflow<S>(
     differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
     progress_stream: Option<&Stream<S, ProgressLogBundle>>,
     senders: DataflowSenders,
-) -> Result<ProbeHandle<Time>>
+) -> Result<(ProbeHandle<Time>, Observers)>
 where
     S: Scope<Timestamp = Time>,
 {
     let mut probe = ProbeHandle::new();
 
+    let mut observers = vec![("timely_stream", timely_stream.probe())];
+    if let Some(differential_stream) = differential_stream {
+        observers.push(("differential_stream", differential_stream.probe()))
+    }
+    if let Some(progress_stream) = progress_stream {
+        observers.push(("progress_stream", progress_stream.probe()))
+    }
+
     let (
         operator_lifespans,
         operator_activations,
-        _operator_creations,
-        _channel_creations,
+        operator_creations,
+        channel_creations,
         // TODO: Refactor the channel logic to not need this
         raw_channels,
         // TODO: Refactor the logic to not need this
@@ -104,6 +115,47 @@ where
         dataflow_ids,
         timeline_events,
     ) = timely_source::extract_timely_info(scope, timely_stream, args.disable_timeline);
+
+    observers.push(("operator_lifespans", operator_lifespans.probe()));
+    observers.push(("operator_activations", operator_activations.probe()));
+    observers.push(("operator_creations", operator_creations.probe()));
+    observers.push(("channel_creations", channel_creations.probe()));
+    observers.push(("raw_channels", raw_channels.probe()));
+    observers.push(("raw_operators", raw_operators.probe()));
+    observers.push((
+        "operator_names",
+        operator_names
+            .as_collection(|&key, val| (key, val.clone()))
+            .probe(),
+    ));
+    observers.push((
+        "operator_ids",
+        operator_ids
+            .as_collection(|&key, val| (key, val.clone()))
+            .probe(),
+    ));
+    observers.push((
+        "operator_addrs",
+        operator_addrs
+            .as_collection(|key, &val| (key.clone(), val))
+            .probe(),
+    ));
+    observers.push((
+        "operator_addrs_by_self",
+        operator_addrs_by_self
+            .as_collection(|key, &val| (key.clone(), val))
+            .probe(),
+    ));
+    observers.push((
+        "channel_scopes",
+        channel_scopes
+            .as_collection(|&key, val| (key, val.clone()))
+            .probe(),
+    ));
+    observers.push((
+        "dataflow_ids",
+        dataflow_ids.as_collection(|&key, &val| (key, val)).probe(),
+    ));
 
     // FIXME: `invocations` looks off, figure that out
     let operator_stats =
@@ -140,7 +192,7 @@ where
     // TODO: Grabbing events absolutely shits the bed when it comes to large dataflows,
     //       it needs a serious, intrinsic rework and/or disk backed arrangements
     let timeline_events = timeline_events.as_ref().map(|timeline_events| {
-        worker_timeline::worker_timeline(scope, timeline_events, differential_stream)
+        worker_timeline::worker_timeline(scope, &timeline_events, differential_stream)
     });
 
     let addressed_operators = raw_operators
@@ -210,7 +262,7 @@ where
         )?;
     }
 
-    Ok(probe)
+    Ok((probe, observers))
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]

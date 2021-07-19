@@ -239,6 +239,7 @@ where
         let worker_index = scope.index();
         let caller = Location::caller();
         let mut event_streams = self.into_iter().collect::<Vec<_>>();
+        let total_event_streams = event_streams.len();
 
         tracing::trace!(
             caller = ?caller,
@@ -249,10 +250,11 @@ where
             event_streams.len(),
         );
 
+        let name = name.into();
         let mut builder = OperatorBuilder::new(
             format!(
                 "{} @ {}:{}:{}",
-                name.into(),
+                name,
                 caller.file(),
                 caller.line(),
                 caller.column(),
@@ -330,14 +332,32 @@ where
 
                         Ok(None) => {
                             if !is_running.load(Ordering::Acquire) {
+                                tracing::trace!(
+                                    worker = worker_index,
+                                    fuel = ?fuel,
+                                    "is_running was set to false while reading from stream {}/{}, exiting replay",
+                                    stream_idx + 1,
+                                    total_event_streams,
+                                );
+
                                 break 'event_loop;
+
                             } else {
+                                tracing::trace!(
+                                    worker = worker_index,
+                                    fuel = ?fuel,
+                                    "got a none on input stream {}/{}, moving to next input stream",
+                                    stream_idx + 1,
+                                    total_event_streams,
+                                );
+
                                 break 'stream_loop;
                             }
                         }
 
                         Err(err) => {
                             tracing::error!(
+                                worker = worker_index,
                                 "encountered an error from the event stream: {:?}",
                                 err,
                             );
@@ -348,11 +368,38 @@ where
                     }
 
                     if fuel.is_exhausted() {
+                        tracing::trace!(
+                            worker = worker_index,
+                            fuel = ?fuel,
+                            "ran out of fuel on input stream {}/{}, pausing replay",
+                            stream_idx + 1,
+                            total_event_streams,
+                        );
+
                         break 'event_loop;
                     }
                 }
 
+                if streams_finished[stream_idx] {
+                    tracing::debug!(
+                        worker = worker_index,
+                        fuel = ?fuel,
+                        finished = streams_finished[stream_idx],
+                        "input stream {}/{} has completed",
+                        stream_idx + 1,
+                        total_event_streams,
+                    );
+                }
+
                 if fuel.is_exhausted() {
+                    tracing::trace!(
+                        worker = worker_index,
+                        fuel = ?fuel,
+                        "ran out of fuel on input stream {}/{}, pausing replay",
+                        stream_idx + 1,
+                        total_event_streams,
+                    );
+
                     break 'event_loop;
                 }
             }

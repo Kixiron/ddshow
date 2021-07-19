@@ -1,6 +1,6 @@
 use crate::dataflow::{
     differential::{self, ArrangementStats},
-    operators::{DiffDuration, HierarchicalReduce, Keys, Max, Maybe, Min},
+    operators::{DiffDuration, Keys, Max, Maybe, Min},
     summation::{summation, Summation},
     utils::{Diff, DifferentialLogBundle, Time},
     OperatorId, WorkerId,
@@ -74,7 +74,7 @@ where
             |_, activations, output| {
                 let mut activations: Vec<_> = activations
                     .iter()
-                    .map(|&(&activation, _)| activation)
+                    .flat_map(|&(&activation, diff)| (0..diff).map(move |_| activation))
                     .collect();
                 activations.sort_unstable_by_key(|activation| activation.0);
 
@@ -150,24 +150,15 @@ where
 
     let mut activation_durations = operator_stats
         .map(|((_, operator), stats)| (operator, stats.activation_durations))
-        .hierarchical_reduce_named(
+        .reduce_named(
             "Aggregate Operator Activation Durations",
             |_, activations, output| {
                 let activations: Vec<_> = activations
                     .iter()
-                    .flat_map(|&(activation, _)| activation)
-                    .copied()
+                    .flat_map(|&(activation, diff)| {
+                        (0..diff).flat_map(move |_| activation.iter().copied())
+                    })
                     .collect();
-
-                output.push((activations, 1));
-            },
-            |_, activations, output| {
-                let mut activations: Vec<_> = activations
-                    .iter()
-                    .flat_map(|&(activation, _)| activation)
-                    .copied()
-                    .collect();
-                activations.sort_unstable_by_key(|activation| activation.0);
 
                 output.push((activations, 1));
             },

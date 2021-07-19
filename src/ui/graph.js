@@ -512,7 +512,7 @@ const chart = TimelinesChart()(document.getElementById("worker-timeline"))
 const worker_selector = document.getElementById("timeline-worker-selection");
 worker_selector.max = worker_ids.length;
 
-worker_timeline(chart, timeline_events, Number(worker_selector.value), operator_names);
+worker_timeline(chart, timeline_events, Math.min(Number(worker_selector.value), 20), operator_names);
 
 worker_selector.onchange = (_event) => {
     /** @type {HTMLInputElement} */

@@ -25,8 +25,8 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
-    thread,
-    time::Duration,
+    thread::Builder,
+    time::{Duration, Instant},
 };
 use timely::{
     communication::Allocate,
@@ -43,7 +43,7 @@ pub fn worker_runtime<A>(
     senders: DataflowSenders,
     replay_shutdown: Arc<AtomicBool>,
     workers_finished: Arc<AtomicUsize>,
-    multi_progress: Arc<MultiProgress>,
+    multi_progress: Option<Arc<MultiProgress>>,
     timely_traces: TimelyReplaySource,
     differential_traces: Option<DifferentialReplaySource>,
     progress_traces: Option<ProgressReplaySource>,
@@ -99,7 +99,7 @@ where
         total_sources = total_sources,
     );
 
-    let probe = worker.dataflow_named("DDShow Analysis Dataflow", |scope| {
+    let (probe, observers) = worker.dataflow_named("DDShow Analysis Dataflow", |scope| {
         // If the dataflow is being sourced from a file, limit the
         // number of events read out in each batch so we don't overload
         // downstream consumers
@@ -134,7 +134,7 @@ where
                 timely_traces,
                 replay_shutdown.clone(),
                 fuel.clone(),
-                &multi_progress,
+                multi_progress.as_deref(),
                 "Timely",
                 &mut progress_bars,
                 &mut source_counter,
@@ -150,7 +150,7 @@ where
                     traces,
                     replay_shutdown.clone(),
                     fuel.clone(),
-                    &multi_progress,
+                    multi_progress.as_deref(),
                     "Differential",
                     &mut progress_bars,
                     &mut source_counter,
@@ -176,7 +176,7 @@ where
                     traces,
                     replay_shutdown.clone(),
                     fuel.clone(),
-                    &multi_progress,
+                    multi_progress.as_deref(),
                     "Progress",
                     &mut progress_bars,
                     &mut source_counter,
@@ -194,7 +194,7 @@ where
         span.in_scope(|| {
             dataflow::dataflow(
                 scope,
-                &*args,
+                &args,
                 &timely_stream,
                 differential_stream.as_ref(),
                 progress_stream.as_ref(),
@@ -205,12 +205,21 @@ where
 
     // Spawn a thread to display the worker progress bars
     if worker.index() == 0 {
-        thread::spawn(move || {
-            multi_progress.join().expect("failed to poll progress bars");
-        });
+        if let Some(multi_progress) = multi_progress {
+            Builder::new()
+                .name("ddshow-progress-updater".to_owned())
+                .spawn(move || multi_progress.join().expect("failed to poll progress bars"))
+                .expect("failed to spawn progress polling thread");
+        }
     }
 
     'work_loop: while !probe.done() {
+        // for (name, probe) in observers.iter() {
+        //     probe.with_frontier(|frontier| {
+        //         println!("worker {}, {}: {:?}", worker.index(), name, frontier);
+        //     });
+        // }
+
         if !replay_shutdown.load(Ordering::Acquire) {
             tracing::info!(
                 worker_id = worker.index(),
@@ -224,7 +233,11 @@ where
             break 'work_loop;
         }
 
+        let start_time = Instant::now();
         worker.step_or_park(Some(Duration::from_millis(500)));
+
+        let elapsed = start_time.elapsed();
+        tracing::debug!("worker {} stepped for {:#?}", worker.index(), elapsed);
     }
 
     for (bar, style) in progress_bars {
@@ -251,7 +264,7 @@ fn replay_traces<S, Event, RawEvent, R, A>(
     traces: ReplaySource<R, A>,
     replay_shutdown: Arc<AtomicBool>,
     fuel: Fuel,
-    multi_progress: &MultiProgress,
+    multi_progress: Option<&MultiProgress>,
     source: &'static str,
     progress_bars: &mut Vec<(ProgressBar, ProgressStyle)>,
     source_counter: &mut usize,
@@ -273,39 +286,43 @@ where
         caller.column(),
     );
 
-    let style = ProgressStyle::default_spinner()
-        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-        .template("[{prefix}, {elapsed}] {spinner} {msg}: {len} events, {per_sec}")
-        .on_finish(ProgressFinish::WithMessage(
-            format!("Finished replaying {} events", source.to_lowercase()).into(),
-        ));
-    let finished_style = ProgressStyle::default_spinner()
-        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-        .template("[{prefix}, {elapsed}] Finished replaying {len} {msg} events")
-        .on_finish(ProgressFinish::WithMessage(source.to_lowercase().into()));
+    let progress = multi_progress.map(|multi_progress| {
+        let style = ProgressStyle::default_spinner()
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+            .template("[{prefix}, {elapsed}] {spinner} {msg}: {len} events, {per_sec}")
+            .on_finish(ProgressFinish::WithMessage(
+                format!("Finished replaying {} events", source.to_lowercase()).into(),
+            ));
+        let finished_style = ProgressStyle::default_spinner()
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+            .template("[{prefix}, {elapsed}] Finished replaying {len} {msg} events")
+            .on_finish(ProgressFinish::WithMessage(source.to_lowercase().into()));
 
-    let progress = multi_progress
-        .add(ProgressBar::new(0).with_style(style).with_prefix(format!(
-            "{:0width$}/{:0width$}",
-            *source_counter,
-            total_sources,
-            width = if total_sources >= 100 {
-                3
-            } else if total_sources >= 10 {
-                2
-            } else {
-                1
-            },
-        )))
-        .with_message(format!("Replaying {} events", source.to_lowercase()));
+        let progress = multi_progress
+            .add(ProgressBar::new(0).with_style(style).with_prefix(format!(
+                "{:0width$}/{:0width$}",
+                *source_counter,
+                total_sources,
+                width = if total_sources >= 100 {
+                    3
+                } else if total_sources >= 10 {
+                    2
+                } else {
+                    1
+                },
+            )))
+            .with_message(format!("Replaying {} events", source.to_lowercase()));
 
-    // I'm a genius, giving every bar the same tick speed looks weird
-    // and artificial (almost like the spinners don't actually mean anything),
-    // so each spinner gets a little of an offset so that all of them are
-    // slightly out of sync
-    utils::set_steady_tick(&progress, *source_counter + 1);
+        // I'm a genius, giving every bar the same tick speed looks weird
+        // and artificial (almost like the spinners don't actually mean anything),
+        // so each spinner gets a little of an offset so that all of them are
+        // slightly out of sync
+        utils::set_steady_tick(&progress, *source_counter + 1);
+        progress_bars.push((progress.clone(), finished_style));
 
-    progress_bars.push((progress.clone(), finished_style));
+        progress
+    });
+
     *source_counter += 1;
 
     tracing::debug!(
@@ -316,16 +333,12 @@ where
     );
 
     match traces {
-        ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
-            &name,
-            scope,
-            replay_shutdown,
-            fuel,
-            Some(progress),
-        ),
+        ReplaySource::Rkyv(rkyv) => {
+            rkyv.replay_with_shutdown_into_named(&name, scope, replay_shutdown, fuel, progress)
+        }
 
         ReplaySource::Abomonation(abomonation) => abomonation
-            .replay_with_shutdown_into_named(&name, scope, replay_shutdown, fuel, Some(progress))
+            .replay_with_shutdown_into_named(&name, scope, replay_shutdown, fuel, progress)
             .map(|(time, worker, event): (Duration, usize, RawEvent)| {
                 (time, WorkerId::new(worker), Event::from(event))
             }),

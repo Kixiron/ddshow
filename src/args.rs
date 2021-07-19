@@ -119,6 +119,16 @@ pub struct Args {
     #[structopt(long)]
     pub disable_timeline: bool,
 
+    /// Set the stream encoding for network connections
+    ///
+    /// `rkyv` enables DDShow's rkyv protocol which allows cross-version
+    /// profiling when using the `ddshow-sink` crate.
+    /// `abomonation` is the default encoding, it allows interop with
+    /// timely's native network protocol. Note that if ddshow's and
+    /// the target program's timely versions are different this can
+    /// cause undefined behavior within DDShow, meaning indeterminate
+    /// results will be produced. Using the `rkyv` encoding is encouraged
+    /// where possible.
     #[structopt(
         long,
         default_value = "abomonation",
@@ -131,9 +141,10 @@ pub struct Args {
     pub report_update_duration: Option<u8>,
 
     /// Disables ddshow's terminal output
-    #[structopt(long, short = "q", hidden(true))]
+    #[structopt(long, short = "q")]
     pub quiet: bool,
 
+    /// Generate a human-readable version of the target replay files
     #[structopt(long, hidden(true), requires("replay-logs"))]
     pub debug_replay_files: bool,
 
@@ -160,6 +171,14 @@ impl Args {
     /// Returns `true` if the program is replaying logs from a file
     pub const fn is_file_sourced(&self) -> bool {
         self.replay_logs.is_some()
+    }
+
+    pub fn is_quiet(&self) -> bool {
+        self.quiet || atty::isnt(atty::Stream::Stdout)
+    }
+
+    pub fn isnt_quiet(&self) -> bool {
+        !self.is_quiet()
     }
 }
 
@@ -239,23 +258,6 @@ pub enum TerminalColor {
     Never,
 }
 
-impl TerminalColor {
-    /// Returns `true` if the terminal_color is [`Auto`].
-    pub const fn is_auto(&self) -> bool {
-        matches!(self, Self::Auto)
-    }
-
-    /// Returns `true` if the terminal_color is [`Always`].
-    pub const fn is_always(&self) -> bool {
-        matches!(self, Self::Always)
-    }
-
-    // /// Returns `true` if the terminal_color is [`Never`].
-    // pub const fn is_never(&self) -> bool {
-    //     matches!(self, Self::Never)
-    // }
-}
-
 impl FromStr for TerminalColor {
     type Err = String;
 
@@ -295,7 +297,6 @@ macro_rules! parse_gradient {
             Ok(gradient)
         }
 
-        // TODO: Const eval over proc macro
         const ACCEPTED_GRADIENTS: &'static [&str] = &[$($lower),*];
     };
 }
@@ -323,26 +324,6 @@ parse_gradient! {
     "yellow-orange-brown" => YELLOW_ORANGE_BROWN,
     "yellow-orange-red" => YELLOW_ORANGE_RED,
 }
-
-// #[derive(Debug, Clone, Copy)]
-// pub struct ThreadedGradient(Gradient);
-//
-// impl Deref for ThreadedGradient {
-//     type Target = Gradient;
-//
-//     fn deref(&self) -> &Self::Target {
-//         &self.0
-//     }
-// }
-//
-// impl Default for ThreadedGradient {
-//     fn default() -> Self {
-//         Self(colorous::INFERNO)
-//     }
-// }
-//
-// unsafe impl Send for ThreadedGradient {}
-// unsafe impl Sync for ThreadedGradient {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Output {
