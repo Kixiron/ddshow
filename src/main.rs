@@ -16,14 +16,14 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use ddshow_types::{timely_logging::OperatesEvent, OperatorAddr, OperatorId, WorkerId};
-use indicatif::MultiProgress;
+use indicatif::{MultiProgress, ProgressDrawTarget};
 use std::{
     collections::HashMap,
     fs::{self, File},
     io::{self, BufWriter},
     path::Path,
     sync::{
-        atomic::{AtomicBool, AtomicUsize},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
@@ -66,8 +66,21 @@ fn main() -> Result<()> {
         Arc::new(AtomicUsize::new(0)),
         Arc::new(MultiProgress::new()),
     );
+    progress_bars.set_draw_target(if args.is_quiet() {
+        ProgressDrawTarget::hidden()
+    } else {
+        ProgressDrawTarget::stdout()
+    });
+
     let (replay_shutdown, moved_args, moved_workers_finished) =
         (running.clone(), args.clone(), workers_finished.clone());
+
+    let ctrlc_running = running.clone();
+    ctrlc::set_handler(move || {
+        ctrlc_running.store(false, Ordering::Release);
+        tracing::info!("received ctrl+c signal, shutting down");
+    })
+    .context("failed to set ctrl+c handler")?;
 
     // Create the *many* channels used for extracting data from the dataflow
     let (senders, receivers) = DataflowSenders::create();
@@ -293,7 +306,9 @@ fn main() -> Result<()> {
             report_file.replace_range(..r"\\?\".len(), "");
         }
 
-        println!("Wrote report file to {}", report_file);
+        if args.isnt_quiet() {
+            println!("Wrote report file to {}", report_file);
+        }
     }
 
     let mut graph_file = fs::canonicalize(&args.output_dir)
@@ -305,7 +320,9 @@ fn main() -> Result<()> {
         graph_file.replace_range(..r"\\?\".len(), "");
     }
 
-    println!("Wrote output graph to file:///{}", graph_file);
+    if args.isnt_quiet() {
+        println!("Wrote output graph to file:///{}", graph_file);
+    }
 
     Ok(())
 }

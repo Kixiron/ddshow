@@ -15,7 +15,7 @@ use crossbeam_channel::Receiver;
 use ddshow_sink::{DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE, TIMELY_PROGRESS_LOG_FILE};
 use ddshow_types::progress_logging::TimelyProgressEvent;
 use differential_dataflow::logging::DifferentialEvent as RawDifferentialEvent;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rkyv::{
     de::deserializers::SharedDeserializeMap, validation::validators::DefaultValidator, Archive,
     Deserialize,
@@ -25,7 +25,6 @@ use std::{
     ffi::OsStr,
     fmt::Debug,
     fs::{self, File},
-    hint,
     io::{self, BufReader, BufWriter, Read, Write},
     iter,
     net::{SocketAddr, TcpListener, TcpStream},
@@ -33,9 +32,8 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{self, AtomicBool, AtomicUsize, Ordering},
-        Arc, Barrier,
+        Arc,
     },
-    thread,
     time::{Duration, Instant},
 };
 use timely::{
@@ -274,9 +272,16 @@ where
     let finished_style =
         ProgressStyle::default_spinner().template("[{elapsed}] {prefix}: {wide_msg}");
 
-    let progress = ProgressBar::new(connections.get() as u64)
-        .with_style(progress_style)
-        .with_prefix(prefix);
+    let progress = ProgressBar::with_draw_target(
+        connections.get() as u64,
+        if args.is_quiet() {
+            ProgressDrawTarget::hidden()
+        } else {
+            ProgressDrawTarget::stdout()
+        },
+    )
+    .with_style(progress_style)
+    .with_prefix(prefix);
 
     utils::set_steady_tick(&progress, connections.get());
 
@@ -300,6 +305,7 @@ where
                 entry.map_or_else(
                     |err| {
                         tracing::error!(dir = ?log_dir, "failed to open file: {:?}", err);
+                        // TODO: If we're quiet should we make an error print?
                         eprintln!("failed to open file: {:?}", err);
 
                         None
@@ -321,6 +327,7 @@ where
                     progress.set_message(replay_file.display().to_string());
                     progress.inc_length(1);
 
+                    // FIXME: This is kinda crappy
                     if args.debug_replay_files {
                         let input_file = File::open(&replay_file).with_context(|| {
                             format!("failed to open {} log file within replay directory", target)
@@ -657,33 +664,16 @@ pub fn wait_for_input(
     worker_guards: WorkerGuards<Result<()>>,
     receivers: DataflowReceivers,
 ) -> Result<DataflowData> {
-    let mut stdin = io::stdin();
-
-    let (send, recv) = crossbeam_channel::bounded(1);
-    let barrier = Arc::new(Barrier::new(2));
-
-    let thread_barrier = barrier.clone();
-    thread::spawn(move || {
-        thread_barrier.wait();
-
-        // Wait for input
-        let _ = stdin.read(&mut [0]);
-
-        tracing::debug!("stdin thread got input from stdin");
-        send.send(()).unwrap();
-    });
-
-    // Write a prompt to the terminal for the user
-    let message = if args.is_file_sourced() {
-        "Press enter to finish loading trace data (this will cause data to not be fully processed)..."
-    } else {
-        "Press enter to finish collecting trace data (this will crash the source computation \
+    if args.isnt_quiet() {
+        // Write a prompt to the terminal for the user
+        let message = if args.is_file_sourced() {
+            "Press ctrl+c to stop loading trace data (this will cause data to not be fully processed)..."
+        } else {
+            "Press ctrl+c to stop collecting trace data (this will crash the source computation \
             if it's currently running and cause data to not be fully processed)..."
-    };
-    println!("{}", message);
-
-    // Sync up with the user input thread
-    barrier.wait();
+        };
+        println!("{}", message);
+    }
 
     let (mut fuel, mut extractor) = (
         Fuel::limited(IDLE_EXTRACTION_FUEL),
@@ -697,8 +687,6 @@ pub fn wait_for_input(
     let mut last_report_update = Instant::now();
 
     loop {
-        hint::spin_loop();
-
         // If all workers finish their computations
         if workers_finished.load(Ordering::Acquire) == num_threads {
             tracing::info!(
@@ -723,20 +711,9 @@ pub fn wait_for_input(
             break;
         }
 
-        // If the user shuts down the dataflow
-        if recv.recv_timeout(Duration::from_millis(500)).is_ok() {
-            tracing::info!(
-                num_threads = num_threads,
-                workers_finished = workers_finished.load(Ordering::Acquire),
-                running = running.load(Ordering::Acquire),
-                "main thread got shutdown signal, received input from user",
-            );
-
-            break;
-        }
-
         // After we've checked all of our exit conditions we can pull some
         // data from out of the target dataflow
+        fuel.reset();
         extractor.extract_with_fuel(&mut fuel);
 
         tracing::debug!(
@@ -745,8 +722,6 @@ pub fn wait_for_input(
             "spent {} fuel within the main thread's wait loop",
             fuel.used().unwrap_or(usize::MAX),
         );
-
-        fuel.reset();
 
         if let Some(duration) = report_update_duration {
             let elapsed = last_report_update.elapsed();
@@ -794,7 +769,10 @@ pub fn wait_for_input(
 
     tracing::debug!("extracting all remaining data from the dataflow");
     let data = extractor.extract_all();
-    println!(" done!");
+
+    if args.isnt_quiet() {
+        println!(" done!");
+    }
 
     Ok(data)
 }

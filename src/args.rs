@@ -119,6 +119,15 @@ pub struct Args {
     #[structopt(long)]
     pub disable_timeline: bool,
 
+    /// Sets the stream encoding for ddshow's tcp streams
+    ///
+    /// `rkyv` is the recommended setting since it uses a format
+    /// that's stable across timely versions. `abomonation` is
+    /// the default for compatibility with timely's default logging
+    /// infrastructure. Note that when using the `abomonation`
+    /// stream encoding the versions of timely that the target
+    /// program uses must be the same as the version that ddshow
+    /// uses due to how `abomonation` works.
     #[structopt(
         long,
         default_value = "abomonation",
@@ -131,9 +140,10 @@ pub struct Args {
     pub report_update_duration: Option<u8>,
 
     /// Disables ddshow's terminal output
-    #[structopt(long, short = "q", hidden(true))]
+    #[structopt(long, short = "q")]
     pub quiet: bool,
 
+    /// Prints out a text representation of the given replay files
     #[structopt(long, hidden(true), requires("replay-logs"))]
     pub debug_replay_files: bool,
 
@@ -160,6 +170,14 @@ impl Args {
     /// Returns `true` if the program is replaying logs from a file
     pub const fn is_file_sourced(&self) -> bool {
         self.replay_logs.is_some()
+    }
+
+    pub fn is_quiet(&self) -> bool {
+        self.quiet || atty::isnt(atty::Stream::Stdout)
+    }
+
+    pub fn isnt_quiet(&self) -> bool {
+        !self.is_quiet()
     }
 }
 
@@ -239,23 +257,6 @@ pub enum TerminalColor {
     Never,
 }
 
-impl TerminalColor {
-    /// Returns `true` if the terminal_color is [`Auto`].
-    pub const fn is_auto(&self) -> bool {
-        matches!(self, Self::Auto)
-    }
-
-    /// Returns `true` if the terminal_color is [`Always`].
-    pub const fn is_always(&self) -> bool {
-        matches!(self, Self::Always)
-    }
-
-    // /// Returns `true` if the terminal_color is [`Never`].
-    // pub const fn is_never(&self) -> bool {
-    //     matches!(self, Self::Never)
-    // }
-}
-
 impl FromStr for TerminalColor {
     type Err = String;
 
@@ -265,6 +266,7 @@ impl FromStr for TerminalColor {
             "auto" => Ok(Self::Auto),
             "always" => Ok(Self::Always),
             "never" => Ok(Self::Never),
+
             _ => Err(format!(
                 "invalid terminal color {:?}, only `auto`, `always` and `never` are supported",
                 string,

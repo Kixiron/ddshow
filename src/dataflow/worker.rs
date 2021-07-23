@@ -16,7 +16,7 @@ use ddshow_types::{
     timely_logging::TimelyEvent, WorkerId,
 };
 use differential_dataflow::{logging::DifferentialEvent as RawDifferentialEvent, Data};
-use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressFinish, ProgressStyle};
 use std::{
     fmt::Debug,
     num::NonZeroUsize,
@@ -131,6 +131,7 @@ where
         let timely_stream = span.in_scope(|| {
             replay_traces::<_, TimelyEvent, RawTimelyEvent, _, _>(
                 scope,
+                &args,
                 timely_traces,
                 replay_shutdown.clone(),
                 fuel.clone(),
@@ -147,6 +148,7 @@ where
             if let Some(traces) = differential_traces {
                 let stream = replay_traces::<_, DifferentialEvent, RawDifferentialEvent, _, _>(
                     scope,
+                    &args,
                     traces,
                     replay_shutdown.clone(),
                     fuel.clone(),
@@ -173,6 +175,7 @@ where
 
                 let stream = replay_traces::<_, TimelyProgressEvent, TimelyProgressEvent, _, _>(
                     scope,
+                    &args,
                     traces,
                     replay_shutdown.clone(),
                     fuel.clone(),
@@ -248,6 +251,7 @@ where
 #[allow(clippy::too_many_arguments)]
 fn replay_traces<S, Event, RawEvent, R, A>(
     scope: &mut S,
+    args: &Args,
     traces: ReplaySource<R, A>,
     replay_shutdown: Arc<AtomicBool>,
     fuel: Fuel,
@@ -285,18 +289,29 @@ where
         .on_finish(ProgressFinish::WithMessage(source.to_lowercase().into()));
 
     let progress = multi_progress
-        .add(ProgressBar::new(0).with_style(style).with_prefix(format!(
-            "{:0width$}/{:0width$}",
-            *source_counter,
-            total_sources,
-            width = if total_sources >= 100 {
-                3
-            } else if total_sources >= 10 {
-                2
-            } else {
-                1
-            },
-        )))
+        .add(
+            ProgressBar::with_draw_target(
+                0,
+                if args.is_quiet() {
+                    ProgressDrawTarget::hidden()
+                } else {
+                    ProgressDrawTarget::stdout()
+                },
+            )
+            .with_style(style)
+            .with_prefix(format!(
+                "{:0width$}/{:0width$}",
+                *source_counter + 1,
+                total_sources,
+                width = if total_sources >= 100 {
+                    3
+                } else if total_sources >= 10 {
+                    2
+                } else {
+                    1
+                },
+            )),
+        )
         .with_message(format!("Replaying {} events", source.to_lowercase()));
 
     // I'm a genius, giving every bar the same tick speed looks weird

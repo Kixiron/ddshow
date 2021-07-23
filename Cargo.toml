@@ -25,6 +25,8 @@ default = []
 timely-next = []
 
 [dependencies]
+atty = "0.2.14"
+ctrlc = "3.1.9"
 anyhow = "1.0.38"
 tracing = "0.1.25"
 colorous = "1.0.3"

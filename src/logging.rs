@@ -1,4 +1,4 @@
-use crate::args::Args;
+use crate::args::{Args, TerminalColor};
 use anyhow::Result;
 use ddshow_sink::{
     DIFFERENTIAL_ARRANGEMENT_LOGGER_NAME, TIMELY_LOGGER_NAME, TIMELY_PROGRESS_LOGGER_NAME,
@@ -11,18 +11,26 @@ use tracing_subscriber::{
 };
 
 pub(crate) fn init_logging(args: &Args) {
+    let ansi_enabled = match args.color {
+        TerminalColor::Auto => atty::is(atty::Stream::Stdout),
+        TerminalColor::Always => true,
+        TerminalColor::Never => false,
+    };
+
     let filter_layer = EnvFilter::from_env("DDSHOW_LOG");
+    // TODO: Write an improved version of the pretty formatter
     let fmt_layer = tracing_subscriber::fmt::layer()
-        .pretty()
         .with_timer(Uptime::default())
         .with_thread_names(true)
-        .with_ansi(args.color.is_always() || args.color.is_auto())
-        .with_level(false);
+        .with_ansi(ansi_enabled)
+        .with_level(true);
 
-    let _ = tracing_subscriber::registry()
-        .with(filter_layer)
-        .with(fmt_layer)
-        .try_init();
+    let registry = tracing_subscriber::registry().with(filter_layer);
+    let _ = if cfg!(test) {
+        registry.with(fmt_layer.with_test_writer()).try_init()
+    } else {
+        registry.with(fmt_layer).try_init()
+    };
 }
 
 // TODO: Progress logging & configure logging via the cli
