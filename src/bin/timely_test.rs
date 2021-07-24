@@ -87,7 +87,7 @@ fn main() {
 
             (
                 input,
-                output_stream.consolidate().probe(),
+                output_stream.probe(),
                 output_stream.arrange_by_self().trace,
             )
         });
@@ -121,7 +121,7 @@ fn main() {
             input.flush();
 
             if worker.index() == 0 {
-                println!("ingested epoch {}/{}", i + 1, args.iterations.get());
+                println!("ingested epoch {}/{}", i, args.iterations.get());
             }
         }
 

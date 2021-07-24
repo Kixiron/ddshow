@@ -139,7 +139,9 @@ where
                     },
                 );
 
-                links.concatenate(vec![ingress, egress]).distinct_core()
+                links
+                    .concatenate(vec![ingress, egress])
+                    .distinct_core::<D>()
             });
 
         propagated_channels

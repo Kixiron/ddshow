@@ -1,7 +1,7 @@
 use crate::dataflow::{
-    operators::{FlatSplit, Keys},
-    utils::ProgressLogBundle,
-    Diff, OperatorShape,
+    operators::{FlatSplit, Keys, MapTimed},
+    utils::{Diff, ProgressLogBundle, Time},
+    OperatorShape,
 };
 use abomonation_derive::Abomonation;
 use ddshow_types::{ChannelId, OperatorAddr, OperatorId, PortId, WorkerId};
@@ -10,7 +10,7 @@ use differential_dataflow::{
     AsCollection, Collection,
 };
 use serde::{Deserialize, Serialize};
-use std::{iter, time::Duration};
+use std::iter;
 use timely::dataflow::{Scope, Stream};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
@@ -149,25 +149,22 @@ pub fn aggregate_channel_messages<S>(
     shapes: &Collection<S, OperatorShape, Diff>,
 ) -> Collection<S, OperatorProgress, Diff>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
 {
-    let (produced, consumed) =
-        progress_stream.flat_split_named("Progress Inputs & Outputs", |(time, worker, event)| {
+    let (produced, consumed) = progress_stream.flat_split_named(
+        "Progress Inputs & Outputs",
+        |(_event_time, worker, event)| {
             // FIXME: Rust 2021 edition allows closures to capture fields instead of the whole struct
             let (scope_addr, channel) = (event.addr, event.channel);
 
-            let messages: Box<dyn Iterator<Item = (_, _, _)>> =
+            let messages: Box<dyn Iterator<Item = (_, _)>> =
                 Box::new(event.messages.into_iter().map(move |message| {
                     (
-                        (
-                            (worker, message.node, scope_addr.clone()),
-                            (message.port, channel, message.diff),
-                        ),
-                        time,
-                        1,
+                        (worker, message.node, scope_addr.clone()),
+                        (message.port, channel, message.diff),
                     )
                 }));
-            let empty: Box<dyn Iterator<Item = (_, _, _)>> = Box::new(iter::empty());
+            let empty: Box<dyn Iterator<Item = (_, _)>> = Box::new(iter::empty());
 
             // When this is a source event `message.node` is the output port of the producing operator
             // while `message.port` is the input port on the consuming operator
@@ -181,8 +178,16 @@ where
                 // `messages` is `((worker, input_port, scope_addr), (output_port, channel, diff))`
                 (empty, messages)
             }
-        });
-    let (produced, consumed) = (produced.as_collection(), consumed.as_collection());
+        },
+    );
+    let (produced, consumed) = (
+        produced
+            .map_timed(|&time, data| (data, time, 1))
+            .as_collection(),
+        consumed
+            .map_timed(|&time, data| (data, time, 1))
+            .as_collection(),
+    );
 
     let shape_ids = shapes
         .map(|shape| ((shape.worker, shape.id), ()))

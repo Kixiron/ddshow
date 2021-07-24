@@ -34,7 +34,7 @@ use timely::dataflow::{
 };
 
 pub(crate) type Diff = isize;
-pub(crate) type Time = Duration;
+pub(crate) type Time = Duration; // Epoch<Duration, Duration>;
 
 pub(crate) type ArrangedVal<S, K, V, D = Diff> =
     Arranged<S, TraceAgent<OrdValSpine<K, V, <S as ScopeParent>::Timestamp, D>>>;
@@ -42,18 +42,19 @@ pub(crate) type ArrangedVal<S, K, V, D = Diff> =
 pub(crate) type ArrangedKey<S, K, D = Diff> =
     Arranged<S, TraceAgent<OrdKeySpine<K, <S as ScopeParent>::Timestamp, D>>>;
 
-pub type TimelyLogBundle<Id = WorkerId, Event = TimelyEvent> = (Time, Id, Event);
-pub type DifferentialLogBundle<Id = WorkerId, Event = DifferentialEvent> = (Time, Id, Event);
-pub type ProgressLogBundle<Id = WorkerId> = (Time, Id, TimelyProgressEvent);
+pub type TimelyLogBundle<Id = WorkerId, Event = TimelyEvent> = (Duration, Id, Event);
+pub type DifferentialLogBundle<Id = WorkerId, Event = DifferentialEvent> = (Duration, Id, Event);
+pub type ProgressLogBundle<Id = WorkerId> = (Duration, Id, TimelyProgressEvent);
 
 #[cfg(feature = "timely-next")]
-pub type ReachabilityLogBundle<Id = WorkerId> = (Time, Id, TrackerEvent);
+pub type ReachabilityLogBundle<Id = WorkerId> = (Duration, Id, TrackerEvent);
 
 /// Puts timestamps into non-overlapping buckets that contain
 /// the timestamps from `last_bucket..PROGRAM_NS_GRANULARITY`
 /// to reduce the load on timely
-pub(crate) fn granulate(&time: &Duration) -> Duration {
+pub(crate) fn granulate(&time: &Time) -> Time {
     let timestamp = time.as_nanos();
+    // let timestamp = time.system_time().as_nanos();
     let window_idx = (timestamp / PROGRAM_NS_GRANULARITY) + 1;
 
     let minted = Duration::from_nanos((window_idx * PROGRAM_NS_GRANULARITY) as u64);
@@ -61,6 +62,8 @@ pub(crate) fn granulate(&time: &Duration) -> Duration {
         u64::try_from(window_idx * PROGRAM_NS_GRANULARITY).map(|res| res as u128),
         Ok(window_idx * PROGRAM_NS_GRANULARITY),
     );
+
+    // let minted = Epoch::new(minted, time.data_time());
     debug_assert!(time <= minted);
 
     minted
@@ -99,12 +102,12 @@ pub(super) fn channel_sink<S, D, R>(
 pub(super) fn logging_event_sink<S>(
     save_logs: &Path,
     scope: &mut S,
-    timely_stream: &Stream<S, (Duration, WorkerId, TimelyEvent)>,
-    probe: &mut ProbeHandle<Duration>,
-    differential_stream: Option<&Stream<S, (Duration, WorkerId, DifferentialEvent)>>,
+    timely_stream: &Stream<S, TimelyLogBundle>,
+    probe: &mut ProbeHandle<Time>,
+    differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
 ) -> Result<()>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
 {
     // Create the directory for log files to go to
     fs::create_dir_all(&save_logs).with_context(|| {

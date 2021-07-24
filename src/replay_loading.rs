@@ -716,7 +716,8 @@ pub fn wait_for_input(
         fuel.reset();
         extractor.extract_with_fuel(&mut fuel);
 
-        tracing::debug!(
+        tracing::trace!(
+            target: "main_thread_fuel_consumption",
             used = ?fuel.used(),
             remaining = ?fuel.remaining(),
             "spent {} fuel within the main thread's wait loop",
@@ -842,7 +843,7 @@ mod tests {
             stream_encoding: StreamEncoding::Rkyv,
             ..Default::default()
         };
-        logging::init_logging(&args);
+        logging::init_logging(args.color);
 
         let barrier = Arc::new(Barrier::new(2));
         let events = vec![

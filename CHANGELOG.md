@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - DDShow no longer listens for an enter on the command line, DDShow now listens for the ctrl+c signal
   to terminate computation
+- DDShow automatically enables `--quiet` when not pointed at a tty
 
 ### Fixed
 

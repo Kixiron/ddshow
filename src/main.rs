@@ -37,7 +37,7 @@ use structopt::StructOpt;
 fn main() -> Result<()> {
     // Grab the args from the user and build the required configs
     let args = Arc::new(Args::from_args());
-    logging::init_logging(&args);
+    logging::init_logging(args.color);
 
     tracing::trace!("initialized and received cli args: {:?}", args);
 

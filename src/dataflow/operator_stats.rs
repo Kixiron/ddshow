@@ -58,7 +58,7 @@ pub fn operator_stats<S>(
     differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
 ) -> Collection<S, ((WorkerId, OperatorId), OperatorStats), Diff>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
 {
     scope.region_named("Build Operator Stats", |region| {
         let (activation_times, differential_stream) = (

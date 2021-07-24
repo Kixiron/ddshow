@@ -1,4 +1,4 @@
-use crate::args::{Args, TerminalColor};
+use crate::args::TerminalColor;
 use anyhow::Result;
 use ddshow_sink::{
     DIFFERENTIAL_ARRANGEMENT_LOGGER_NAME, TIMELY_LOGGER_NAME, TIMELY_PROGRESS_LOGGER_NAME,
@@ -10,8 +10,8 @@ use tracing_subscriber::{
     EnvFilter,
 };
 
-pub(crate) fn init_logging(args: &Args) {
-    let ansi_enabled = match args.color {
+pub(crate) fn init_logging(color: TerminalColor) {
+    let ansi_enabled = match color {
         TerminalColor::Auto => atty::is(atty::Stream::Stdout),
         TerminalColor::Always => true,
         TerminalColor::Never => false,

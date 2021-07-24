@@ -194,7 +194,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::dataflow::{operators::RkyvEventReader, tests::init_test_logging};
+    use crate::{args::TerminalColor, dataflow::operators::RkyvEventReader};
     use ddshow_sink::EventWriter;
     use ddshow_types::{
         differential_logging::{DifferentialEvent, MergeEvent},
@@ -207,7 +207,7 @@ mod tests {
     // FIXME: Make this a proptest
     #[test]
     fn timely_roundtrip() {
-        init_test_logging();
+        crate::logging::init_logging(TerminalColor::Never);
 
         let events = vec![
             Event::Progress(vec![
@@ -260,7 +260,7 @@ mod tests {
     // FIXME: Make this a proptest
     #[test]
     fn differential_roundtrip() {
-        init_test_logging();
+        crate::logging::init_logging(TerminalColor::Never);
 
         let events = vec![
             Event::Progress(vec![

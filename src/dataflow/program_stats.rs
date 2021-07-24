@@ -1,8 +1,8 @@
 use crate::{
     dataflow::{
-        operators::{DelayExt, DiffDuration, JoinArranged, MapExt, Max, Min},
+        operators::{DelayExt, DiffDuration, JoinArranged, MapExt, MapTimed, Max, Min},
         send_recv::ChannelAddrs,
-        utils::{granulate, ArrangedKey, DifferentialLogBundle, TimelyLogBundle},
+        utils::{granulate, ArrangedKey, DifferentialLogBundle, Time, TimelyLogBundle},
         Channel, Diff, OperatorAddr,
     },
     ui::{ProgramStats, WorkerStats},
@@ -13,11 +13,8 @@ use differential_dataflow::{
     operators::{CountTotal, Join, Reduce, ThresholdTotal},
     AsCollection, Collection, Data,
 };
-use std::{iter, time::Duration};
-use timely::dataflow::{
-    operators::{Concat, Map},
-    Scope, Stream,
-};
+use std::iter;
+use timely::dataflow::{operators::Concat, Scope, Stream};
 
 fn combine_events<S, D, TF, TD>(
     timely: &Stream<S, TimelyLogBundle>,
@@ -26,14 +23,14 @@ fn combine_events<S, D, TF, TD>(
     map_differential: TD,
 ) -> Stream<S, D>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
     D: Data,
-    TF: Fn(TimelyLogBundle) -> D + 'static,
-    TD: Fn(DifferentialLogBundle) -> D + 'static,
+    TF: Fn(&Time, TimelyLogBundle) -> D + 'static,
+    TD: Fn(&Time, DifferentialLogBundle) -> D + 'static,
 {
-    let mut events = timely.map(map_timely);
+    let mut events = timely.map_timed(map_timely);
     if let Some(differential) = differential {
-        events = events.concat(&differential.map(map_differential));
+        events = events.concat(&differential.map_timed(map_differential));
     }
 
     events
@@ -52,7 +49,7 @@ pub fn aggregate_worker_stats<S>(
     operator_addrs_by_self: &ArrangedKey<S, (WorkerId, OperatorAddr), Diff>,
 ) -> AggregatedStats<S>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
 {
     let only_operators = operator_addrs_by_self.antijoin_arranged(subgraph_addresses);
     let only_subgraphs = operator_addrs_by_self
@@ -91,7 +88,7 @@ where
 
     let mut total_arrangements = if let Some(differential) = differential {
         differential
-            .map(|(time, worker, event)| {
+            .map_timed(|&time, (_event_time, worker, event)| {
                 let operator = match event {
                     DifferentialEvent::Batch(batch) => batch.operator,
                     DifferentialEvent::Merge(merge) => merge.operator,
@@ -103,7 +100,7 @@ where
                 (((worker, operator), ()), time, 1)
             })
             .as_collection()
-            .distinct_total_core()
+            .distinct_total_core::<Diff>()
             .map_named("Map: Count Arrangements", |((worker, _operator), ())| {
                 worker
             })
@@ -126,18 +123,18 @@ where
 
     let total_events = combine_events(
         timely,
-        |(time, worker, _)| (worker, time, 1isize),
+        |_time, (time, worker, _)| (worker, time, 1isize),
         differential,
-        |(time, worker, _)| (worker, time, 1),
+        |_time, (time, worker, _)| (worker, time, 1),
     )
     .as_collection()
     .delay_fast(granulate)
     .count_total();
 
-    let create_timestamps = |time, worker| {
+    let create_timestamps = |time: Time, worker| {
         let diff = DiffPair::new(
-            Max::new(DiffDuration::new(time)),
-            Min::new(DiffDuration::new(time)),
+            Max::new(DiffDuration::new(time)), // .data_time())),
+            Min::new(DiffDuration::new(time)), // .data_time())),
         );
 
         (worker, time, diff)
@@ -145,9 +142,9 @@ where
 
     let total_runtime = combine_events(
         timely,
-        move |(time, worker, _)| create_timestamps(time, worker),
+        move |_time, (time, worker, _)| create_timestamps(time, worker),
         differential,
-        move |(time, worker, _)| create_timestamps(time, worker),
+        move |_time, (time, worker, _)| create_timestamps(time, worker),
     )
     .as_collection()
     .delay_fast(granulate)

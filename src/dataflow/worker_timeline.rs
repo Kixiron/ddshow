@@ -1,7 +1,7 @@
 use crate::dataflow::{
     constants::EVENT_NS_MARGIN,
     operators::{DelayExt, Multiply, Split},
-    utils::{granulate, DifferentialLogBundle},
+    utils::{granulate, DifferentialLogBundle, Time},
 };
 use abomonation_derive::Abomonation;
 use ddshow_types::{
@@ -32,7 +32,7 @@ pub(super) fn worker_timeline<S>(
     differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
 ) -> Collection<S, TimelineEvent, Present>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
 {
     scope.region_named("Collect Worker Timelines", |region| {
         let (differential_stream, timely_events) = (
@@ -54,10 +54,9 @@ where
     })
 }
 
-pub(super) type TimelineStreamEvent = (TimelineEvent, Duration, Present);
+pub(super) type TimelineStreamEvent = (TimelineEvent, Time, Present);
 pub(super) type EventMap = HashMap<(WorkerId, EventKind), Vec<Duration>>;
-type EventOutput<'a> =
-    OutputHandle<'a, Duration, TimelineStreamEvent, Tee<Duration, TimelineStreamEvent>>;
+type EventOutput<'a> = OutputHandle<'a, Time, TimelineStreamEvent, Tee<Time, TimelineStreamEvent>>;
 
 pub(super) fn process_timely_event(
     event_processor: &mut EventProcessor<'_, '_>,
@@ -128,7 +127,7 @@ pub(super) fn collect_differential_events<S>(
     event_stream: &Stream<S, DifferentialLogBundle>,
 ) -> Collection<S, TimelineEvent, Present>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
 {
     event_stream
         .unary(
@@ -198,7 +197,7 @@ pub(super) struct EventProcessor<'a, 'b> {
     map_buffer: &'a mut EventMap,
     stack_buffer: &'a mut Vec<Vec<Duration>>,
     output: &'a mut EventOutput<'b>,
-    capability: &'a Capability<Duration>,
+    capability: &'a Capability<Time>,
     worker: WorkerId,
     time: Duration,
 }
@@ -209,7 +208,7 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
         map_buffer: &'a mut EventMap,
         stack_buffer: &'a mut Vec<Vec<Duration>>,
         output: &'a mut EventOutput<'b>,
-        capability: &'a Capability<Duration>,
+        capability: &'a Capability<Time>,
         worker: WorkerId,
         time: Duration,
     ) -> Self {
@@ -313,7 +312,7 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
         output: &mut EventOutput,
         current_time: Duration,
         start_time: Duration,
-        capability: &Capability<Duration>,
+        capability: &Capability<Time>,
         event: EventKind,
         worker: WorkerId,
     ) {
