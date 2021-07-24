@@ -57,7 +57,7 @@ impl<T> CrossbeamExtractor<T> {
 impl<T, D, R> CrossbeamExtractor<Event<T, (D, T, R)>>
 where
     T: Debug + Ord + Hash + Clone,
-    D: Ord + Hash + Clone,
+    D: Debug + Ord + Hash + Clone,
     R: Semigroup,
 {
     /// Extracts in a non-blocking manner, exerting fuel for any data pulled from the channel
@@ -75,7 +75,15 @@ where
 
             match self.0.try_recv() {
                 // Throw all data into the given `sink`
-                Ok(Event::Messages(_time, mut data)) => {
+                Ok(Event::Messages(time, mut data)) => {
+                    tracing::trace!(
+                        target: "extracted_data",
+                        time = ?time,
+                        data = ?data,
+                        "extracted {} events",
+                        data.len(),
+                    );
+
                     // `.sort_unstable_by()` is `O(n * log(n))` so we get a *very* rough estimate
                     // of the sort call's complexity to let us exert effort roughly proportional
                     // to the work we've actually done
@@ -123,7 +131,7 @@ where
             // to keep our memory usage from exploding. This is overly
             // aggressive but there's not an alternative until `.shrink_to()`
             // stabilizes.
-            if sink.capacity() > sink.len() * 2 {
+            if sink.capacity() > sink.len() * 4 {
                 sink.shrink_to_fit();
             }
         }

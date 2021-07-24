@@ -215,6 +215,7 @@ where
         S: Scope<Timestamp = T>;
 }
 
+// impl<T, D, I> ReplayWithShutdown<Epoch<Duration, T>, D> for I
 impl<T, D, I> ReplayWithShutdown<T, D> for I
 where
     T: Timestamp + Default,
@@ -234,6 +235,7 @@ where
     ) -> Stream<S, D>
     where
         N: Into<String>,
+        // S: Scope<Timestamp = Epoch<Duration, T>>,
         S: Scope<Timestamp = T>,
     {
         let worker_index = scope.index();
@@ -272,6 +274,7 @@ where
         let (mut started, mut streams_finished) = (false, vec![false; event_streams.len()]);
 
         let logger: Option<TimelyLogger> = scope.log_register().get("timely");
+        // let start_time = Instant::now();
 
         builder.build(move |progress| {
             if let Some(logger) = logger.as_ref() {
@@ -283,23 +286,28 @@ where
             if !started {
                 tracing::debug!(
                     "acquired {} capabilities from within `.replay_with_shutdown_into_core()`",
-                    event_streams.len().saturating_sub(1),
+                    event_streams.len() as i64 - 1,
                 );
 
+                // // Remove the default timestamp given to us by timely
+                // progress.internals[0].update(S::Timestamp::minimum(), -1);
+
                 // The first thing we do is modify our capabilities to match the number of streams we manage.
-                // This should be a simple change of `self.event_streams.len() - 1`. We only do this once, as
+                // This should be a simple change of `event_streams.len() - 1`. We only do this once, as
                 // our very first action.
                 progress.internals[0]
-                    .update(S::Timestamp::minimum(), (event_streams.len() as i64) - 1);
+                    .update(S::Timestamp::minimum(), event_streams.len() as i64 - 1);
                 antichain.update_iter(iter::once((
                     S::Timestamp::minimum(),
-                    event_streams.len() as i64 - 1,
+                    event_streams.len() as i64,
                 )));
 
                 started = true;
             }
 
+            // let system_time = start_time.elapsed();
             fuel.reset();
+
             'event_loop: for (stream_idx, event_stream) in event_streams.iter_mut().enumerate() {
                 'stream_loop: loop {
                     let next = event_stream.next(&mut streams_finished[stream_idx]);
@@ -312,19 +320,31 @@ where
 
                                 progress.internals[0].extend(vec.iter().cloned());
                                 antichain.update_iter(vec);
+
+                                // progress.internals[0].extend(vec.iter().cloned().map(
+                                //     |(data_time, diff)| (Epoch::new(system_time, data_time), diff),
+                                // ));
+                                // antichain.update_iter(vec.into_iter().map(|(data_time, diff)| {
+                                //     (Epoch::new(system_time, data_time), diff)
+                                // }));
                             }
 
                             Event::Messages(time, mut data) => {
-                                // Exert effort for each record we receive
-                                fuel.exert(data.len());
+                                let data_len = data.len();
 
                                 // Update the progress bar with the number of messages we've ingested
                                 if let Some(bar) = progress_bar.as_ref() {
-                                    bar.inc_length(data.len() as u64);
-                                    bar.inc(data.len() as u64);
+                                    bar.inc_length(data_len as u64);
                                 }
 
+                                // Exert effort for each record we receive
+                                fuel.exert(data_len);
+
                                 output.session(&time).give_vec(&mut data);
+
+                                if let Some(bar) = progress_bar.as_ref() {
+                                    bar.inc(data_len as u64);
+                                }
                             }
                         },
 
@@ -357,6 +377,12 @@ where
                 }
             }
 
+            tracing::debug!(
+                target: "replay_frontier",
+                worker = worker_index,
+                frontier = ?antichain,
+            );
+
             let all_streams_finished = streams_finished.iter().copied().all(identity);
 
             // If we're supposed to be running and haven't completed our input streams,
@@ -374,7 +400,8 @@ where
                 activator.activate_after(reactivation_delay);
 
                 // Tell timely we have work left to do
-                true
+                // true
+                false
 
             // If we're not supposed to be running or all input streams are finished,
             // flush our outputs and release all outstanding capabilities so that
@@ -394,8 +421,8 @@ where
                     reason,
                 );
 
-                // Flush the output stream
-                output.cease();
+                // // Flush the output stream
+                // output.cease();
 
                 // Release all outstanding capabilities
                 while !antichain.is_empty() {

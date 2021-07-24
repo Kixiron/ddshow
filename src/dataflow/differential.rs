@@ -1,14 +1,13 @@
 use crate::dataflow::{
-    operators::{Max, Min},
-    utils::{Diff, DifferentialLogBundle},
-    FilterMap,
+    operators::{FilterMapTimed, Max, Min},
+    utils::{Diff, DifferentialLogBundle, Time},
 };
 use abomonation_derive::Abomonation;
 use ddshow_types::{differential_logging::DifferentialEvent, OperatorId, WorkerId};
 #[cfg(not(feature = "timely-next"))]
 use differential_dataflow::difference::DiffPair;
 use differential_dataflow::{
-    operators::{CountTotal, Join, Reduce},
+    operators::{Count, Join, Reduce},
     AsCollection, Collection,
 };
 use serde::{Deserialize, Serialize};
@@ -20,13 +19,13 @@ pub fn arrangement_stats<S>(
     differential_trace: &Stream<S, DifferentialLogBundle>,
 ) -> Collection<S, ((WorkerId, OperatorId), ArrangementStats), Diff>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
 {
     scope.region_named("Collect arrangement statistics", |region| {
         let differential_trace = differential_trace.enter(region);
 
         let merge_diffs = differential_trace
-            .filter_map(|(time, worker, event)| match event {
+            .filter_map_timed(|&time, (_event_time, worker, event)| match event {
                 DifferentialEvent::Batch(batch) => Some((
                     ((worker, batch.operator), (batch.length as isize, 1)),
                     time,
@@ -47,10 +46,13 @@ where
             .as_collection();
 
         let spline_levels = differential_trace
-            .filter_map(|(time, worker, event)| match event {
+            .filter_map_timed(|&time, (event_time, worker, event)| match event {
                 DifferentialEvent::Merge(merge) => merge.complete.map(|complete_size| {
                     (
-                        ((worker, merge.operator), (time, merge.scale, complete_size)),
+                        (
+                            (worker, merge.operator),
+                            (event_time, merge.scale, complete_size),
+                        ),
                         time,
                         1isize,
                     )
@@ -79,7 +81,7 @@ where
 
                 Some((key, (1, size, batches, min, max)))
             })
-            .count_total()
+            .count()
             .map(|(key, (_count, _total, batches, min, max))| {
                 let stats = ArrangementStats {
                     max_size: max.value as usize,
@@ -103,7 +105,7 @@ where
                     ),
                 ))
             })
-            .count_total()
+            .count()
             .map(
                 |(
                     key,

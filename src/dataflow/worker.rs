@@ -3,7 +3,8 @@ use crate::{
     dataflow::{
         self,
         operators::{EventIterator, Fuel, InspectExt, ReplayWithShutdown},
-        utils, DataflowSenders,
+        utils::{self, Time},
+        DataflowSenders,
     },
     logging,
     replay_loading::{
@@ -26,7 +27,7 @@ use std::{
         Arc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use timely::{
     communication::Allocate,
@@ -214,6 +215,7 @@ where
     }
 
     'work_loop: while !probe.done() {
+        let start_time = Instant::now();
         if !replay_shutdown.load(Ordering::Acquire) {
             tracing::info!(
                 worker_id = worker.index(),
@@ -227,7 +229,26 @@ where
             break 'work_loop;
         }
 
-        worker.step_or_park(Some(Duration::from_millis(500)));
+        if !worker.step_or_park(Some(Duration::from_millis(500))) {
+            tracing::info!(
+                worker_id = worker.index(),
+                "worker {} no longer has work to do",
+                worker.index(),
+            );
+
+            break 'work_loop;
+        }
+
+        let elapsed = start_time.elapsed();
+        probe.with_frontier(|frontier| {
+            tracing::debug!(
+                target: "worker_step_events",
+                frontier = ?frontier,
+                "worker {} stepped for {:#?}",
+                worker.index(),
+                elapsed,
+            );
+        });
     }
 
     for (bar, style) in progress_bars {
@@ -262,7 +283,7 @@ fn replay_traces<S, Event, RawEvent, R, A>(
     total_sources: usize,
 ) -> Stream<S, (Duration, WorkerId, Event)>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
     Event: Data + From<RawEvent>,
     RawEvent: Debug + Clone + 'static,
     R: EventIterator<Duration, (Duration, WorkerId, Event)> + 'static,

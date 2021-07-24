@@ -19,14 +19,14 @@ use differential_dataflow::{
     Collection,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, convert::identity, iter::Cycle, time::Duration};
+use std::{collections::HashMap, iter::Cycle};
 use strum::{EnumIter, IntoEnumIterator};
 use timely::{
     dataflow::{
         operators::{capture::Event, probe::Handle as ProbeHandle},
         Scope, ScopeParent,
     },
-    progress::ChangeBatch,
+    progress::{ChangeBatch, Timestamp},
 };
 
 pub(crate) type ChannelAddrs<S, D> = Arranged<
@@ -76,11 +76,11 @@ macro_rules! make_send_recv {
             #[allow(clippy::too_many_arguments)]
             pub fn install_sinks<S>(
                 mut self,
-                probe: &mut ProbeHandle<Duration>,
+                probe: &mut ProbeHandle<Time>,
                 $($name: (&Collection<S, $ty, make_send_recv!(@diff $($diff)?)>, bool),)*
             )
             where
-                S: Scope<Timestamp = Duration>,
+                S: Scope<Timestamp = Time>,
             {
                 $(
                     let (stream, needs_consolidation) = $name;
@@ -146,8 +146,8 @@ macro_rules! make_send_recv {
         pub struct DataflowExtractor {
             $(pub $name: (Extractor<$ty, $($diff)?>, HashMap<$ty, make_send_recv!(@diff $($diff)?)>),)*
             step: Cycle<DataflowStepIter>,
-            consumed: ChangeBatch<Duration>,
-            last_consumed: Duration,
+            consumed: ChangeBatch<Time>,
+            last_consumed: Time,
         }
 
         impl DataflowExtractor {
@@ -162,7 +162,7 @@ macro_rules! make_send_recv {
                     ),)*
                     step: DataflowStep::iter().cycle(),
                     consumed: ChangeBatch::new(),
-                    last_consumed: Duration::from_secs(0),
+                    last_consumed: Time::minimum(),
                 }
             }
 
@@ -207,24 +207,20 @@ macro_rules! make_send_recv {
             // TODO: Does this need to guard against never-disconnected channels?
             #[inline(never)]
             pub fn extract_all(mut self) -> DataflowData {
-                let mut fuel = Fuel::unlimited();
-                let mut extractor_status = Vec::with_capacity(NUM_VARIANTS);
+                $({
+                    let (extractor, sink) = &mut self.$name;
+                    let is_disconnected = extractor.extract_with_fuel(
+                        &mut Fuel::unlimited(),
+                        sink,
+                        &mut self.consumed,
+                    );
 
-                loop {
-                    $(
-                        extractor_status.push({
-                            let (extractor, sink) = &mut self.$name;
-
-                            extractor.extract_with_fuel(&mut fuel, sink, &mut self.consumed)
-                        });
-                    )*
-
-                    if extractor_status.iter().copied().all(identity) {
-                        break;
+                    if !is_disconnected {
+                        tracing::error!(
+                            concat!("the output channel for ", stringify!($name), " never disconnected"),
+                        );
                     }
-
-                    extractor_status.clear();
-                }
+                })*
 
                 $(
                     let $name: Vec<_> = self.$name.1

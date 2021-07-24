@@ -1,14 +1,21 @@
 #![cfg(test)]
 
-use std::ops::Deref;
+use std::{fmt::Debug, ops::Deref, panic::Location};
 use timely::{dataflow::operators::ActivateCapability, progress::Timestamp};
 
 #[derive(Clone)]
-pub struct ActivateCapabilitySet<T: Timestamp> {
+pub struct ActivateCapabilitySet<T>
+where
+    T: Timestamp,
+{
     elements: Vec<ActivateCapability<T>>,
 }
 
-impl<T: Timestamp> ActivateCapabilitySet<T> {
+#[allow(dead_code)]
+impl<T> ActivateCapabilitySet<T>
+where
+    T: Timestamp,
+{
     pub fn from_elem(capability: ActivateCapability<T>) -> Self {
         Self {
             elements: vec![capability],
@@ -31,11 +38,22 @@ impl<T: Timestamp> ActivateCapabilitySet<T> {
     /// Creates a new capability to send data at `time`.
     ///
     /// This method panics if there does not exist a capability in `self.elements` less than `time`.
+    #[track_caller]
     pub fn delayed(&self, time: &T) -> ActivateCapability<T> {
+        #[cold]
+        #[inline(never)]
+        fn invalid_delayed_panic(time: &dyn Debug, location: &Location) -> ! {
+            panic!(
+                "no time less than {:?} could be found within `ActivateCapabilitySet::delayed()` (called from {}:{}:{})",
+                time, location.file(), location.line(), location.column(),
+            )
+        }
+        let caller = Location::caller();
+
         self.elements
             .iter()
-            .find(|c| c.time().less_than(time))
-            .unwrap()
+            .find(|capability| capability.time().less_than(time))
+            .unwrap_or_else(|| invalid_delayed_panic(time, caller))
             .delayed(time)
     }
 }

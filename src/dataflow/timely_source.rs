@@ -70,7 +70,7 @@ type TimelyCollections<S> = (
     Option<Collection<S, TimelineEvent, Present>>,
 );
 
-type WorkList = VecDeque<(Vec<TimelyLogBundle>, Duration, OutputCapabilities)>;
+type WorkList = VecDeque<(Vec<TimelyLogBundle>, OutputCapabilities)>;
 
 // TODO: These could all emit `Present` difference types since there's no retractions here
 pub(super) fn extract_timely_info<S>(
@@ -79,7 +79,7 @@ pub(super) fn extract_timely_info<S>(
     disable_timeline: bool,
 ) -> TimelyCollections<S>
 where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
 {
     let mut builder = OperatorBuilder::new("Extract Operator Info".to_owned(), scope.clone());
     builder.set_notify(false);
@@ -97,6 +97,12 @@ where
         // This should be done by default when the number of ddshow workers is the same
         // as the number of timely ones, but this ensures that it happens for disk replay
         // and unbalanced numbers of workers to ensure work is fairly divided
+        //
+        // However, this isn't the true reason it's like this: The way that event
+        // processing/association is written depends on each worker having *all* events
+        // for a given target worker. If events from a target worker are split across
+        // multiple source workers then the events will be dropped or otherwise be ignored
+        // or cause inconsistency.
         Exchange::new(|(_, worker, _): &TimelyLogBundle| worker.into_inner() as u64),
     );
 
@@ -134,7 +140,6 @@ where
                 work_list.push_back((
                     // TODO: Keep some extra buffers around
                     buffer,
-                    *capability.time(),
                     handles.retain(capability),
                 ));
             });
@@ -223,7 +228,7 @@ fn work_loop(
     fuel.reset();
 
     'work_loop: while !fuel.is_exhausted() {
-        if let Some((mut buffer, capability_time, mut capabilities)) = work_list.pop_front() {
+        if let Some((mut buffer, mut capabilities)) = work_list.pop_front() {
             fuel.exert(buffer.len());
 
             for (time, worker, event) in buffer.drain(..) {
@@ -245,14 +250,14 @@ fn work_loop(
                 }
 
                 // Get the timestamp for the current event
-                let session_time = capability_time.join(&time);
+                let session_time = capabilities.time().join(&time);
                 capabilities.downgrade(&session_time);
 
                 ingest_event(
                     time,
                     worker,
                     event,
-                    session_time,
+                    capabilities.time(),
                     handles,
                     &capabilities,
                     lifespan_map,
@@ -358,7 +363,7 @@ fn ingest_event(
     time: Duration,
     worker: WorkerId,
     event: TimelyEvent,
-    session_time: Duration,
+    session_time: Time,
     handles: &mut OutputHandles,
     capabilities: &OutputCapabilities,
     lifespan_map: &mut HashMap<(WorkerId, OperatorId), Duration>,
@@ -671,6 +676,7 @@ macro_rules! timely_source_processor {
                 }
             }
 
+            #[allow(dead_code)]
             fn downgrade(&mut self, time: &Time) {
                 $(timely_source_processor!(@downgrade self, time, $name, $($cond)?);)*
             }

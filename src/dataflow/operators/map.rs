@@ -120,3 +120,74 @@ where
             .as_collection()
     }
 }
+
+pub trait MapTimed<T, D1, D2> {
+    type Output;
+
+    #[track_caller]
+    fn map_timed<L>(&self, logic: L) -> Self::Output
+    where
+        D1: Data,
+        D2: Data,
+        L: FnMut(&T, D1) -> D2 + 'static,
+    {
+        self.map_timed_named(&located!("MapTimed"), logic)
+    }
+
+    fn map_timed_named<L>(&self, name: &str, logic: L) -> Self::Output
+    where
+        D1: Data,
+        D2: Data,
+        L: FnMut(&T, D1) -> D2 + 'static;
+}
+
+impl<S, D1, D2> MapTimed<S::Timestamp, D1, D2> for Stream<S, D1>
+where
+    S: Scope,
+    D1: Data,
+{
+    type Output = Stream<S, D2>;
+
+    fn map_timed_named<L>(&self, name: &str, mut logic: L) -> Self::Output
+    where
+        D1: Data,
+        D2: Data,
+        L: FnMut(&S::Timestamp, D1) -> D2 + 'static,
+    {
+        let mut buffer = Vec::new();
+
+        self.unary(Pipeline, name, move |_, _| {
+            move |input, output| {
+                input.for_each(|time, data| {
+                    data.swap(&mut buffer);
+
+                    output
+                        .session(&time)
+                        .give_iterator(buffer.drain(..).map(|x| logic(&time, x)));
+                });
+            }
+        })
+    }
+}
+
+impl<S, D1, D2, R> MapTimed<S::Timestamp, D1, D2> for Collection<S, D1, R>
+where
+    S: Scope,
+    D1: Data,
+    R: Semigroup,
+{
+    type Output = Collection<S, D2, R>;
+
+    fn map_timed_named<L>(&self, name: &str, mut logic: L) -> Self::Output
+    where
+        D1: Data,
+        D2: Data,
+        L: FnMut(&S::Timestamp, D1) -> D2 + 'static,
+    {
+        self.inner
+            .map_named(name, move |(data, time, diff)| {
+                (logic(&time, data), time, diff)
+            })
+            .as_collection()
+    }
+}
