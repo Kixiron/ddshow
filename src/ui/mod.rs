@@ -2,7 +2,7 @@
 
 use crate::{
     args::Args,
-    dataflow::{OperatorProgress, OperatorShape, TimelineEvent as RawTimelineEvent},
+    dataflow::{DataflowData, OperatorProgress, OperatorShape, TimelineEvent as RawTimelineEvent},
 };
 use abomonation_derive::Abomonation;
 use anyhow::{Context as _, Result};
@@ -10,7 +10,11 @@ use bytecheck::CheckBytes;
 use ddshow_types::{ChannelId, OperatorAddr, OperatorId, PortId, WorkerId};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
-use std::{fs, time::Duration};
+use std::{
+    fs::{self, File},
+    io::BufWriter,
+    time::Duration,
+};
 use tera::{Context, Tera};
 
 const GRAPH_HTML: &str = include_str!("graph.html");
@@ -18,29 +22,20 @@ const GRAPH_CSS: &str = include_str!("graph.css");
 const GRAPH_JS: &str = include_str!("graph.js");
 const D3_JS: &str = include_str!("d3.v5.js");
 const DAGRE_JS: &str = include_str!("dagre-d3.js");
-const ECHARTS_JS: &str = include_str!("echarts.min.js");
 
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     args: &Args,
-    nodes: Vec<Node>,
-    subgraphs: Vec<Subgraph>,
-    edges: Vec<Edge>,
-    palette_colors: Vec<String>,
-    timeline_events: Vec<RawTimelineEvent>,
-    operator_shapes: Vec<OperatorShape>,
-    operator_progress: Vec<OperatorProgress>,
+    data: &DataflowData,
+    nodes: &[Node],
+    subgraphs: &[Subgraph],
+    edges: &[Edge],
+    palette_colors: &[String],
 ) -> Result<()> {
     let output_dir = &args.output_dir;
     tracing::info!(output_dir = ?output_dir, "writing graph files to disk");
 
     fs::create_dir_all(output_dir).context("failed to create output directory")?;
-
-    fs::write(output_dir.join("graph.html"), GRAPH_HTML)
-        .context("failed to write output graph to file")?;
-
-    fs::write(output_dir.join("graph.css"), GRAPH_CSS)
-        .context("failed to write output graph to file")?;
 
     fs::write(output_dir.join("d3.v5.js"), D3_JS)
         .context("failed to write output graph to file")?;
@@ -48,29 +43,195 @@ pub fn render(
     fs::write(output_dir.join("dagre-d3.js"), DAGRE_JS)
         .context("failed to write output graph to file")?;
 
-    fs::write(output_dir.join("echarts.min.js"), ECHARTS_JS)
-        .context("failed to write output graph to file")?;
-
+    let vega_data = vega_data(data);
     let graph_data = GraphData {
         nodes,
         subgraphs,
         edges,
         palette_colors,
-        timeline_events,
-        operator_shapes,
-        operator_progress,
+        timeline_events: &data.timeline_events,
+        operator_shapes: &data.operator_shapes,
+        operator_progress: &data.operator_progress,
+        vega_data: &vega_data,
     };
 
-    let context =
+    let mut context =
         Context::from_serialize(graph_data).context("failed to render graph context as json")?;
 
-    let rendered_js =
-        Tera::one_off(GRAPH_JS, &context, false).context("failed to render output graph")?;
+    let mut tera = Tera::default();
+    tera.add_raw_template("graph_js", GRAPH_JS)
+        .context("internal error: failed to add graph.js template to tera")?;
+    tera.add_raw_template("graph_html", GRAPH_HTML)
+        .context("internal error: failed to add graph.html template to tera")?;
 
-    fs::write(output_dir.join("graph.js"), rendered_js)
-        .context("failed to write output graph to file")?;
+    // Render the javascript file & write it to disk
+    let js_file = File::create(args.output_dir.join("graph.js")).with_context(|| {
+        anyhow::format_err!(
+            "failed to create graph.js file at '{}'",
+            args.output_dir.join("graph.js").display(),
+        )
+    })?;
+    tera.render_to("graph_js", &context, BufWriter::new(js_file))
+        .with_context(|| {
+            anyhow::format_err!(
+                "failed to render graph.js to {}",
+                args.output_dir.join("graph.js").display(),
+            )
+        })?;
+
+    // Add the stylesheet into the tera context
+    context.insert("stylesheet", GRAPH_CSS);
+
+    // Render the html file & write it to disk
+    let html_file = File::create(args.output_dir.join("graph.html")).with_context(|| {
+        anyhow::format_err!(
+            "failed to create graph.html file at '{}'",
+            args.output_dir.join("graph.html").display(),
+        )
+    })?;
+    tera.render_to("graph_html", &context, BufWriter::new(html_file))
+        .with_context(|| {
+            anyhow::format_err!(
+                "failed to render graph.html to {}",
+                args.output_dir.join("graph.html").display(),
+            )
+        })?;
 
     Ok(())
+}
+
+// These types reference as much data as possible to try and preserve memory
+#[derive(Debug, Serialize)]
+pub struct VegaNode<'a> {
+    pub id: OperatorId,
+    pub name: &'a str,
+    pub addr: &'a OperatorAddr,
+    pub activations: usize,
+    pub total_runtime: u64,
+    pub average_activation_time: u64,
+    pub max_activation_time: u64,
+    pub min_activation_time: u64,
+    pub activation_durations: Vec<(u64, u64)>,
+    pub max_arrangement_size: Option<usize>,
+    pub min_arrangement_size: Option<usize>,
+    pub arrangement_batches: Option<usize>,
+    pub node_kind: VegaNodeKind,
+    pub per_worker: Vec<(WorkerId, VegaWorkerNode)>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VegaWorkerNode {
+    pub activations: usize,
+    pub total_runtime: u64,
+    pub average_activation_time: u64,
+    pub max_activation_time: u64,
+    pub min_activation_time: u64,
+    pub activation_durations: Vec<(u64, u64)>,
+    pub max_arrangement_size: Option<usize>,
+    pub min_arrangement_size: Option<usize>,
+    pub arrangement_batches: Option<usize>,
+    pub spline_levels: Option<Vec<(u64, usize, usize)>>,
+}
+
+#[derive(Debug, Serialize)]
+pub enum VegaNodeKind {
+    Node,
+    Subgraph,
+}
+
+fn vega_data(data: &DataflowData) -> Vec<VegaNode<'_>> {
+    data.aggregated_operator_stats
+        .iter()
+        .filter_map(|&(id, ref stats)| {
+            let name = &data
+                .name_lookup
+                .iter()
+                .find(|&&((_, op_id), _)| id == op_id)?
+                .1;
+
+            let addr = &data
+                .addr_lookup
+                .iter()
+                .find(|&&((_, op_id), _)| id == op_id)?
+                .1;
+
+            let activation_durations = stats
+                .activation_durations
+                .iter()
+                .map(|(start, duration)| (start.as_nanos() as u64, duration.as_nanos() as u64))
+                .collect();
+
+            let node_kind = if data
+                .subgraphs
+                .iter()
+                .any(|((_, op_addr), _)| op_addr == addr)
+            {
+                VegaNodeKind::Subgraph
+            } else {
+                VegaNodeKind::Node
+            };
+
+            let per_worker = data
+                .operator_stats
+                .iter()
+                .filter(|&&((_, op_id), _)| op_id == id)
+                .map(|&((worker, _), ref stats)| {
+                    let activation_durations = stats
+                        .activation_durations
+                        .iter()
+                        .map(|(start, duration)| {
+                            (start.as_nanos() as u64, duration.as_nanos() as u64)
+                        })
+                        .collect();
+
+                    let stats = VegaWorkerNode {
+                        activations: stats.activations,
+                        total_runtime: stats.total.as_nanos() as u64,
+                        average_activation_time: stats.average.as_nanos() as u64,
+                        max_activation_time: stats.max.as_nanos() as u64,
+                        min_activation_time: stats.min.as_nanos() as u64,
+                        activation_durations,
+                        max_arrangement_size: stats
+                            .arrangement_size
+                            .as_ref()
+                            .map(|arr| arr.max_size),
+                        min_arrangement_size: stats
+                            .arrangement_size
+                            .as_ref()
+                            .map(|arr| arr.min_size),
+                        arrangement_batches: stats.arrangement_size.as_ref().map(|arr| arr.batches),
+                        spline_levels: stats.arrangement_size.as_ref().map(|arr| {
+                            arr.spline_levels
+                                .iter()
+                                .map(|&(time, complete, scale)| {
+                                    (time.as_nanos() as u64, complete, scale)
+                                })
+                                .collect()
+                        }),
+                    };
+
+                    (worker, stats)
+                })
+                .collect();
+
+            Some(VegaNode {
+                id,
+                name,
+                addr,
+                activations: stats.activations,
+                total_runtime: stats.total.as_nanos() as u64,
+                average_activation_time: stats.average.as_nanos() as u64,
+                max_activation_time: stats.max.as_nanos() as u64,
+                min_activation_time: stats.min.as_nanos() as u64,
+                activation_durations,
+                max_arrangement_size: stats.arrangement_size.as_ref().map(|arr| arr.max_size),
+                min_arrangement_size: stats.arrangement_size.as_ref().map(|arr| arr.min_size),
+                arrangement_batches: stats.arrangement_size.as_ref().map(|arr| arr.batches),
+                node_kind,
+                per_worker,
+            })
+        })
+        .collect()
 }
 
 // TODO: Move this to another crate, make serde & abomonation feature-gated,
@@ -78,35 +239,22 @@ pub fn render(
 
 //  - whether differential logging was enabled
 #[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Default,
-    Deserialize,
-    Serialize,
-    Abomonation,
-    Archive,
-    RkyvSerialize,
-    RkyvDeserialize,
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Archive, RkyvSerialize,
 )]
 #[allow(clippy::upper_case_acronyms)]
 #[archive_attr(derive(CheckBytes))]
-pub struct DDShowStats {
+pub struct DDShowStats<'a> {
     pub program: ProgramStats,
     // TODO: Should/would these be better as trees?
-    pub workers: Vec<WorkerStats>,
-    pub dataflows: Vec<DataflowStats>,
-    pub nodes: Vec<NodeStats>,
-    pub channels: Vec<ChannelStats>,
-    pub arrangements: Vec<ArrangementStats>,
-    pub events: Vec<TimelineEvent>,
+    pub workers: &'a [&'a WorkerStats],
+    pub dataflows: &'a [DataflowStats],
+    pub nodes: &'a [NodeStats],
+    pub channels: &'a [ChannelStats],
+    pub arrangements: &'a [ArrangementStats],
+    pub events: &'a [TimelineEvent],
     pub differential_enabled: bool,
     pub progress_enabled: bool,
-    pub ddshow_version: String,
+    pub ddshow_version: &'a str,
     // TODO: Lists of nodes, channels & arrangement ids (or addresses?) sorted
     //       by various metrics, e.g. runtime, size, # merges
     // TODO: Progress logging
@@ -502,23 +650,24 @@ pub struct TimelineEvent {
     pub lifespan: Lifespan,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
-pub struct GraphData {
-    pub nodes: Vec<Node>,
-    pub subgraphs: Vec<Subgraph>,
-    pub edges: Vec<Edge>,
-    pub palette_colors: Vec<String>,
-    pub timeline_events: Vec<RawTimelineEvent>,
-    pub operator_shapes: Vec<OperatorShape>,
-    pub operator_progress: Vec<OperatorProgress>,
+#[derive(Debug, Serialize)]
+pub struct GraphData<'a> {
+    pub nodes: &'a [Node<'a>],
+    pub subgraphs: &'a [Subgraph<'a>],
+    pub edges: &'a [Edge<'a>],
+    pub palette_colors: &'a [String],
+    pub timeline_events: &'a [RawTimelineEvent],
+    pub operator_shapes: &'a [OperatorShape],
+    pub operator_progress: &'a [OperatorProgress],
+    pub vega_data: &'a [VegaNode<'a>],
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
-pub struct Node {
+#[derive(Debug, Serialize)]
+pub struct Node<'a> {
     pub id: OperatorId,
     pub worker: WorkerId,
-    pub addr: OperatorAddr,
-    pub name: String,
+    pub addr: &'a OperatorAddr,
+    pub name: &'a str,
     pub max_activation_time: String,
     pub min_activation_time: String,
     pub average_activation_time: String,
@@ -537,12 +686,12 @@ pub struct ActivationDuration {
     pub activated_at: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
-pub struct Subgraph {
+#[derive(Debug, Serialize)]
+pub struct Subgraph<'a> {
     pub id: OperatorId,
     pub worker: WorkerId,
-    pub addr: OperatorAddr,
-    pub name: String,
+    pub addr: &'a OperatorAddr,
+    pub name: &'a str,
     pub max_activation_time: String,
     pub min_activation_time: String,
     pub average_activation_time: String,
@@ -552,10 +701,10 @@ pub struct Subgraph {
     pub text_color: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
-pub struct Edge {
-    pub src: OperatorAddr,
-    pub dest: OperatorAddr,
+#[derive(Debug, Serialize)]
+pub struct Edge<'a> {
+    pub src: &'a OperatorAddr,
+    pub dest: &'a OperatorAddr,
     pub worker: WorkerId,
     pub channel_id: ChannelId,
     pub edge_kind: EdgeKind,

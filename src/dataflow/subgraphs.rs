@@ -157,7 +157,7 @@ where
                             target_addr,
                         };
 
-                        Some(((worker, channel.target_addr()), channel))
+                        Some(((worker, channel.target_addr().to_owned()), channel))
                     } else {
                         None
                     }

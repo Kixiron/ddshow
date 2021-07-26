@@ -114,9 +114,11 @@ where
     fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>> {
         if self.peer_finished && self.retried {
             *is_finished = true;
+            return Ok(None);
+
+        // FIXME: This could potentially cause some data to be lost
         } else if self.peer_finished {
             self.retried = true;
-            return Ok(None);
         }
 
         // if we can decode something, we should just return it! :D
@@ -261,7 +263,7 @@ where
             ),
             scope.clone(),
         );
-        builder.set_notify(false);
+        builder.set_notify(true);
 
         let address = builder.operator_info().address;
         let activator = scope.activator_for(&address);

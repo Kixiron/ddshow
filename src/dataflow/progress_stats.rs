@@ -60,18 +60,18 @@ impl Channel {
         }
     }
 
-    pub fn source_addr(&self) -> OperatorAddr {
+    pub fn source_addr(&self) -> &OperatorAddr {
         match self {
             Self::ScopeCrossing { source_addr, .. } | Self::Normal { source_addr, .. } => {
-                source_addr.to_owned()
+                source_addr
             }
         }
     }
 
-    pub fn target_addr(&self) -> OperatorAddr {
+    pub fn target_addr(&self) -> &OperatorAddr {
         match self {
             Self::ScopeCrossing { target_addr, .. } | Self::Normal { target_addr, .. } => {
-                target_addr.to_owned()
+                target_addr
             }
         }
     }

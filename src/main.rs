@@ -21,6 +21,7 @@ use std::{
     collections::HashMap,
     fs::{self, File},
     io::{self, BufWriter},
+    ops::Deref,
     path::Path,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -135,10 +136,18 @@ fn main() -> Result<()> {
         .map_err(|err| anyhow::anyhow!("failed to start up timely computation: {}", err))?;
 
     // Wait for the user's prompt
-    let data = wait_for_input(&args, &running, &workers_finished, worker_guards, receivers)?;
+    let mut data = wait_for_input(&args, &running, &workers_finished, worker_guards, receivers)?;
 
-    let name_lookup: HashMap<_, _> = data.name_lookup.iter().cloned().collect();
-    let addr_lookup: HashMap<_, _> = data.addr_lookup.iter().cloned().collect();
+    let name_lookup: HashMap<_, _> = data
+        .name_lookup
+        .iter()
+        .map(|(id, name)| (*id, name.deref()))
+        .collect();
+    let addr_lookup: HashMap<_, _> = data
+        .addr_lookup
+        .iter()
+        .map(|(id, addr)| (*id, addr))
+        .collect();
 
     // Build & emit the textual report
     report::build_report(&*args, &data, &name_lookup, &addr_lookup)?;
@@ -152,125 +161,134 @@ fn main() -> Result<()> {
     // Extract the data from timely
     let mut subgraph_ids = Vec::new();
 
-    let mut node_events = data.nodes;
-    node_events.sort_unstable_by_key(|(addr, _)| addr.clone());
-    tracing::debug!("finished extracting {} node events", node_events.len());
+    data.nodes
+        .sort_unstable_by(|(addr1, _), (addr2, _)| addr1.cmp(addr2));
+    tracing::debug!("finished extracting {} node events", data.nodes.len());
 
-    let mut subgraph_events = data.subgraphs;
-    subgraph_events.sort_unstable_by_key(|(addr, _)| addr.clone());
+    data.subgraphs
+        .sort_unstable_by(|(addr1, _), (addr2, _)| addr1.cmp(addr2));
     tracing::debug!(
         "finished extracting {} subgraph events",
-        subgraph_events.len(),
+        data.subgraphs.len(),
     );
 
-    for &((worker, ref _addr), ref event) in subgraph_events.iter() {
+    for &((worker, _), ref event) in data.subgraphs.iter() {
         subgraph_ids.push((worker, event.id));
     }
 
     let (mut operator_stats, mut raw_timings) = (HashMap::new(), Vec::new());
-    let stats_events = data.operator_stats;
-    tracing::debug!("finished extracting {} stats events", stats_events.len());
+    tracing::debug!(
+        "finished extracting {} stats events",
+        data.operator_stats.len(),
+    );
 
-    for (operator, stats) in stats_events.clone() {
-        if !subgraph_ids.contains(&operator) {
+    for (operator, stats) in data.operator_stats.iter() {
+        if !subgraph_ids.contains(operator) {
             raw_timings.push(stats.total);
         }
 
-        operator_stats.insert(operator, stats);
+        operator_stats.insert(*operator, stats);
     }
 
-    let mut edge_events = data.edges;
-    edge_events.sort_unstable_by_key(|(worker, _, channel, _)| (*worker, channel.channel_id()));
-    tracing::debug!("finished extracting {} edge events", edge_events.len());
+    data.edges
+        .sort_unstable_by_key(|(worker, _, channel, _)| (*worker, channel.channel_id()));
+    tracing::debug!("finished extracting {} edge events", data.edges.len());
 
     let (max_time, min_time) = (
         raw_timings.iter().max().copied().unwrap_or_default(),
         raw_timings.iter().min().copied().unwrap_or_default(),
     );
 
-    let timeline_events = data.timeline_events;
     tracing::debug!(
         "finished extracting {} timeline events",
-        timeline_events.len(),
+        data.timeline_events.len(),
     );
 
-    let html_nodes: Vec<_> = node_events
-        .into_iter()
-        .filter_map(|((worker, addr), OperatesEvent { id, name, .. })| {
-            let &OperatorStats {
-                max,
-                min,
-                average,
-                total,
-                activations: invocations,
-                ref activation_durations,
-                ref arrangement_size,
-                ..
-            } = operator_stats.get(&(worker, id))?;
+    let html_nodes: Vec<_> = data
+        .nodes
+        .iter()
+        .filter_map(
+            |&((worker, ref addr), OperatesEvent { id, ref name, .. })| {
+                let &OperatorStats {
+                    max,
+                    min,
+                    average,
+                    total,
+                    activations: invocations,
+                    ref activation_durations,
+                    ref arrangement_size,
+                    ..
+                } = *operator_stats.get(&(worker, id))?;
 
-            let fill_color = select_color(&args.palette, total, (max_time, min_time));
-            let text_color = fill_color.text_color();
+                let fill_color = select_color(&args.palette, total, (max_time, min_time));
+                let text_color = fill_color.text_color();
 
-            Some(ui::Node {
-                id,
-                worker,
-                addr,
-                name,
-                max_activation_time: format!("{:#?}", max),
-                min_activation_time: format!("{:#?}", min),
-                average_activation_time: format!("{:#?}", average),
-                total_activation_time: format!("{:#?}", total),
-                invocations,
-                fill_color: format!("{}", fill_color),
-                text_color: format!("{}", text_color),
-                activation_durations: activation_durations
-                    .iter()
-                    .map(|(duration, time)| ActivationDuration {
-                        activation_time: duration.as_nanos() as u64,
-                        activated_at: time.as_nanos() as u64,
-                    })
-                    .collect(),
-                max_arrangement_size: arrangement_size.as_ref().map(|arr| arr.max_size),
-                min_arrangement_size: arrangement_size.as_ref().map(|arr| arr.min_size),
-            })
-        })
+                Some(ui::Node {
+                    id,
+                    worker,
+                    addr,
+                    name,
+                    max_activation_time: format!("{:#?}", max),
+                    min_activation_time: format!("{:#?}", min),
+                    average_activation_time: format!("{:#?}", average),
+                    total_activation_time: format!("{:#?}", total),
+                    invocations,
+                    fill_color: format!("{}", fill_color),
+                    text_color: format!("{}", text_color),
+                    // TODO: Teach JS to deal with durations so we don't have to allocate
+                    //       so much garbage
+                    activation_durations: activation_durations
+                        .iter()
+                        .map(|(duration, time)| ActivationDuration {
+                            activation_time: duration.as_nanos() as u64,
+                            activated_at: time.as_nanos() as u64,
+                        })
+                        .collect(),
+                    max_arrangement_size: arrangement_size.as_ref().map(|arr| arr.max_size),
+                    min_arrangement_size: arrangement_size.as_ref().map(|arr| arr.min_size),
+                })
+            },
+        )
         .collect();
 
-    let html_subgraphs: Vec<_> = subgraph_events
-        .into_iter()
-        .filter_map(|((worker, addr), OperatesEvent { id, name, .. })| {
-            let OperatorStats {
-                max,
-                min,
-                average,
-                total,
-                activations: invocations,
-                ..
-            } = *operator_stats.get(&(worker, id))?;
+    let html_subgraphs: Vec<_> = data
+        .subgraphs
+        .iter()
+        .filter_map(
+            |&((worker, ref addr), OperatesEvent { id, ref name, .. })| {
+                let OperatorStats {
+                    max,
+                    min,
+                    average,
+                    total,
+                    activations: invocations,
+                    ..
+                } = **operator_stats.get(&(worker, id))?;
 
-            let fill_color = select_color(&args.palette, total, (max, min));
-            let text_color = fill_color.text_color();
+                let fill_color = select_color(&args.palette, total, (max, min));
+                let text_color = fill_color.text_color();
 
-            Some(ui::Subgraph {
-                id,
-                worker,
-                addr,
-                name,
-                max_activation_time: format!("{:#?}", max),
-                min_activation_time: format!("{:#?}", min),
-                average_activation_time: format!("{:#?}", average),
-                total_activation_time: format!("{:#?}", total),
-                invocations,
-                fill_color: format!("{}", fill_color),
-                text_color: format!("{}", text_color),
-            })
-        })
+                Some(ui::Subgraph {
+                    id,
+                    worker,
+                    addr,
+                    name,
+                    max_activation_time: format!("{:#?}", max),
+                    min_activation_time: format!("{:#?}", min),
+                    average_activation_time: format!("{:#?}", average),
+                    total_activation_time: format!("{:#?}", total),
+                    invocations,
+                    fill_color: format!("{}", fill_color),
+                    text_color: format!("{}", text_color),
+                })
+            },
+        )
         .collect();
 
-    let html_edges: Vec<_> = edge_events
-        // .clone()
-        .into_iter()
-        .map(|(worker, _, channel, _)| ui::Edge {
+    let html_edges: Vec<_> = data
+        .edges
+        .iter()
+        .map(|&(worker, _, ref channel, _)| ui::Edge {
             src: channel.source_addr(),
             dest: channel.target_addr(),
             worker,
@@ -291,13 +309,11 @@ fn main() -> Result<()> {
 
     ui::render(
         &args,
-        html_nodes,
-        html_subgraphs,
-        html_edges,
-        palette_colors,
-        timeline_events,
-        data.operator_shapes,
-        data.operator_progress,
+        &data,
+        &html_nodes,
+        &html_subgraphs,
+        &html_edges,
+        &palette_colors,
     )?;
 
     if !args.no_report_file {
@@ -331,18 +347,16 @@ fn dump_program_json(
     args: &Args,
     file: &Path,
     data: &DataflowData,
-    _name_lookup: &HashMap<(WorkerId, OperatorId), String>,
-    _addr_lookup: &HashMap<(WorkerId, OperatorId), OperatorAddr>,
+    _name_lookup: &HashMap<(WorkerId, OperatorId), &str>,
+    _addr_lookup: &HashMap<(WorkerId, OperatorId), &OperatorAddr>,
 ) -> Result<()> {
     let file = BufWriter::new(File::create(file).context("failed to create json file")?);
 
-    let program = data.program_stats[0].clone();
-    let workers = data.worker_stats[0]
+    let workers: Vec<_> = data.worker_stats[0]
         .iter()
-        .map(|(_, stats)| stats.clone())
+        .map(|(_, stats)| stats)
         .collect();
-    let dataflows = data.dataflow_stats.clone();
-    let events = data
+    let events: Vec<_> = data
         .timeline_events
         .iter()
         .map(|event| TimelineEvent {
@@ -356,17 +370,17 @@ fn dump_program_json(
         .collect();
 
     let data = DDShowStats {
-        program,
-        workers,
-        dataflows,
+        program: data.program_stats[0].clone(),
+        workers: &workers,
+        dataflows: &data.dataflow_stats,
         // FIXME: Do these
-        nodes: Vec::new(),
-        channels: Vec::new(),
-        arrangements: Vec::new(),
-        events,
+        nodes: &[],
+        channels: &[],
+        arrangements: &[],
+        events: &events,
         differential_enabled: args.differential_enabled,
         progress_enabled: false, // args.progress_enabled,
-        ddshow_version: DDSHOW_VERSION.to_string(),
+        ddshow_version: DDSHOW_VERSION,
     };
 
     serde_json::to_writer(file, &data).context("failed to write json to file")?;
