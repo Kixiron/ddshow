@@ -40,14 +40,6 @@ impl OperatorShape {
             outputs,
         }
     }
-
-    // pub const fn scope_addr(&self) -> &OperatorAddr {
-    //     &self.addr
-    // }
-
-    // pub fn operator_addr(&self) -> OperatorAddr {
-    //     self.addr.push_imm(PortId::new(self.id.into_inner()))
-    // }
 }
 
 pub fn operator_shapes<S>(

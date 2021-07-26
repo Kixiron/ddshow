@@ -8,6 +8,7 @@ use timely::{
     progress::Timestamp,
     PartialOrder,
 };
+use tinyvec::TinyVec;
 
 pub trait DelayExt<T> {
     type Output;
@@ -50,8 +51,13 @@ where
                     data.swap(&mut buffer);
 
                     // Apply the delay to the timely stream's timestamp
-                    let new_time = delay(&time);
-                    assert!(time.time().less_equal(&new_time));
+                    let stream_time = delay(&time);
+                    assert!(
+                        time.time().less_equal(&stream_time),
+                        "the delayed time is less than the stream's original time: {:#?} < {:#?}",
+                        stream_time,
+                        time,
+                    );
 
                     // Apply the delay to the ddflow collection's timestamps
                     // FIXME: We probably want to do this in activation time instead of
@@ -60,20 +66,28 @@ where
                         let new_time = delay(&*differential_time);
                         debug_assert!(
                             differential_time.less_equal(&new_time),
-                            "new time is greater than the differential time",
+                            "differential time is greater than the differential time: {:#?} < {:#?}",
+                            new_time,
+                            differential_time,
+                        );
+                        // The ddflow-level timestamp must be greater than or equal to the
+                        // stream's timestamp
+                        debug_assert!(
+                            stream_time.less_equal(&new_time),
+                            "differential time is less than than the stream time: {:#?} < {:#?}",
+                            new_time,
+                            stream_time,
                         );
 
                         *differential_time = new_time;
                     }
 
+                    notificator.notify_at(time.delayed(&stream_time));
                     elements
-                        .entry(new_time.clone())
-                        .or_insert_with(|| {
-                            notificator.notify_at(time.delayed(&new_time));
-                            Vec::new()
-                        })
+                        .entry(stream_time.clone())
+                        .or_insert_with(TinyVec::<[_; 16]>::new)
                         .push(buffer);
-                    dirty.push(new_time);
+                    dirty.push(stream_time);
                 });
 
                 // Perform some cleanup on the data we have just sitting around
@@ -103,7 +117,17 @@ where
                 }
 
                 // for each available notification, send corresponding set
-                notificator.for_each(|time, _, _| {
+                notificator.for_each(|time, _, notificator| {
+                    tracing::trace!(
+                        target: "delay_frontiers",
+                        notify_time = ?time.time(),
+                        frontier = ?notificator.frontier(0),
+                        "DelayFast @ {}:{}:{}",
+                        caller.file(),
+                        caller.line(),
+                        caller.column(),
+                    );
+
                     if let Some(mut buffers) = elements.remove(&time) {
                         for mut data in buffers.drain(..) {
                             output.session(&time).give_vec(&mut data);

@@ -22,6 +22,7 @@ pub struct RkyvEventReader<T, D, R> {
     buffer2: AlignedVec,
     consumed: usize,
     peer_finished: bool,
+    retried: u16,
     shared: SharedDeserializeMap,
     __type: PhantomData<(T, D)>,
 }
@@ -36,6 +37,7 @@ impl<T, D, R> RkyvEventReader<T, D, R> {
             buffer2: AlignedVec::new(),
             consumed: 0,
             peer_finished: false,
+            retried: 0,
             shared: SharedDeserializeMap::new(),
             __type: PhantomData,
         }
@@ -51,18 +53,37 @@ where
     D::Archived: Deserialize<D, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
 {
     fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<TimelyEvent<T, D>>> {
-        if self.peer_finished && self.buffer1[self.consumed..].is_empty() && self.buffer2.is_empty()
-        {
-            *is_finished = true;
-            return Ok(None);
-        }
-
         // Align to read
         let alignment_offset = match self.consumed & 15 {
             0 => 0,
             x => 16 - x,
         };
         let consumed = self.consumed + alignment_offset;
+
+        if self.peer_finished
+            && (self.retried > 1000
+                || self
+                    .buffer1
+                    .get(consumed..)
+                    // We should always be able to access up to `self.consumed`, right?
+                    .map_or(true, |buf| buf.is_empty()))
+        {
+            // Perform some cleanup so that there's less work to be
+            // done when everything drops
+            if !*is_finished {
+                self.bytes = Vec::new();
+                self.buffer1 = AlignedVec::new();
+                self.buffer2 = AlignedVec::new();
+                self.consumed = 0;
+            }
+
+            *is_finished = true;
+            return Ok(None);
+
+        // FIXME: This could potentially cause some data to be lost
+        } else if self.peer_finished {
+            self.retried += 1;
+        }
 
         if let Some(header_slice) = self
             .buffer1
@@ -75,14 +96,6 @@ where
                 .buffer1
                 .get(archive_start..archive_start + archive_length)
             {
-                // let archive = unsafe { archived_root::<Event<T, D>>(slice) };
-                // let event = archive
-                //     .deserialize(&mut AllocDeserializer)
-                //     .unwrap_or_else(|unreachable| match unreachable {});
-                //
-                // self.consumed += alignment_offset + archive_length + mem::size_of::<u128>();
-                // return Ok(Some(event.into()));
-
                 match check_archived_root::<Event<T, D>>(slice) {
                     Ok(archive) => match archive.deserialize(&mut self.shared) {
                         Ok(event) => {

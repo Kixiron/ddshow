@@ -7,7 +7,7 @@ use ddshow_types::{differential_logging::DifferentialEvent, OperatorId, WorkerId
 #[cfg(not(feature = "timely-next"))]
 use differential_dataflow::difference::DiffPair;
 use differential_dataflow::{
-    operators::{Count, Join, Reduce},
+    operators::{CountTotal, Join, Reduce},
     AsCollection, Collection,
 };
 use serde::{Deserialize, Serialize};
@@ -81,7 +81,7 @@ where
 
                 Some((key, (1, size, batches, min, max)))
             })
-            .count()
+            .count_total()
             .map(|(key, (_count, _total, batches, min, max))| {
                 let stats = ArrangementStats {
                     max_size: max.value as usize,
@@ -105,7 +105,7 @@ where
                     ),
                 ))
             })
-            .count()
+            .count_total()
             .map(
                 |(
                     key,

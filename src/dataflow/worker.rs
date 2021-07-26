@@ -367,4 +367,5 @@ where
             }),
     }
     .debug_inspect(move |x| tracing::trace!("{} event: {:?}", source, x))
+    .debug_frontier()
 }

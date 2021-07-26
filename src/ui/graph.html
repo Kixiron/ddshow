@@ -10,26 +10,27 @@
         <!-- TODO: Maybe name this by the targeted project? -->
         <title>Dataflow Graph</title>
 
-        <link rel="stylesheet" type="text/css" href="./graph.css" />
+        <style>
+            {{ stylesheet }}
+        </style>
     </head>
 
     <!-- Load d3.js and dagre d3 -->
+    <!-- FIXME: Dagre is unmaintained, switch to cytoscape.js -->
     <script src="./d3.v5.js"></script>
     <script src="./dagre-d3.js"></script>
 
-    <script type="text/javascript" src="https://unpkg.com/timelines-chart@2.11.1/dist/timelines-chart.min.js"></script>
-
-    <script type="text/javascript" src="./echarts.min.js"></script>
+    <!-- Load the stuff required for vega charts -->
+    <script src="https://cdn.jsdelivr.net/npm/vega@5.20.2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-lite@5.1.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-embed@6.17.0"></script>
 
     <body>
         <div id="dataflow-graph-div">
             <svg id="dataflow-graph"></svg>
         </div>
 
-        <input type="range" id="timeline-worker-selection" name="Worker" min="0" max="0" step="1" value="0" />
-        <div id="worker-timeline"></div>
-
-        <canvas id="operator-graph" width="1920" height="1080" style="z-index: 100; position: absolute"></canvas>
+        <div id="stats-graphs" style="width: 100%; height: 100%"></div>
 
         <script type="text/javascript" src="./graph.js"></script>
     </body>

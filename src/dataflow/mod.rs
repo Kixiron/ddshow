@@ -24,7 +24,6 @@ pub use progress_stats::OperatorProgress;
 pub use progress_stats::{Channel, ProgressInfo};
 pub use send_recv::{DataflowData, DataflowExtractor, DataflowReceivers, DataflowSenders};
 pub use shape::OperatorShape;
-use timely::order::TotalOrder;
 pub use worker::worker_runtime;
 pub use worker_timeline::{EventKind, TimelineEvent};
 
@@ -50,15 +49,18 @@ use differential_dataflow::{
     lattice::Lattice,
     operators::{
         arrange::{ArrangeByKey, ArrangeBySelf, Arranged, TraceAgent},
-        Count, Join, JoinCore, ThresholdTotal,
+        CountTotal, Join, JoinCore, ThresholdTotal,
     },
     trace::TraceReader,
     AsCollection, Collection, ExchangeData,
 };
 use std::iter;
-use timely::dataflow::{
-    operators::{generic::operator, probe::Handle as ProbeHandle},
-    Scope, Stream,
+use timely::{
+    dataflow::{
+        operators::{generic::operator, probe::Handle as ProbeHandle},
+        Scope, Stream,
+    },
+    order::TotalOrder,
 };
 
 // TODO: Dataflow lints
@@ -106,25 +108,28 @@ where
     ) = timely_source::extract_timely_info(scope, timely_stream, args.disable_timeline);
 
     // FIXME: `invocations` looks off, figure that out
-    let operator_stats =
-        operator_stats::operator_stats(scope, &operator_activations.debug(), differential_stream)
-            .debug();
+    let operator_stats = operator_stats::operator_stats(
+        scope,
+        &operator_activations.debug_frontier(),
+        differential_stream,
+    )
+    .debug_frontier();
 
     // FIXME: This is pretty much a guess since there's no way to actually associate
     //        operators/arrangements/channels across workers
     // TODO: This should use a specialized struct to hold relevant things like "total size across workers"
     //       in addition to per-worker stats
     let aggregated_operator_stats =
-        operator_stats::aggregate_operator_stats(&operator_stats).debug();
+        operator_stats::aggregate_operator_stats(&operator_stats).debug_frontier();
 
     // TODO: Turn these into collections of `(WorkerId, OperatorId)` and arrange them
     let (leaves, subgraphs) = sift_leaves_and_scopes(scope, &operator_addrs_by_self);
     let (leaves_arranged, subgraphs_arranged) = (
         leaves
-            .debug()
+            .debug_frontier()
             .arrange_by_self_named("ArrangeBySelf: Dataflow Graph Leaves"),
         subgraphs
-            .debug()
+            .debug_frontier()
             .arrange_by_self_named("ArrangeBySelf: Dataflow Graph Subgraphs"),
     );
 
@@ -132,16 +137,23 @@ where
         .join_core(&operator_addrs, |&(worker, _), &(), &id| {
             iter::once((worker, id))
         })
-        .debug()
+        .debug_frontier()
         .arrange_by_self_named("ArrangeBySelf: Dataflow Graph Subgraph Ids");
 
-    let channels = rewire_channels(scope, &raw_channels.debug(), &subgraphs_arranged).debug();
-    let edges =
-        attach_operators(scope, &raw_operators.debug(), &channels, &leaves_arranged).debug();
+    let channels = rewire_channels(scope, &raw_channels.debug_frontier(), &subgraphs_arranged)
+        .debug_frontier();
+    let edges = attach_operators(
+        scope,
+        &raw_operators.debug_frontier(),
+        &channels,
+        &leaves_arranged,
+    )
+    .debug_frontier();
 
-    let operator_shapes = shape::operator_shapes(&raw_operators, &raw_channels).debug();
+    let operator_shapes = shape::operator_shapes(&raw_operators, &raw_channels).debug_frontier();
     let operator_progress = progress_stream.map(|progress_stream| {
         progress_stats::aggregate_channel_messages(progress_stream, &operator_shapes)
+            .debug_frontier()
     });
 
     // TODO: Make `extract_timely_info()` get the relevant event information
@@ -149,10 +161,12 @@ where
     //       it needs a serious, intrinsic rework and/or disk backed arrangements
     let timeline_events = timeline_events.as_ref().map(|timeline_events| {
         worker_timeline::worker_timeline(scope, timeline_events, differential_stream)
+            .debug_frontier()
     });
 
     let addressed_operators = raw_operators
         .map(|(worker, operator)| ((worker, operator.addr.clone()), operator))
+        .debug_frontier()
         .arrange_by_key_named("ArrangeByKey: Addressed Operators");
 
     let (program_stats, worker_stats) = program_stats::aggregate_worker_stats(
@@ -169,14 +183,15 @@ where
         &operator_ids,
         &subgraph_ids,
         &channel_scopes,
-    );
+    )
+    .debug_frontier();
 
     install_data_extraction(
         scope,
         senders,
         &mut probe,
-        program_stats,
-        worker_stats,
+        program_stats.debug_frontier(),
+        worker_stats.debug_frontier(),
         leaves_arranged,
         edges,
         subgraphs_arranged,
@@ -347,14 +362,14 @@ where
     // Get the number of operators underneath each subgraph
     let subgraph_operators = subgraph_children
         .map(|((worker, _), subgraph)| ((worker, subgraph), ()))
-        .count()
+        .count_total()
         .map(|(((worker, subgraph), ()), operators)| ((worker, subgraph), operators as usize));
 
     // Get the number of subgraphs underneath each subgraph
     let subgraph_subgraphs = subgraph_children_arranged
         .semijoin_arranged(&subgraph_ids)
         .map(|((worker, _), subgraph)| ((worker, subgraph), ()))
-        .count()
+        .count_total()
         .map(|(((worker, subgraph), ()), subgraphs)| ((worker, subgraph), subgraphs as usize));
 
     // Get all parents of channels
@@ -370,7 +385,7 @@ where
         .join_map(&channel_parents, |&(worker, _), &subgraph_id, _| {
             ((worker, subgraph_id), ())
         })
-        .count()
+        .count_total()
         .map(|(((worker, subgraph), ()), channels)| ((worker, subgraph), channels as usize));
 
     // Find the addresses of all dataflows
@@ -466,10 +481,11 @@ where
         operators_by_address
             .semijoin_arranged(&leaves)
             .join_map(
-                &channels.map(|(worker, channel)| ((worker, channel.source_addr()), channel)),
+                &channels
+                    .map(|(worker, channel)| ((worker, channel.source_addr().to_owned()), channel)),
                 |&(worker, ref _src_addr), src_operator, channel| {
                     (
-                        (worker, channel.target_addr()),
+                        (worker, channel.target_addr().to_owned()),
                         (src_operator.clone(), channel.clone()),
                     )
                 },

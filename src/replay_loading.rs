@@ -29,6 +29,7 @@ use std::{
     iter,
     net::{SocketAddr, TcpListener, TcpStream},
     num::NonZeroUsize,
+    ops::Deref,
     path::PathBuf,
     sync::{
         atomic::{self, AtomicBool, AtomicUsize, Ordering},
@@ -735,8 +736,16 @@ pub fn wait_for_input(
 
                 let data = extractor.current_dataflow_data();
 
-                let name_lookup: HashMap<_, _> = data.name_lookup.iter().cloned().collect();
-                let addr_lookup: HashMap<_, _> = data.addr_lookup.iter().cloned().collect();
+                let name_lookup: HashMap<_, _> = data
+                    .name_lookup
+                    .iter()
+                    .map(|(id, name)| (*id, name.deref()))
+                    .collect();
+                let addr_lookup: HashMap<_, _> = data
+                    .addr_lookup
+                    .iter()
+                    .map(|(id, addr)| (*id, addr))
+                    .collect();
 
                 // Build & emit the textual report
                 report::build_report(&*args, &data, &name_lookup, &addr_lookup)?;

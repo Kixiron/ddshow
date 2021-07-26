@@ -1,7 +1,7 @@
 use crate::{
     dataflow::{
         constants::IDLE_EXTRACTION_FUEL,
-        operators::{DelayExt, Fuel},
+        operators::{DelayExt, Fuel, InspectExt},
         utils::{granulate, Time},
         worker_timeline::{process_timely_event, EventMap, EventProcessor},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelineEvent,
@@ -18,7 +18,8 @@ use differential_dataflow::{
     Collection,
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    cmp::{Ordering, Reverse},
+    collections::{BinaryHeap, HashMap},
     time::Duration,
 };
 use timely::{
@@ -70,7 +71,43 @@ type TimelyCollections<S> = (
     Option<Collection<S, TimelineEvent, Present>>,
 );
 
-type WorkList = VecDeque<(Vec<TimelyLogBundle>, OutputCapabilities)>;
+type WorkList = BinaryHeap<Reverse<WorkItem>>;
+
+struct WorkItem {
+    buffer: Vec<TimelyLogBundle>,
+    capabilities: OutputCapabilities,
+}
+
+impl WorkItem {
+    const fn new(buffer: Vec<TimelyLogBundle>, capabilities: OutputCapabilities) -> Self {
+        Self {
+            buffer,
+            capabilities,
+        }
+    }
+}
+
+impl Ord for WorkItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.capabilities.time().cmp(&other.capabilities.time())
+    }
+}
+
+impl PartialOrd for WorkItem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.capabilities
+            .time()
+            .partial_cmp(&other.capabilities.time())
+    }
+}
+
+impl Eq for WorkItem {}
+
+impl PartialEq for WorkItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.capabilities.time().eq(&other.capabilities.time())
+    }
+}
 
 // TODO: These could all emit `Present` difference types since there's no retractions here
 pub(super) fn extract_timely_info<S>(
@@ -109,27 +146,26 @@ where
     let mut builder = Builder::new(builder);
     let (mut outputs, streams) = Outputs::new(&mut builder, !disable_timeline);
 
-    builder.build(move |_capabilities| {
-        // TODO: Use stacks for these, migrate to something more like `EventProcessor`
-        let (
-            mut lifespan_map,
-            mut activation_map,
-            mut event_map,
-            mut map_buffer,
-            mut stack_buffer,
-        ) = (
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            Vec::new(),
-        );
+    // TODO: Use stacks for these, migrate to something more like `EventProcessor`
+    let (mut lifespan_map, mut activation_map, mut event_map, mut map_buffer, mut stack_buffer) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        Vec::new(),
+    );
 
-        let mut work_list = VecDeque::new();
-        let mut work_list_buffers = Vec::new();
-        let mut fuel = Fuel::limited(IDLE_EXTRACTION_FUEL);
+    let mut work_list = BinaryHeap::new();
+    let mut work_list_buffers = Vec::new();
+    let mut fuel = Fuel::limited(IDLE_EXTRACTION_FUEL);
 
-        move |_frontiers| {
+    builder.build(move |_| {
+        move |frontiers| {
+            tracing::trace!(
+                target: "timely_source_frontier",
+                frontier = ?frontiers[0],
+            );
+
             // Activate all the outputs
             let mut handles = outputs.activate();
 
@@ -137,11 +173,11 @@ where
                 let mut buffer = work_list_buffers.pop().unwrap_or_default();
                 data.swap(&mut buffer);
 
-                work_list.push_back((
+                work_list.push(Reverse(WorkItem::new(
                     // TODO: Keep some extra buffers around
                     buffer,
                     handles.retain(capability),
-                ));
+                )));
             });
 
             work_loop(
@@ -183,25 +219,35 @@ where
     } = streams.into_collections();
 
     // TODO: Granulate the times within the operator
-    let operator_names = operator_names.arrange_by_key_named("ArrangeByKey: Operator Names");
-    let operator_ids = operator_ids.arrange_by_key_named("ArrangeByKey: Operator Ids");
-    let operator_addrs = operator_addrs.arrange_by_key_named("ArrangeByKey: Operator Addrs");
-    let operator_addrs_by_self =
-        operator_addrs_by_self.arrange_named("Arrange: Operator Addrs by Self");
-    let channel_scope_addrs =
-        channel_scope_addrs.arrange_by_key_named("ArrangeByKey: Channel Scope Addrs");
-    let dataflow_ids = dataflow_ids.arrange_named("Arrange: Dataflow Ids");
+    let operator_names = operator_names
+        .debug_frontier()
+        .arrange_by_key_named("ArrangeByKey: Operator Names");
+    let operator_ids = operator_ids
+        .debug_frontier()
+        .arrange_by_key_named("ArrangeByKey: Operator Ids");
+    let operator_addrs = operator_addrs
+        .debug_frontier()
+        .arrange_by_key_named("ArrangeByKey: Operator Addrs");
+    let operator_addrs_by_self = operator_addrs_by_self
+        .debug_frontier()
+        .arrange_named("Arrange: Operator Addrs by Self");
+    let channel_scope_addrs = channel_scope_addrs
+        .debug_frontier()
+        .arrange_by_key_named("ArrangeByKey: Channel Scope Addrs");
+    let dataflow_ids = dataflow_ids
+        .debug_frontier()
+        .arrange_named("Arrange: Dataflow Ids");
 
     // Granulate all streams and turn them into collections
     (
-        lifespans,
-        activation_durations,
-        operator_creations,
-        channel_creations,
-        raw_channels,
+        lifespans.debug_frontier(),
+        activation_durations.debug_frontier(),
+        operator_creations.debug_frontier(),
+        channel_creations.debug_frontier(),
+        raw_channels.debug_frontier(),
         // FIXME: This isn't granulated since I have no idea what depends
         //       on the timestamp being the event time
-        raw_operators,
+        raw_operators.debug_frontier(),
         operator_names,
         operator_ids,
         operator_addrs,
@@ -209,7 +255,7 @@ where
         channel_scope_addrs,
         dataflow_ids,
         // Note: Don't granulate this
-        worker_events,
+        worker_events.debug_frontier(),
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -228,7 +274,11 @@ fn work_loop(
     fuel.reset();
 
     'work_loop: while !fuel.is_exhausted() {
-        if let Some((mut buffer, mut capabilities)) = work_list.pop_front() {
+        if let Some(Reverse(WorkItem {
+            mut buffer,
+            mut capabilities,
+        })) = work_list.pop()
+        {
             fuel.exert(buffer.len());
 
             for (time, worker, event) in buffer.drain(..) {
