@@ -170,6 +170,8 @@ where
             let mut handles = outputs.activate();
 
             timely_stream.for_each(|capability, data| {
+                tracing::trace!(target: "timely_source_inputs", time = ?capability.time());
+
                 let mut buffer = work_list_buffers.pop().unwrap_or_default();
                 data.swap(&mut buffer);
 
@@ -192,9 +194,24 @@ where
                 &mut stack_buffer,
             );
 
-            // If we have any work left to do, reactivate ourselves
-            if !work_list.is_empty() {
-                activator.activate();
+            activator.activate();
+
+            if frontiers[0].is_empty() && work_list.is_empty() {
+                tracing::trace!(
+                    ?lifespan_map,
+                    ?activation_map,
+                    ?event_map,
+                    ?map_buffer,
+                    "timely source frontier is empty, clearing",
+                );
+
+                work_list = BinaryHeap::new();
+                work_list_buffers = Vec::new();
+                lifespan_map = HashMap::new();
+                activation_map = HashMap::new();
+                event_map = HashMap::new();
+                map_buffer = HashMap::new();
+                stack_buffer = Vec::new();
             }
 
             // FIXME: If every data source has completed, cut off any outstanding events to keep
@@ -279,6 +296,7 @@ fn work_loop(
             mut capabilities,
         })) = work_list.pop()
         {
+            tracing::trace!(target: "timely_source_work_loop", time = ?capabilities.time());
             fuel.exert(buffer.len());
 
             for (time, worker, event) in buffer.drain(..) {

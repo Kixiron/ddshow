@@ -1,6 +1,9 @@
 #[cfg(feature = "timely-next")]
 use crate::dataflow::reachability::TrackerEvent;
-use crate::dataflow::{operators::CrossbeamPusher, PROGRAM_NS_GRANULARITY};
+use crate::dataflow::{
+    operators::{CrossbeamPusher, InspectExt},
+    PROGRAM_NS_GRANULARITY,
+};
 use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
 use ddshow_sink::{EventWriter, DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE};
@@ -82,14 +85,16 @@ pub(super) fn channel_sink<S, D, R>(
     R: Semigroup + ExchangeData,
 {
     let collection = if should_consolidate {
-        collection.consolidate()
+        collection.debug_frontier().consolidate()
     } else {
         collection.clone()
     };
 
     collection
         .inner
+        .debug_frontier()
         .probe_with(probe)
+        .debug_frontier()
         .capture_into(CrossbeamPusher::new(channel));
 
     tracing::debug!(
