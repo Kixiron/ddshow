@@ -32,14 +32,15 @@ pub fn render(
     edges: &[Edge],
     palette_colors: &[String],
 ) -> Result<()> {
-    let output_dir = &args.output_dir;
+    let output_dir = args.output_dir.canonicalize().with_context(|| {
+        anyhow::anyhow!("failed to canonicalize '{}'", args.output_dir.display())
+    })?;
     tracing::info!(output_dir = ?output_dir, "writing graph files to disk");
 
-    fs::create_dir_all(output_dir).context("failed to create output directory")?;
+    fs::create_dir_all(&output_dir).context("failed to create output directory")?;
 
     fs::write(output_dir.join("d3.v5.js"), D3_JS)
         .context("failed to write output graph to file")?;
-
     fs::write(output_dir.join("dagre-d3.js"), DAGRE_JS)
         .context("failed to write output graph to file")?;
 

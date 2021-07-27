@@ -27,12 +27,11 @@ pub use shape::OperatorShape;
 pub use worker::worker_runtime;
 pub use worker_timeline::{EventKind, TimelineEvent};
 
-use crate::dataflow::operators::InspectExt;
 use crate::{
     args::Args,
     dataflow::{
         operator_stats::AggregatedOperatorStats,
-        operators::{FilterMap, JoinArranged, Multiply, SortBy},
+        operators::{FilterMap, InspectExt, JoinArranged, Multiply, SortBy},
         send_recv::ChannelAddrs,
         subgraphs::rewire_channels,
         utils::{

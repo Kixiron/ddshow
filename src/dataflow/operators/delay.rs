@@ -10,6 +10,8 @@ use timely::{
 };
 use tinyvec::TinyVec;
 
+type Element<T, D, R> = TinyVec<[Vec<(D, T, R)>; 16]>;
+
 pub trait DelayExt<T> {
     type Output;
 
@@ -91,30 +93,7 @@ where
                 });
 
                 // Perform some cleanup on the data we have just sitting around
-                let mut did_something = false;
-                if let Some(dirty_time) = dirty.pop() {
-                    while !did_something {
-                        if let Some(updates) = elements.get_mut(&dirty_time) {
-                            if let Some(mut consolidated) = updates.pop() {
-                                did_something = true;
-
-                                // FIXME: A k-way merge would be more efficient
-                                consolidated
-                                    .reserve(updates.iter().map(|updates| updates.len()).sum());
-                                for mut updates in updates.drain(..) {
-                                    consolidated.extend(updates.drain(..));
-
-                                    // Give the freshly empty buffer back to the list of
-                                    // idle buffers we maintain
-                                    idle_buffers.push(updates);
-                                }
-
-                                consolidation::consolidate_updates(&mut consolidated);
-                                updates.push(consolidated);
-                            }
-                        }
-                    }
-                }
+                compact_delayed_buffers(&mut dirty, &mut elements, &mut idle_buffers);
 
                 // for each available notification, send corresponding set
                 notificator.for_each(|time, _, notificator| {
@@ -148,6 +127,116 @@ where
                 }
             })
             .as_collection()
+    }
+}
+
+/// Consolidate updates within their timestamp
+fn compact_delayed_buffers<T, D, R>(
+    dirty: &mut BinaryHeap<T>,
+    elements: &mut HashMap<T, Element<T, D, R>>,
+    idle_buffers: &mut Vec<Vec<(D, T, R)>>,
+) where
+    T: Timestamp,
+    D: Data,
+    R: Semigroup,
+{
+    if let Some(dirty_time) = dirty.pop() {
+        if let Some(updates) = elements.get_mut(&dirty_time) {
+            if let Some(mut consolidated) = updates.pop() {
+                // Reserve the required space to combine all the buffers
+                consolidated.reserve(updates.iter().map(|updates| updates.len()).sum());
+
+                // FIXME: A k-way merge would be more efficient
+                for mut updates in updates.drain(..) {
+                    consolidated.extend(updates.drain(..));
+
+                    // Give the freshly empty buffer back to the list of
+                    // idle buffers we maintain
+                    idle_buffers.push(updates);
+                }
+
+                consolidation::consolidate_updates(&mut consolidated);
+
+                // Skip pushing the consolidated vector if it's empty
+                if !consolidated.is_empty() {
+                    updates.push(consolidated);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compact_delayed_buffers;
+    use std::{
+        collections::{BinaryHeap, HashMap},
+        time::Duration,
+    };
+    use tinyvec::{tiny_vec, TinyVec};
+
+    // Regression test for the case when an element has a single buffer.
+    // There was previously a bug where it infinitely looped when this
+    // happened
+    #[test]
+    fn single_buffer_in_element() {
+        let mut dirty = BinaryHeap::new();
+        dirty.push(Duration::from_secs(10));
+
+        let mut elements = HashMap::new();
+        elements.insert(
+            Duration::from_secs(10),
+            tiny_vec![
+                [Vec<(&str, Duration, isize)>; 16] => vec![
+                    ("foo", Duration::from_secs(10), 10),
+                    ("foo", Duration::from_secs(10), -10),
+                ],
+            ],
+        );
+
+        let mut idle_buffers = Vec::new();
+
+        compact_delayed_buffers(&mut dirty, &mut elements, &mut idle_buffers);
+
+        assert!(dirty.is_empty());
+        assert_eq!(elements.len(), 1);
+        assert_eq!(elements[&Duration::from_secs(10)], TinyVec::new());
+        assert!(idle_buffers.is_empty());
+    }
+
+    #[test]
+    fn single_buffer_in_element_consolidates() {
+        let mut dirty = BinaryHeap::new();
+        dirty.push(Duration::from_secs(10));
+
+        let mut elements = HashMap::new();
+        elements.insert(
+            Duration::from_secs(10),
+            tiny_vec![
+                vec![("foobar", Duration::from_secs(11), -2)],
+                vec![
+                    ("foo", Duration::from_secs(10), 10),
+                    ("foo", Duration::from_secs(10), 10),
+                ],
+                vec![("foobar", Duration::from_secs(11), 5)]
+            ],
+        );
+
+        let mut idle_buffers = Vec::new();
+
+        compact_delayed_buffers(&mut dirty, &mut elements, &mut idle_buffers);
+
+        assert!(dirty.is_empty());
+        assert_eq!(elements.len(), 1);
+        assert_eq!(
+            elements[&Duration::from_secs(10)],
+            tiny_vec![
+                [_; 16] => vec![
+                    ("foo", Duration::from_secs(10), 20),
+                    ("foobar", Duration::from_secs(11), 3),
+                ],
+            ],
+        );
     }
 }
 
