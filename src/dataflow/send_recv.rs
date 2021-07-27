@@ -76,21 +76,28 @@ macro_rules! make_send_recv {
             #[allow(clippy::too_many_arguments)]
             pub fn install_sinks<S>(
                 mut self,
-                probe: &mut ProbeHandle<Time>,
                 $($name: (&Collection<S, $ty, make_send_recv!(@diff $($diff)?)>, bool),)*
-            )
+            ) -> Vec<(ProbeHandle<Time>, &'static str)>
             where
                 S: Scope<Timestamp = Time>,
             {
+                let mut probes = Vec::with_capacity(NUM_VARIANTS + 1);
+
                 $(
                     let (stream, needs_consolidation) = $name;
+                    let mut probe = ProbeHandle::new();
+
                     channel_sink(
                         stream,
-                        probe,
+                        &mut probe,
                         self.$name(),
                         needs_consolidation,
                     );
+
+                    probes.push((probe, stringify!($name)));
                 )*
+
+                probes
             }
 
             $(

@@ -1,5 +1,5 @@
 use crate::dataflow::{
-    operators::{FilterMapTimed, Max, Min},
+    operators::{FilterMapTimed, InspectExt, Max, Min},
     utils::{Diff, DifferentialLogBundle, Time},
 };
 use abomonation_derive::Abomonation;
@@ -43,7 +43,8 @@ where
                 | DifferentialEvent::Drop(_)
                 | DifferentialEvent::TraceShare(_) => None,
             })
-            .as_collection();
+            .as_collection()
+            .debug_frontier();
 
         let spline_levels = differential_trace
             .filter_map_timed(|&time, (event_time, worker, event)| match event {
@@ -63,6 +64,7 @@ where
                 | DifferentialEvent::Drop(_)
                 | DifferentialEvent::TraceShare(_) => None,
             })
+            .debug_frontier()
             .as_collection()
             .reduce(|_, levels, output| {
                 output.push((
@@ -72,7 +74,8 @@ where
                         .collect::<Vec<_>>(),
                     1isize,
                 ));
-            });
+            })
+            .debug_frontier();
 
         #[cfg(feature = "timely-next")]
         let merge_stats = merge_diffs
@@ -135,7 +138,8 @@ where
 
                     (key, stats)
                 },
-            );
+            )
+            .debug_frontier();
 
         merge_stats
             .join_map(&spline_levels, |&key, stats, spline_levels| {
@@ -147,6 +151,7 @@ where
                 (key, stats)
             })
             .leave_region()
+            .debug_frontier()
     })
 }
 

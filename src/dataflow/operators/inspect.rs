@@ -44,6 +44,8 @@ pub trait InspectExt {
     }
 
     fn debug_frontier(&self) -> Self;
+
+    fn debug_frontier_with(&self, with: &str) -> Self;
 }
 
 impl<S, D, R> InspectExt for Collection<S, D, R>
@@ -68,11 +70,12 @@ where
 
     #[track_caller]
     fn debug_frontier(&self) -> Self {
-        if cfg!(debug_assertions) {
-            self.inner.debug_frontier().as_collection()
-        } else {
-            self.clone()
-        }
+        self.inner.debug_frontier().as_collection()
+    }
+
+    #[track_caller]
+    fn debug_frontier_with(&self, with: &str) -> Self {
+        self.inner.debug_frontier_with(with).as_collection()
     }
 }
 
@@ -98,6 +101,7 @@ where
     #[track_caller]
     fn debug_frontier(&self) -> Self {
         if cfg!(debug_assertions) {
+            let worker = self.scope().index();
             let caller = Location::caller();
             let mut buffer = Vec::new();
 
@@ -110,8 +114,41 @@ where
 
                     tracing::trace!(
                         target: "inspect_frontier",
+                        worker = worker,
                         frontier = ?input.frontier().frontier(),
                         "frontier at {}:{}:{}",
+                        caller.file(),
+                        caller.line(),
+                        caller.column(),
+                    );
+                }
+            })
+        } else {
+            self.clone()
+        }
+    }
+
+    #[track_caller]
+    fn debug_frontier_with(&self, with: &str) -> Self {
+        if cfg!(debug_assertions) {
+            let with = with.to_owned();
+            let worker = self.scope().index();
+            let caller = Location::caller();
+            let mut buffer = Vec::new();
+
+            self.unary_frontier(Pipeline, &located!("InspectFrontier"), move |_, _| {
+                move |input, output| {
+                    input.for_each(|time, data| {
+                        data.swap(&mut buffer);
+                        output.session(&time).give_vec(&mut buffer);
+                    });
+
+                    tracing::trace!(
+                        target: "inspect_frontier",
+                        worker = worker,
+                        frontier = ?input.frontier().frontier(),
+                        "{} frontier at {}:{}:{}",
+                        with,
                         caller.file(),
                         caller.line(),
                         caller.column(),
@@ -141,5 +178,10 @@ where
     #[track_caller]
     fn debug_frontier(&self) -> Self {
         self.as_ref().map(|stream| stream.debug_frontier())
+    }
+
+    #[track_caller]
+    fn debug_frontier_with(&self, with: &str) -> Self {
+        self.as_ref().map(|stream| stream.debug_frontier_with(with))
     }
 }

@@ -1,6 +1,6 @@
 use crate::dataflow::{
     differential::{self, ArrangementStats},
-    operators::{DiffDuration, HierarchicalReduce, Keys, Max, Maybe, Min},
+    operators::{DiffDuration, HierarchicalReduce, InspectExt, Keys, Max, Maybe, Min},
     summation::{summation, Summation},
     utils::{Diff, DifferentialLogBundle, Time},
     OperatorId, WorkerId,
@@ -171,12 +171,14 @@ where
 
                 output.push((activations, 1));
             },
-        );
+        )
+        .debug_frontier();
     activation_durations = operator_stats
         .map(|((_, operator), _)| (operator, Vec::new()))
         .antijoin(&activation_durations.keys())
         .concat(&activation_durations)
-        .consolidate_named("Consolidate Aggregated Activation Durations");
+        .consolidate_named("Consolidate Aggregated Activation Durations")
+        .debug_frontier();
 
     let aggregated = operator_stats_without_worker
         .explode(
@@ -315,7 +317,8 @@ where
 
                 (operator, stats)
             },
-        );
+        )
+        .debug_frontier();
 
     aggregated.join_map(&activation_durations, |&operator, stats, activations| {
         let stats = AggregatedOperatorStats {

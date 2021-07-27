@@ -387,23 +387,23 @@ where
 
             let all_streams_finished = streams_finished.iter().copied().all(identity);
 
+            output.cease();
+            output
+                .inner()
+                .produced()
+                .borrow_mut()
+                .drain_into(&mut progress.produceds[0]);
+
+            // Reactivate according to the re-activation delay
+            activator.activate_after(reactivation_delay);
+
             // If we're supposed to be running and haven't completed our input streams,
             // flush the output & re-activate ourselves after a delay
             let needs_reactivation = if is_running.load(Ordering::Acquire) && !all_streams_finished
             {
-                output.cease();
-                output
-                    .inner()
-                    .produced()
-                    .borrow_mut()
-                    .drain_into(&mut progress.produceds[0]);
-
-                // Reactivate according to the re-activation delay
-                activator.activate_after(reactivation_delay);
-
                 // Tell timely we have work left to do
                 // true
-                false
+                true
 
             // If we're not supposed to be running or all input streams are finished,
             // flush our outputs and release all outstanding capabilities so that
@@ -422,9 +422,6 @@ where
                     "received shutdown signal within event replay: {}",
                     reason,
                 );
-
-                // // Flush the output stream
-                // output.cease();
 
                 // Release all outstanding capabilities
                 while !antichain.is_empty() {

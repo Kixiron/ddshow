@@ -1,6 +1,6 @@
 use crate::{
     dataflow::{
-        operators::{DelayExt, DiffDuration, JoinArranged, MapExt, MapTimed, Max, Min},
+        operators::{DelayExt, DiffDuration, InspectExt, JoinArranged, MapExt, MapTimed, Max, Min},
         send_recv::ChannelAddrs,
         utils::{granulate, ArrangedKey, DifferentialLogBundle, Time, TimelyLogBundle},
         Channel, Diff, OperatorAddr,
@@ -56,35 +56,44 @@ where
         .semijoin_arranged(subgraph_addresses)
         .map_named("Map: Select Subgraphs", |((worker, addr), _)| {
             (worker, addr)
-        });
-    let only_dataflows = only_subgraphs.filter(|(_, addr)| addr.is_top_level());
+        })
+        .debug_frontier();
+    let only_dataflows = only_subgraphs
+        .filter(|(_, addr)| addr.is_top_level())
+        .debug_frontier();
 
     // Collect all dataflow addresses into a single vec
-    let dataflow_addrs = only_dataflows.reduce_named(
-        "Reduce: Collect All Dataflow Addresses",
-        |_worker, input, output| {
-            let dataflows: Vec<OperatorAddr> = input
-                .iter()
-                .filter_map(|&(addr, diff)| if diff >= 1 { Some(addr.clone()) } else { None })
-                .collect();
+    let dataflow_addrs = only_dataflows
+        .reduce_named(
+            "Reduce: Collect All Dataflow Addresses",
+            |_worker, input, output| {
+                let dataflows: Vec<OperatorAddr> = input
+                    .iter()
+                    .filter_map(|&(addr, diff)| if diff >= 1 { Some(addr.clone()) } else { None })
+                    .collect();
 
-            output.push((dataflows, 1));
-        },
-    );
+                output.push((dataflows, 1));
+            },
+        )
+        .debug_frontier();
 
     // Count the total number of each item
     let total_dataflows = only_dataflows
         .map_named("Map: Count Dataflows", |(worker, _)| worker)
-        .count_total();
+        .count_total()
+        .debug_frontier();
     let total_subgraphs = only_subgraphs
         .map_named("Map: Count Subgraphs", |(worker, _)| worker)
-        .count_total();
+        .count_total()
+        .debug_frontier();
     let total_channels = channels
         .map_named("Map: Count Channels", |(worker, _)| worker)
-        .count_total();
+        .count_total()
+        .debug_frontier();
     let total_operators = only_operators
         .map_named("Map: Count Operators", |((worker, _), _)| worker)
-        .count_total();
+        .count_total()
+        .debug_frontier();
 
     let mut total_arrangements = if let Some(differential) = differential {
         differential
@@ -99,56 +108,72 @@ where
 
                 (((worker, operator), ()), time, 1)
             })
+            .debug_frontier_with("total_arrangements differential map_timed")
             .as_collection()
             .distinct_total_core::<Diff>()
+            .debug_frontier_with("total_arrangements distinct")
             .map_named("Map: Count Arrangements", |((worker, _operator), ())| {
                 worker
             })
+            .debug_frontier_with("total_arrangements mapped")
             .count_total()
+            .debug_frontier_with("total_arrangements counted")
 
     // If we don't have access to differential events just make every worker have zero
     // arrangements
     } else {
-        total_channels.map_named("Map: Give Each Worker Zero Dataflows", |(worker, _)| {
-            (worker, 0)
-        })
+        total_channels
+            .map_named("Map: Give Each Worker Zero Dataflows", |(worker, _)| {
+                (worker, 0)
+            })
+            .debug_frontier_with("total_arrangements no differential")
     };
 
     // Add back any workers that didn't contain any arrangements
-    total_arrangements = total_arrangements.concat(
-        &total_arrangements
-            .antijoin(&total_channels.map(|(worker, _)| worker))
-            .map(|(worker, _)| (worker, 0)),
-    );
+    total_arrangements = total_arrangements
+        .concat(
+            &total_arrangements
+                .antijoin(&total_channels.map(|(worker, _)| worker))
+                .map(|(worker, _)| (worker, 0)),
+        )
+        .debug_frontier_with("total_arrangements re-added");
 
     let total_events = combine_events(
-        timely,
-        |_time, (time, worker, _)| (worker, time, 1isize),
-        differential,
-        |_time, (time, worker, _)| (worker, time, 1),
+        &timely.debug_frontier_with("timely into total_events"),
+        |&time, (_, worker, _)| (worker, time, 1isize),
+        differential
+            .map(|stream| stream.debug_frontier_with("differential into total_events"))
+            .as_ref(),
+        |&time, (_, worker, _)| (worker, time, 1),
     )
+    .debug_frontier_with("total_events raw")
     .as_collection()
     .delay_fast(granulate)
-    .count_total();
+    .debug_frontier_with("total_events after delay")
+    .count_total()
+    .debug_frontier_with("total_events after count");
 
-    let create_timestamps = |time: Time, worker| {
-        let diff = DiffPair::new(
-            Max::new(DiffDuration::new(time)), // .data_time())),
-            Min::new(DiffDuration::new(time)), // .data_time())),
-        );
-
-        (worker, time, diff)
+    let create_timestamps = |time| {
+        DiffPair::new(
+            Max::new(DiffDuration::new(time)),
+            Min::new(DiffDuration::new(time)),
+        )
     };
 
     let total_runtime = combine_events(
-        timely,
-        move |_time, (time, worker, _)| create_timestamps(time, worker),
-        differential,
-        move |_time, (time, worker, _)| create_timestamps(time, worker),
+        &timely.debug_frontier_with("timely into total_runtime"),
+        move |&time, (event_time, worker, _)| (worker, time, create_timestamps(event_time)),
+        differential
+            .map(|stream| stream.debug_frontier_with("differential into total_runtime"))
+            .as_ref(),
+        move |&time, (event_time, worker, _)| (worker, time, create_timestamps(event_time)),
     )
+    .debug_frontier_with("total_runtime raw")
     .as_collection()
     .delay_fast(granulate)
-    .count_total();
+    .debug_frontier_with("total_runtime after delay")
+    .count_total()
+    .debug_frontier_with("total_runtime after count");
 
     // TODO: For whatever reason this part of the dataflow graph is de-prioritized,
     //       probably because of data dependence. Due to the nature of this data, for
@@ -161,13 +186,14 @@ where
     // TODO: This really should be a delta join :(
     // TODO: This may actually be feasibly hoisted into the difference type or something?
     let worker_stats = dataflow_addrs
-        .join(&total_dataflows)
-        .join(&total_operators)
-        .join(&total_subgraphs)
-        .join(&total_channels)
-        .join(&total_arrangements)
-        .join(&total_events)
-        .join(&total_runtime)
+        .debug_frontier_with("dataflow_addrs")
+        .join(&total_dataflows.debug_frontier_with("total_dataflows"))
+        .join(&total_operators.debug_frontier_with("total_operators"))
+        .join(&total_subgraphs.debug_frontier_with("total_subgraphs"))
+        .join(&total_channels.debug_frontier_with("total_channels"))
+        .join(&total_arrangements.debug_frontier_with("total_arrangements"))
+        .join(&total_events.debug_frontier_with("total_events"))
+        .join(&total_runtime.debug_frontier_with("total_runtime"))
         .map(
             |(
                 worker,
@@ -200,7 +226,8 @@ where
                     },
                 )
             },
-        );
+        )
+        .debug_frontier_with("worker_stats");
 
     let program_stats =
         worker_stats
@@ -230,7 +257,9 @@ where
 
                 iter::once(((), diff))
             })
+            .debug_frontier_with("worker_stats exploded (program_stats)")
             .count_total()
+            .debug_frontier_with("worker_stats after count (program_stats)")
             .map(
                 |(
                     (),
@@ -273,7 +302,8 @@ where
                     events: events as usize,
                     runtime: runtime.to_duration(),
                 },
-            );
+            )
+            .debug_frontier_with("program_stats final");
 
     (program_stats, worker_stats)
 }

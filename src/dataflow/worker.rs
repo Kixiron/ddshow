@@ -100,7 +100,7 @@ where
         total_sources = total_sources,
     );
 
-    let probe = worker.dataflow_named("DDShow Analysis Dataflow", |scope| {
+    let probes = worker.dataflow_named("DDShow Analysis Dataflow", |scope| {
         // If the dataflow is being sourced from a file, limit the
         // number of events read out in each batch so we don't overload
         // downstream consumers
@@ -214,7 +214,7 @@ where
         });
     }
 
-    'work_loop: while !probe.done() {
+    'work_loop: while !probes.iter().all(|(probe, _)| probe.done()) {
         let start_time = Instant::now();
         if !replay_shutdown.load(Ordering::Acquire) {
             tracing::info!(
@@ -240,15 +240,16 @@ where
         }
 
         let elapsed = start_time.elapsed();
-        probe.with_frontier(|frontier| {
-            tracing::debug!(
-                target: "worker_step_events",
-                frontier = ?frontier,
-                "worker {} stepped for {:#?}",
-                worker.index(),
-                elapsed,
-            );
-        });
+        tracing::debug!(
+            target: "worker_step_events",
+            probes = ?probes
+                .iter()
+                .map(|(probe, name)| probe.with_frontier(|frontier| format!("{}: {:?}", name, frontier)))
+                .collect::<Vec<_>>(),
+            "worker {} stepped for {:#?}",
+            worker.index(),
+            elapsed,
+        );
     }
 
     for (bar, style) in progress_bars {

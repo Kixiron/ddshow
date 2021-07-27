@@ -83,12 +83,10 @@ pub fn dataflow<S>(
     differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
     progress_stream: Option<&Stream<S, ProgressLogBundle>>,
     senders: DataflowSenders,
-) -> Result<ProbeHandle<Time>>
+) -> Result<Vec<(ProbeHandle<Time>, &'static str)>>
 where
     S: Scope<Timestamp = Time>,
 {
-    let mut probe = ProbeHandle::new();
-
     let (
         operator_lifespans,
         operator_activations,
@@ -186,10 +184,9 @@ where
     )
     .debug_frontier();
 
-    install_data_extraction(
+    let mut probes = install_data_extraction(
         scope,
         senders,
-        &mut probe,
         program_stats.debug_frontier(),
         worker_stats.debug_frontier(),
         leaves_arranged,
@@ -224,6 +221,7 @@ where
             },
         );
 
+        let mut probe = ProbeHandle::new();
         utils::logging_event_sink(
             save_logs,
             scope,
@@ -231,16 +229,17 @@ where
             &mut probe,
             differential_stream,
         )?;
+
+        probes.push((probe, "log_event_sink"));
     }
 
-    Ok(probe)
+    Ok(probes)
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn install_data_extraction<S>(
     scope: &mut S,
     senders: DataflowSenders,
-    probe: &mut ProbeHandle<Time>,
     program_stats: Collection<S, ProgramStats, Diff>,
     worker_stats: Collection<S, (WorkerId, WorkerStats), Diff>,
     nodes: ArrangedKey<S, (WorkerId, OperatorAddr), Diff>,
@@ -256,7 +255,8 @@ fn install_data_extraction<S>(
     channel_progress: Option<Collection<S, (OperatorAddr, ProgressInfo), Diff>>,
     operator_shapes: &Collection<S, OperatorShape, Diff>,
     operator_progress: Option<&Collection<S, OperatorProgress, Diff>>,
-) where
+) -> Vec<(ProbeHandle<Time>, &'static str)>
+where
     S: Scope<Timestamp = Time>,
 {
     scope.region_named("Data Extraction", |region| {
@@ -300,22 +300,21 @@ fn install_data_extraction<S>(
         //       ddshow" system though, could make some funky results
         //       appear to the user
         senders.install_sinks(
-            probe,
-            (&program_stats, true),
-            (&worker_stats, true),
-            (&nodes, true),
-            (&edges, true),
-            (&subgraphs, true),
-            (&operator_stats, true),
-            (&aggregated_operator_stats, true),
-            (&dataflow_stats, true),
-            (&timeline_events, false),
-            (&operator_names, false),
-            (&operator_ids, false),
-            (&channel_progress, true),
-            (&operator_shapes, true),
-            (&operator_progress, true),
-        );
+            (&program_stats.debug_frontier(), true),
+            (&worker_stats.debug_frontier(), true),
+            (&nodes.debug_frontier(), true),
+            (&edges.debug_frontier(), true),
+            (&subgraphs.debug_frontier(), true),
+            (&operator_stats.debug_frontier(), true),
+            (&aggregated_operator_stats.debug_frontier(), true),
+            (&dataflow_stats.debug_frontier(), true),
+            (&timeline_events.debug_frontier(), false),
+            (&operator_names.debug_frontier(), false),
+            (&operator_ids.debug_frontier(), false),
+            (&channel_progress.debug_frontier(), true),
+            (&operator_shapes.debug_frontier(), true),
+            (&operator_progress.debug_frontier(), true),
+        )
     })
 }
 
@@ -410,6 +409,7 @@ where
                 }
             },
         )
+        .debug_frontier()
 }
 
 type LeavesAndScopes<S, R> = (
@@ -436,20 +436,28 @@ where
 
                 iter::once((worker, addr))
             })
+            .debug_frontier_with("potential_scopes flat_map_ref")
             .distinct_total_core::<Diff>()
+            .debug_frontier_with("potential_scopes after distinct")
             .arrange_by_self_named("ArrangeBySelf: Potential Scopes");
 
         // Leaf operators
         let leaf_operators = operator_addrs
             .antijoin_arranged(&potential_scopes)
+            .debug_frontier_with("leaf_operators antijoined")
             .map(|(addr, _)| addr)
-            .leave_region();
+            .debug_frontier_with("leaf_operators after map")
+            .leave_region()
+            .debug_frontier_with("leaf_operators left region");
 
         // Only retain subgraphs that are observed within the logs
         let observed_subgraphs = operator_addrs
             .semijoin_arranged(&potential_scopes)
+            .debug_frontier_with("observed_subgraphs after semijoin")
             .map(|(addr, ())| addr)
-            .leave_region();
+            .debug_frontier_with("observed_subgraphs after map")
+            .leave_region()
+            .debug_frontier_with("observed_subgraphs left region");
 
         (leaf_operators, observed_subgraphs)
     })
