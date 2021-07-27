@@ -1,9 +1,6 @@
 #[cfg(feature = "timely-next")]
 use crate::dataflow::reachability::TrackerEvent;
-use crate::dataflow::{
-    operators::{CrossbeamPusher, InspectExt},
-    PROGRAM_NS_GRANULARITY,
-};
+use crate::dataflow::{operators::CrossbeamPusher, PROGRAM_NS_GRANULARITY};
 use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
 use ddshow_sink::{EventWriter, DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE};
@@ -31,9 +28,12 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
-use timely::dataflow::{
-    operators::{capture::Event, Capture, Probe},
-    ProbeHandle, Scope, ScopeParent, Stream,
+use timely::{
+    dataflow::{
+        operators::{capture::Event, Capture, Probe},
+        ProbeHandle, Scope, ScopeParent, Stream,
+    },
+    PartialOrder,
 };
 
 pub(crate) type Diff = isize;
@@ -57,7 +57,6 @@ pub type ReachabilityLogBundle<Id = WorkerId> = (Duration, Id, TrackerEvent);
 /// to reduce the load on timely
 pub(crate) fn granulate(&time: &Time) -> Time {
     let timestamp = time.as_nanos();
-    // let timestamp = time.system_time().as_nanos();
     let window_idx = (timestamp / PROGRAM_NS_GRANULARITY) + 1;
 
     let minted = Duration::from_nanos((window_idx * PROGRAM_NS_GRANULARITY) as u64);
@@ -66,8 +65,7 @@ pub(crate) fn granulate(&time: &Time) -> Time {
         Ok(window_idx * PROGRAM_NS_GRANULARITY),
     );
 
-    // let minted = Epoch::new(minted, time.data_time());
-    debug_assert!(time <= minted);
+    debug_assert!(time.less_equal(&minted));
 
     minted
 }
@@ -85,16 +83,14 @@ pub(super) fn channel_sink<S, D, R>(
     R: Semigroup + ExchangeData,
 {
     let collection = if should_consolidate {
-        collection.debug_frontier().consolidate()
+        collection.consolidate()
     } else {
         collection.clone()
     };
 
     collection
         .inner
-        .debug_frontier()
         .probe_with(probe)
-        .debug_frontier()
         .capture_into(CrossbeamPusher::new(channel));
 
     tracing::debug!(

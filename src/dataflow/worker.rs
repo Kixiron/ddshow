@@ -66,6 +66,20 @@ where
         logging::init_dataflow_logging(worker)?;
     }
 
+    // worker
+    //     .log_register()
+    //     .insert::<RawTimelyEvent, _>("timely", move |outer_time, data| {
+    //         for (inner_time, worker, event) in data {
+    //             tracing::trace!(
+    //                 target: "ddshow_timely_events",
+    //                 outer_time = ?*outer_time,
+    //                 inner_time = ?*inner_time,
+    //                 worker = *worker,
+    //                 event = ?&*event,
+    //             );
+    //         }
+    //     });
+
     let dataflow_id = worker.next_dataflow_index();
     let mut progress_bars = Vec::new();
 

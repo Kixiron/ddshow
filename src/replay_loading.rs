@@ -850,6 +850,7 @@ mod tests {
     fn connection_test() {
         let args = Args {
             stream_encoding: StreamEncoding::Rkyv,
+            quiet: true,
             ..Default::default()
         };
         logging::init_logging(args.color);

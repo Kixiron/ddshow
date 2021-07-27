@@ -334,6 +334,7 @@ fn main() -> Result<()> {
         .to_string();
     if cfg!(windows) && graph_file.starts_with(r"\\?\") {
         graph_file.replace_range(..r"\\?\".len(), "");
+        graph_file = graph_file.replace("\\", "/");
     }
 
     if args.isnt_quiet() {

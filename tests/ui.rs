@@ -56,7 +56,9 @@ fn test_runtime(test: &Test<TestData>) -> Outcome {
 
     // TODO: Run ddshow
     let mut ddshow = Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/target/debug/ddshow"));
-    ddshow.args(&test.data.ddshow_args).arg("--differential");
+    ddshow
+        .args(&test.data.ddshow_args)
+        .args(&["--differential", "--quiet"]);
     let ddshow = ddshow.spawn().unwrap();
 
     handle.join().unwrap().unwrap();
