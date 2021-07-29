@@ -1,7 +1,7 @@
 use crate::dataflow::{
     constants::EVENT_NS_MARGIN,
     operators::{Multiply, Split},
-    utils::{DifferentialLogBundle, Time},
+    utils::{Diff, DifferentialLogBundle, Time, XXHasher},
 };
 use abomonation_derive::Abomonation;
 use ddshow_types::{
@@ -10,9 +10,7 @@ use ddshow_types::{
     OperatorId, WorkerId,
 };
 use differential_dataflow::{
-    difference::{Abelian, Present},
-    lattice::Lattice,
-    AsCollection, Collection, ExchangeData,
+    difference::Abelian, lattice::Lattice, AsCollection, Collection, ExchangeData,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, mem, time::Duration};
@@ -28,9 +26,9 @@ use timely::dataflow::{
 // TODO: This uses *vastly* too much memory
 pub(super) fn worker_timeline<S>(
     scope: &mut S,
-    timely_events: &Collection<S, TimelineEvent, Present>,
+    timely_events: &Collection<S, TimelineEvent, Diff>,
     differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
-) -> Collection<S, TimelineEvent, Present>
+) -> Collection<S, TimelineEvent, Diff>
 where
     S: Scope<Timestamp = Time>,
 {
@@ -54,8 +52,8 @@ where
     })
 }
 
-pub(super) type TimelineStreamEvent = (TimelineEvent, Time, Present);
-pub(super) type EventMap = HashMap<(WorkerId, EventKind), Vec<Duration>>;
+pub(super) type TimelineStreamEvent = (TimelineEvent, Time, Diff);
+pub(super) type EventMap = HashMap<(WorkerId, EventKind), Vec<Duration>, XXHasher>;
 type EventOutput<'a> = OutputHandle<'a, Time, TimelineStreamEvent, Tee<Time, TimelineStreamEvent>>;
 
 pub(super) fn process_timely_event(
@@ -125,7 +123,7 @@ pub(super) fn process_timely_event(
 // TODO: Wire operator shutdown events into this as well
 pub(super) fn collect_differential_events<S>(
     event_stream: &Stream<S, DifferentialLogBundle>,
-) -> Collection<S, TimelineEvent, Present>
+) -> Collection<S, TimelineEvent, Diff>
 where
     S: Scope<Timestamp = Time>,
 {
@@ -135,8 +133,11 @@ where
             "Gather Differential Worker Events",
             |_capability, _info| {
                 let mut buffer = Vec::new();
-                let (mut event_map, mut map_buffer, mut stack_buffer) =
-                    (HashMap::new(), HashMap::new(), Vec::new());
+                let (mut event_map, mut map_buffer, mut stack_buffer) = (
+                    HashMap::with_hasher(XXHasher::default()),
+                    HashMap::with_hasher(XXHasher::default()),
+                    Vec::new(),
+                );
 
                 move |input, output| {
                     input.for_each(|capability, data| {
@@ -299,7 +300,7 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
             self.output,
             self.time,
             start_time,
-            &self.capability,
+            self.capability,
             event,
             self.worker,
         )
@@ -320,7 +321,7 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
         output.session(capability).give((
             TimelineEvent::new(worker, event, start_time, duration),
             *capability.time(),
-            Present,
+            1,
         ));
     }
 
@@ -371,7 +372,7 @@ impl<'a, 'b> EventProcessor<'a, 'b> {
                             self.output,
                             self.time,
                             start_time,
-                            &self.capability,
+                            self.capability,
                             event,
                             self.worker,
                         )

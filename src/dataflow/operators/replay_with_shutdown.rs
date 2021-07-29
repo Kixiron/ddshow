@@ -37,13 +37,17 @@ use timely::{
 /// This method is not simply an iterator because of the lifetime in the result.
 pub trait EventIterator<T, D> {
     /// Iterates over references to `Event<T, D>` elements.
-    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>>;
+    fn next(
+        &mut self,
+        is_finished: &mut bool,
+        bytes_read: &mut usize,
+    ) -> io::Result<Option<Event<T, D>>>;
 
     fn take_events(&mut self) -> io::Result<Vec<Event<T, D>>> {
         let (mut events, mut is_finished) = (Vec::new(), false);
 
         while !is_finished {
-            if let Some(event) = self.next(&mut is_finished)? {
+            if let Some(event) = self.next(&mut is_finished, &mut 0)? {
                 events.push(event);
             }
         }
@@ -56,20 +60,32 @@ impl<I, T, D> EventIterator<T, D> for Box<I>
 where
     I: EventIterator<T, D>,
 {
-    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>> {
-        self.as_mut().next(is_finished)
+    fn next(
+        &mut self,
+        is_finished: &mut bool,
+        bytes_read: &mut usize,
+    ) -> io::Result<Option<Event<T, D>>> {
+        self.as_mut().next(is_finished, bytes_read)
     }
 }
 
 impl<T, D> EventIterator<T, D> for Box<dyn EventIterator<T, D>> {
-    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>> {
-        self.as_mut().next(is_finished)
+    fn next(
+        &mut self,
+        is_finished: &mut bool,
+        bytes_read: &mut usize,
+    ) -> io::Result<Option<Event<T, D>>> {
+        self.as_mut().next(is_finished, bytes_read)
     }
 }
 
 impl<T, D> EventIterator<T, D> for Box<dyn EventIterator<T, D> + Send + 'static> {
-    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>> {
-        self.as_mut().next(is_finished)
+    fn next(
+        &mut self,
+        is_finished: &mut bool,
+        bytes_read: &mut usize,
+    ) -> io::Result<Option<Event<T, D>>> {
+        self.as_mut().next(is_finished, bytes_read)
     }
 }
 
@@ -111,7 +127,11 @@ where
     D: Abomonation,
     R: Read,
 {
-    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<Event<T, D>>> {
+    fn next(
+        &mut self,
+        is_finished: &mut bool,
+        bytes_read: &mut usize,
+    ) -> io::Result<Option<Event<T, D>>> {
         if self.peer_finished && self.retried {
             *is_finished = true;
             return Ok(None);
@@ -140,6 +160,7 @@ where
         }
 
         if let Ok(len) = self.reader.read(&mut self.bytes[..]) {
+            *bytes_read += len;
             if len == 0 {
                 self.peer_finished = true;
             }
@@ -273,7 +294,11 @@ where
         let mut output = PushBuffer::new(PushCounter::new(targets));
 
         let mut antichain = MutableAntichain::new();
-        let (mut started, mut streams_finished) = (false, vec![false; event_streams.len()]);
+        let (mut started, mut streams_finished, mut bytes_read) = (
+            false,
+            vec![false; event_streams.len()],
+            vec![0; event_streams.len()],
+        );
 
         let logger: Option<TimelyLogger> = scope.log_register().get("timely");
         // let start_time = Instant::now();
@@ -312,13 +337,24 @@ where
 
             'event_loop: for (stream_idx, event_stream) in event_streams.iter_mut().enumerate() {
                 'stream_loop: loop {
-                    let next = event_stream.next(&mut streams_finished[stream_idx]);
+                    let next = event_stream.next(
+                        &mut streams_finished[stream_idx],
+                        &mut bytes_read[stream_idx],
+                    );
+
+                    if bytes_read[stream_idx] != 0 {
+                        tracing::trace!(
+                            target: "replay_bytes_read",
+                            worker = worker_index,
+                            bytes_read = bytes_read[stream_idx],
+                        );
+                    }
 
                     match next {
                         Ok(Some(event)) => match event {
                             Event::Progress(vec) => {
                                 // Exert a little bit of effort for propagating timestamps
-                                fuel.exert(1);
+                                // fuel.exert(1);
 
                                 progress.internals[0].extend(vec.iter().cloned());
                                 antichain.update_iter(vec);

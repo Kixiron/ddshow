@@ -2,7 +2,10 @@ mod tree;
 
 use crate::{
     args::Args,
-    dataflow::{utils::OpKey, ArrangementStats, DataflowData, Summation},
+    dataflow::{
+        utils::{OpKey, XXHasher},
+        ArrangementStats, DataflowData, Summation,
+    },
     report::tree::Tree,
 };
 use anyhow::{Context, Result};
@@ -19,10 +22,10 @@ use std::{
 pub fn build_report(
     args: &Args,
     data: &DataflowData,
-    name_lookup: &HashMap<OpKey, &str>,
-    addr_lookup: &HashMap<OpKey, &OperatorAddr>,
-    agg_operator_stats: &HashMap<OperatorId, &Summation>,
-    agg_arrangement_stats: &HashMap<OperatorId, &ArrangementStats>,
+    name_lookup: &HashMap<OpKey, &str, XXHasher>,
+    addr_lookup: &HashMap<OpKey, &OperatorAddr, XXHasher>,
+    agg_operator_stats: &HashMap<OperatorId, &Summation, XXHasher>,
+    agg_arrangement_stats: &HashMap<OperatorId, &ArrangementStats, XXHasher>,
 ) -> Result<()> {
     if !args.no_report_file {
         // Attempt to create the path up to the report file
@@ -50,7 +53,8 @@ pub fn build_report(
         tracing::debug!("creating report file: {}", args.report_file.display());
         let mut file = File::create(&args.report_file).context("failed to create report file")?;
 
-        let all_workers: HashSet<_> = data.nodes.iter().map(|&((worker, _), _)| worker).collect();
+        let all_workers: HashSet<_, XXHasher> =
+            data.nodes.iter().map(|&((worker, _), _)| worker).collect();
 
         program_overview(args, data, &mut file)?;
         worker_stats(args, data, &mut file)?;
@@ -68,8 +72,8 @@ pub fn build_report(
         if args.differential_enabled {
             arrangement_stats(
                 &mut file,
-                &name_lookup,
-                &addr_lookup,
+                name_lookup,
+                addr_lookup,
                 &all_workers,
                 agg_operator_stats,
                 agg_arrangement_stats,
@@ -80,8 +84,8 @@ pub fn build_report(
 
         operator_tree(
             &mut file,
-            &name_lookup,
-            &addr_lookup,
+            name_lookup,
+            addr_lookup,
             &all_workers,
             agg_operator_stats,
         )?;
@@ -213,11 +217,11 @@ fn operator_stats(
     args: &Args,
     data: &DataflowData,
     file: &mut File,
-    name_lookup: &HashMap<OpKey, &str>,
-    addr_lookup: &HashMap<OpKey, &OperatorAddr>,
-    all_workers: &HashSet<WorkerId>,
-    agg_operator_stats: &HashMap<OperatorId, &Summation>,
-    agg_arrangement_stats: &HashMap<OperatorId, &ArrangementStats>,
+    name_lookup: &HashMap<OpKey, &str, XXHasher>,
+    addr_lookup: &HashMap<OpKey, &OperatorAddr, XXHasher>,
+    all_workers: &HashSet<WorkerId, XXHasher>,
+    agg_operator_stats: &HashMap<OperatorId, &Summation, XXHasher>,
+    agg_arrangement_stats: &HashMap<OperatorId, &ArrangementStats, XXHasher>,
 ) -> Result<()> {
     tracing::debug!("generating operator stats table");
 
@@ -327,11 +331,11 @@ fn operator_stats(
 
 fn arrangement_stats(
     file: &mut File,
-    name_lookup: &HashMap<OpKey, &str>,
-    addr_lookup: &HashMap<OpKey, &OperatorAddr>,
-    all_workers: &HashSet<WorkerId>,
-    agg_operator_stats: &HashMap<OperatorId, &Summation>,
-    agg_arrangement_stats: &HashMap<OperatorId, &ArrangementStats>,
+    name_lookup: &HashMap<OpKey, &str, XXHasher>,
+    addr_lookup: &HashMap<OpKey, &OperatorAddr, XXHasher>,
+    all_workers: &HashSet<WorkerId, XXHasher>,
+    agg_operator_stats: &HashMap<OperatorId, &Summation, XXHasher>,
+    agg_arrangement_stats: &HashMap<OperatorId, &ArrangementStats, XXHasher>,
 ) -> Result<()> {
     tracing::debug!("generating arrangement stats table");
 
@@ -400,10 +404,10 @@ fn arrangement_stats(
 
 fn operator_tree(
     file: &mut File,
-    name_lookup: &&HashMap<OpKey, &str>,
-    addr_lookup: &&HashMap<OpKey, &OperatorAddr>,
-    all_workers: &HashSet<WorkerId>,
-    agg_operator_stats: &HashMap<OperatorId, &Summation>,
+    name_lookup: &HashMap<OpKey, &str, XXHasher>,
+    addr_lookup: &HashMap<OpKey, &OperatorAddr, XXHasher>,
+    all_workers: &HashSet<WorkerId, XXHasher>,
+    agg_operator_stats: &HashMap<OperatorId, &Summation, XXHasher>,
 ) -> Result<()> {
     tracing::debug!("generating operator tree");
 

@@ -9,6 +9,7 @@ use timely::{
 pub trait FilterMap<D, D2> {
     type Output;
 
+    #[inline]
     #[track_caller]
     fn filter_map<L>(&self, logic: L) -> Self::Output
     where
@@ -40,6 +41,7 @@ where
 {
     type Output = Stream<S, D2>;
 
+    #[inline]
     fn filter_map_named<L>(&self, name: &str, mut logic: L) -> Self::Output
     where
         L: FnMut(D) -> Option<D2> + 'static,
@@ -69,6 +71,7 @@ where
 {
     type Output = Collection<S, D2, R>;
 
+    #[inline]
     fn filter_map_named<L>(&self, name: &str, mut logic: L) -> Self::Output
     where
         L: FnMut(D) -> Option<D2> + 'static,
@@ -84,6 +87,7 @@ where
 pub trait FilterMapTimed<T, D, D2> {
     type Output;
 
+    #[inline]
     #[track_caller]
     fn filter_map_timed<L>(&self, logic: L) -> Self::Output
     where
@@ -115,6 +119,7 @@ where
 {
     type Output = Stream<S, D2>;
 
+    #[inline]
     fn filter_map_timed_named<L>(&self, name: &str, mut logic: L) -> Self::Output
     where
         L: FnMut(&S::Timestamp, D) -> Option<D2> + 'static,

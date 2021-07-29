@@ -123,31 +123,33 @@ pub fn connect_to_sources(
         None
     };
     let differential_listener = if args.differential_enabled && !args.is_file_sourced() {
-        Some(
-            TcpListener::bind(args.differential_address).with_context(|| {
-                anyhow::anyhow!(
-                    "failed to bind to differential socket {}",
-                    args.differential_address,
-                )
-            })?,
-        )
+        let listener = TcpListener::bind(args.differential_address).with_context(|| {
+            anyhow::anyhow!(
+                "failed to bind to differential socket {}",
+                args.differential_address,
+            )
+        })?;
+
+        Some(listener)
     } else {
         None
     };
     let progress_listener = if args.progress_enabled && !args.is_file_sourced() {
-        Some(TcpListener::bind(args.progress_address).with_context(|| {
+        let listener = TcpListener::bind(args.progress_address).with_context(|| {
             anyhow::anyhow!(
                 "failed to bind to progress socket {}",
                 args.progress_address,
             )
-        })?)
+        })?;
+
+        Some(listener)
     } else {
         None
     };
 
     // Connect to the timely sources
     let (timely_event_receivers, are_timely_sources, num_sources) = acquire_replay_sources(
-        &args,
+        args,
         args.timely_address,
         timely_listener,
         args.timely_connections,
@@ -161,7 +163,7 @@ pub fn connect_to_sources(
     // Connect to the differential sources
     let (differential_event_receivers, are_differential_sources) = if args.differential_enabled {
         let (receivers, are_sources, num_sources) = acquire_replay_sources(
-            &args,
+            args,
             args.differential_address,
             differential_listener,
             args.timely_connections,
@@ -180,7 +182,7 @@ pub fn connect_to_sources(
     // Connect to progress sources
     let (progress_event_receivers, are_progress_sources) = if args.progress_enabled {
         let (receivers, are_sources, num_sources) = acquire_replay_sources(
-            &args,
+            args,
             args.progress_address,
             progress_listener,
             args.timely_connections,
@@ -290,7 +292,7 @@ where
             progress.set_prefix(format!(
                 "Loading {} replay from {}",
                 target,
-                log_dir.display()
+                log_dir.display(),
             ));
 
             // Load all files in the directory that have the `.ddshow` extension and a
@@ -311,23 +313,23 @@ where
                     Some,
                 )
             }) {
-                let replay_file = entry.path();
+                let replay_file_path = entry.path();
 
                 let is_file = entry.file_type().map_or(false, |file| file.is_file());
-                let ends_with_ddshow = replay_file.extension() == Some(OsStr::new("ddshow"));
-                let starts_with_prefix = replay_file
+                let ends_with_ddshow = replay_file_path.extension() == Some(OsStr::new("ddshow"));
+                let starts_with_prefix = replay_file_path
                     .file_name()
                     .and_then(OsStr::to_str)
                     .and_then(|file| file.split('.').next())
                     .map_or(false, |prefix| prefix == file_prefix);
 
                 if is_file && ends_with_ddshow && starts_with_prefix {
-                    progress.set_message(replay_file.display().to_string());
+                    progress.set_message(replay_file_path.display().to_string());
                     progress.inc_length(1);
 
                     // FIXME: This is kinda crappy
                     if args.debug_replay_files {
-                        let input_file = File::open(&replay_file).with_context(|| {
+                        let input_file = File::open(&replay_file_path).with_context(|| {
                             format!("failed to open {} log file within replay directory", target)
                         })?;
                         let mut output_file = BufWriter::new(
@@ -340,8 +342,9 @@ where
 
                         let mut is_finished = false;
                         while !is_finished {
-                            if let Some(event) = EventIterator::next(&mut reader, &mut is_finished)
-                                .context("failed to replay event for debugging")?
+                            if let Some(event) =
+                                EventIterator::next(&mut reader, &mut is_finished, &mut 0)
+                                    .context("failed to replay event for debugging")?
                             {
                                 writeln!(&mut output_file, "{:#?}", event)
                                     .context("failed to write event for debugging")?;
@@ -349,10 +352,15 @@ where
                         }
                     }
 
-                    tracing::debug!("loading {} replay from {}", target, replay_file.display());
-                    let replay_file = File::open(&replay_file).with_context(|| {
+                    let replay_file = File::open(&replay_file_path).with_context(|| {
                         format!("failed to open {} log file within replay directory", target)
                     })?;
+                    tracing::debug!(
+                        length = ?replay_file.metadata().map(|meta| meta.len()),
+                        "loaded {} replay from {}",
+                        target,
+                        replay_file_path.display(),
+                    );
 
                     replays.push(RkyvEventReader::new(
                         Box::new(BufReader::new(replay_file)) as Box<dyn Read + Send + 'static>
@@ -363,12 +371,12 @@ where
                 } else {
                     tracing::warn!(
                         dir = ?log_dir,
-                        file = ?replay_file,
+                        file = ?replay_file_path,
                         is_file = is_file,
                         ends_with_ddshow = ends_with_ddshow,
                         starts_with_prefix = starts_with_prefix,
                         "the file {} didn't match replay file criteria",
-                        replay_file.display(),
+                        replay_file_path.display(),
                     );
 
                     let reason = if is_file {
@@ -383,7 +391,7 @@ where
 
                     progress.set_message(format!(
                         "skipped {}, reason: {}",
-                        replay_file.display(),
+                        replay_file_path.display(),
                         reason,
                     ));
                 }
@@ -393,8 +401,8 @@ where
         progress.set_style(finished_style);
         progress.finish_with_message(format!(
             "loaded {} replay file{}",
-            progress.length(),
-            if progress.length() == 1 { "" } else { "s" },
+            progress.position(),
+            if progress.position() == 1 { "" } else { "s" },
         ));
 
         ReplaySource::Rkyv(replays)

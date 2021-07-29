@@ -50,6 +50,11 @@ differential-dataflow = { git = "https://github.com/ddlog-dev/differential-dataf
 # timely = { git = "https://github.com/TimelyDataflow/timely-dataflow" }
 # differential-dataflow = { git = "https://github.com/TimelyDataflow/differential-dataflow" }
 
+    [dependencies.xxhash-rust]
+    version = "0.8.2"
+    default-features = false
+    features = ["xxh3"]
+
     [dependencies.tera]
     version = "1.12.1"
     default-features = false

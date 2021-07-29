@@ -32,7 +32,7 @@ use crate::{
     args::Args,
     dataflow::{
         operator_stats::OperatorStatsRelations,
-        operators::{FilterMap, InspectExt, JoinArranged, Multiply, SortBy},
+        operators::{DelayExt, FilterMap, InspectExt, JoinArranged, Multiply, SortBy},
         send_recv::ChannelAddrs,
         subgraphs::rewire_channels,
         utils::{
@@ -45,7 +45,7 @@ use crate::{
 use anyhow::Result;
 use ddshow_types::{timely_logging::OperatesEvent, ChannelId, OperatorAddr, OperatorId, WorkerId};
 use differential_dataflow::{
-    difference::{Present, Semigroup},
+    difference::Semigroup,
     lattice::Lattice,
     operators::{
         arrange::{ArrangeByKey, ArrangeBySelf, Arranged, TraceAgent},
@@ -58,7 +58,7 @@ use std::iter;
 use std::time::Duration;
 use timely::{
     dataflow::{
-        operators::{generic::operator, probe::Handle as ProbeHandle, Delay},
+        operators::{generic::operator, probe::Handle as ProbeHandle},
         Scope, Stream,
     },
     order::TotalOrder,
@@ -88,9 +88,9 @@ pub fn dataflow<S>(
 where
     S: Scope<Timestamp = Time>,
 {
-    let timely_delayed = timely_stream.delay_batch(granulate);
+    let timely_delayed = timely_stream.delay_fast(granulate);
     let differential_delayed =
-        differential_stream.map(|differential| differential.delay_batch(granulate));
+        differential_stream.map(|differential| differential.delay_fast(granulate));
 
     let (
         operator_lifespans,
@@ -127,35 +127,22 @@ where
     // TODO: Turn these into collections of `OpKey` and arrange them
     let (leaves, subgraphs) = sift_leaves_and_scopes(scope, &operator_addrs_by_self);
     let (leaves_arranged, subgraphs_arranged) = (
-        leaves
-            .debug_frontier()
-            .arrange_by_self_named("ArrangeBySelf: Dataflow Graph Leaves"),
-        subgraphs
-            .debug_frontier()
-            .arrange_by_self_named("ArrangeBySelf: Dataflow Graph Subgraphs"),
+        leaves.arrange_by_self_named("ArrangeBySelf: Dataflow Graph Leaves"),
+        subgraphs.arrange_by_self_named("ArrangeBySelf: Dataflow Graph Subgraphs"),
     );
 
     let subgraph_ids = subgraphs_arranged
         .join_core(&operator_addrs, |&(worker, _), &(), &id| {
             iter::once((worker, id))
         })
-        .debug_frontier()
         .arrange_by_self_named("ArrangeBySelf: Dataflow Graph Subgraph Ids");
 
-    let channels = rewire_channels(scope, &raw_channels.debug_frontier(), &subgraphs_arranged)
-        .debug_frontier();
-    let edges = attach_operators(
-        scope,
-        &raw_operators.debug_frontier(),
-        &channels,
-        &leaves_arranged,
-    )
-    .debug_frontier();
+    let channels = rewire_channels(scope, &raw_channels, &subgraphs_arranged);
+    let edges = attach_operators(scope, &raw_operators, &channels, &leaves_arranged);
 
-    let operator_shapes = shape::operator_shapes(&raw_operators, &raw_channels).debug_frontier();
+    let operator_shapes = shape::operator_shapes(&raw_operators, &raw_channels);
     let operator_progress = progress_stream.map(|progress_stream| {
         progress_stats::aggregate_channel_messages(progress_stream, &operator_shapes)
-            .debug_frontier()
     });
 
     // TODO: Make `extract_timely_info()` get the relevant event information
@@ -163,12 +150,10 @@ where
     //       it needs a serious, intrinsic rework and/or disk backed arrangements
     let timeline_events = timeline_events.as_ref().map(|timeline_events| {
         worker_timeline::worker_timeline(scope, timeline_events, differential_delayed.as_ref())
-            .debug_frontier()
     });
 
     let addressed_operators = raw_operators
         .map(|(worker, operator)| ((worker, operator.addr.clone()), operator))
-        .debug_frontier()
         .arrange_by_key_named("ArrangeByKey: Addressed Operators");
 
     let (program_stats, worker_stats) = program_stats::aggregate_worker_stats(
@@ -185,14 +170,13 @@ where
         &operator_ids,
         &subgraph_ids,
         &channel_scopes,
-    )
-    .debug_frontier();
+    );
 
     let mut probes = install_data_extraction(
         scope,
         senders,
-        program_stats.debug_frontier(),
-        worker_stats.debug_frontier(),
+        program_stats,
+        worker_stats,
         leaves_arranged,
         edges,
         subgraphs_arranged,
@@ -255,7 +239,7 @@ fn install_data_extraction<S>(
     subgraphs: ArrangedKey<S, (WorkerId, OperatorAddr), Diff>,
     addressed_operators: ArrangedVal<S, (WorkerId, OperatorAddr), OperatesEvent, Diff>,
     dataflow_stats: Collection<S, DataflowStats, Diff>,
-    timeline_events: Option<Collection<S, TimelineEvent, Present>>,
+    timeline_events: Option<Collection<S, TimelineEvent, Diff>>,
     operator_names: ArrangedVal<S, OpKey, String, Diff>,
     operator_ids: ArrangedVal<S, OpKey, OperatorAddr, Diff>,
     channel_progress: Option<Collection<S, (OperatorAddr, ProgressInfo), Diff>>,
@@ -359,7 +343,7 @@ where
     Tr4: TraceReader<Key = (WorkerId, ChannelId), Val = OperatorAddr, Time = S::Timestamp, R = Diff>
         + 'static,
 {
-    let subgraph_addrs = subgraph_ids.join_core(&addr_lookup, |&(worker, id), &(), addr| {
+    let subgraph_addrs = subgraph_ids.join_core(addr_lookup, |&(worker, id), &(), addr| {
         iter::once(((worker, addr.clone()), id))
     });
 
@@ -389,7 +373,7 @@ where
 
     // Get the number of subgraphs underneath each subgraph
     let subgraph_subgraphs = subgraph_children_arranged
-        .semijoin_arranged(&subgraph_ids)
+        .semijoin_arranged(subgraph_ids)
         .map(|((worker, _), subgraph)| ((worker, subgraph), ()))
         .count_total()
         .map(|(((worker, subgraph), ()), subgraphs)| ((worker, subgraph), subgraphs as usize));
@@ -415,7 +399,7 @@ where
 
     // TODO: Delta join this :(
     dataflows
-        .join(&operator_lifespans)
+        .join(operator_lifespans)
         .join(&subgraph_operators)
         .join(&subgraph_subgraphs)
         .join(&subgraph_channels)

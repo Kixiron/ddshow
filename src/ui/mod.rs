@@ -1,7 +1,8 @@
 use crate::{
     args::Args,
     dataflow::{
-        utils::OpKey, ArrangementStats as DataflowArrangementStats, DataflowData, OperatorProgress,
+        utils::{OpKey, XXHasher},
+        ArrangementStats as DataflowArrangementStats, DataflowData, OperatorProgress,
         OperatorShape, SplineLevel, Summation, TimelineEvent as RawTimelineEvent,
     },
 };
@@ -33,12 +34,12 @@ pub fn render(
     subgraphs: &[Subgraph],
     edges: &[Edge],
     palette_colors: &[String],
-    arrangement_map: &HashMap<OpKey, &DataflowArrangementStats>,
-    activation_map: &HashMap<OpKey, Vec<(Duration, Duration)>>,
-    agg_operator_stats: &HashMap<OperatorId, &Summation>,
-    agg_arrangement_stats: &HashMap<OperatorId, &DataflowArrangementStats>,
-    agg_activations: &HashMap<OperatorId, Vec<&Vec<(Duration, Duration)>>>,
-    spline_levels: &HashMap<OpKey, Vec<SplineLevel>>,
+    arrangement_map: &HashMap<OpKey, &DataflowArrangementStats, XXHasher>,
+    activation_map: &HashMap<OpKey, Vec<(Duration, Duration)>, XXHasher>,
+    agg_operator_stats: &HashMap<OperatorId, &Summation, XXHasher>,
+    agg_arrangement_stats: &HashMap<OperatorId, &DataflowArrangementStats, XXHasher>,
+    agg_activations: &HashMap<OperatorId, Vec<&Vec<(Duration, Duration)>>, XXHasher>,
+    spline_levels: &HashMap<OpKey, Vec<SplineLevel>, XXHasher>,
 ) -> Result<()> {
     let output_dir = args.output_dir.canonicalize().with_context(|| {
         anyhow::anyhow!("failed to canonicalize '{}'", args.output_dir.display())
@@ -158,12 +159,12 @@ pub enum VegaNodeKind {
 
 fn vega_data<'a>(
     data: &'a DataflowData,
-    arrangement_map: &'a HashMap<OpKey, &'a DataflowArrangementStats>,
-    activation_map: &'a HashMap<OpKey, Vec<(Duration, Duration)>>,
-    agg_operator_stats: &'a HashMap<OperatorId, &'a Summation>,
-    agg_arrangement_stats: &'a HashMap<OperatorId, &'a DataflowArrangementStats>,
-    agg_activations: &'a HashMap<OperatorId, Vec<&'a Vec<(Duration, Duration)>>>,
-    spline_levels: &'a HashMap<OpKey, Vec<SplineLevel>>,
+    arrangement_map: &'a HashMap<OpKey, &'a DataflowArrangementStats, XXHasher>,
+    activation_map: &'a HashMap<OpKey, Vec<(Duration, Duration)>, XXHasher>,
+    agg_operator_stats: &'a HashMap<OperatorId, &'a Summation, XXHasher>,
+    agg_arrangement_stats: &'a HashMap<OperatorId, &'a DataflowArrangementStats, XXHasher>,
+    agg_activations: &'a HashMap<OperatorId, Vec<&'a Vec<(Duration, Duration)>>, XXHasher>,
+    spline_levels: &'a HashMap<OpKey, Vec<SplineLevel>, XXHasher>,
 ) -> Vec<VegaNode<'a>> {
     agg_operator_stats
         .iter()

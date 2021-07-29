@@ -1,10 +1,11 @@
+use crate::dataflow::utils::XXHasher;
 use differential_dataflow::{consolidation, difference::Semigroup, AsCollection, Collection, Data};
 use std::{
     collections::{BinaryHeap, HashMap},
     panic::Location,
 };
 use timely::{
-    dataflow::{channels::pact::Pipeline, operators::Operator, Scope},
+    dataflow::{channels::pact::Pipeline, operators::Operator, Scope, Stream},
     progress::Timestamp,
     PartialOrder,
 };
@@ -20,6 +21,53 @@ pub trait DelayExt<T> {
         F: FnMut(&T) -> T + Clone + 'static;
 }
 
+impl<S, D> DelayExt<S::Timestamp> for Stream<S, D>
+where
+    S: Scope,
+    S::Timestamp: Timestamp,
+    D: Data,
+{
+    type Output = Self;
+
+    #[inline]
+    #[track_caller]
+    fn delay_fast<F>(&self, mut delay: F) -> Self::Output
+    where
+        F: FnMut(&S::Timestamp) -> S::Timestamp + Clone + 'static,
+    {
+        let name = located!("Delay");
+
+        let mut elements = HashMap::with_hasher(XXHasher::default());
+        let mut idle_buffers = Vec::new();
+
+        self.unary_notify(Pipeline, &name, None, move |input, output, notificator| {
+            input.for_each(|time, data| {
+                let mut buffer = idle_buffers.pop().unwrap_or_default();
+                data.swap(&mut buffer);
+
+                let new_time = delay(&time);
+                debug_assert!(time.time().less_equal(&new_time));
+
+                notificator.notify_at(time.delayed(&new_time));
+                elements
+                    .entry(new_time)
+                    .or_insert_with(TinyVec::<[_; 16]>::new)
+                    .push(buffer);
+            });
+
+            // for each available notification, send corresponding set
+            notificator.for_each(|time, _, _| {
+                if let Some(data) = elements.remove(&time) {
+                    for mut buffer in data.into_iter() {
+                        output.session(&time).give_vec(&mut buffer);
+                        idle_buffers.push(buffer);
+                    }
+                }
+            });
+        })
+    }
+}
+
 impl<S, D, R> DelayExt<S::Timestamp> for Collection<S, D, R>
 where
     S: Scope,
@@ -29,20 +77,16 @@ where
 {
     type Output = Self;
 
+    #[inline]
     #[track_caller]
     fn delay_fast<F>(&self, mut delay: F) -> Self::Output
     where
         F: FnMut(&S::Timestamp) -> S::Timestamp + Clone + 'static,
     {
         let caller = Location::caller();
-        let name = format!(
-            "Delay @ {}:{}:{}",
-            caller.file(),
-            caller.line(),
-            caller.column()
-        );
+        let name = located!("Delay");
 
-        let mut elements = HashMap::new();
+        let mut elements = HashMap::with_hasher(XXHasher::default());
         let mut idle_buffers = Vec::new();
         let mut dirty = BinaryHeap::new();
 
@@ -54,7 +98,7 @@ where
 
                     // Apply the delay to the timely stream's timestamp
                     let stream_time = delay(&time);
-                    assert!(
+                    debug_assert!(
                         time.time().less_equal(&stream_time),
                         "the delayed time is less than the stream's original time: {:#?} < {:#?}",
                         stream_time,
@@ -133,7 +177,7 @@ where
 /// Consolidate updates within their timestamp
 fn compact_delayed_buffers<T, D, R>(
     dirty: &mut BinaryHeap<T>,
-    elements: &mut HashMap<T, Element<T, D, R>>,
+    elements: &mut HashMap<T, Element<T, D, R>, XXHasher>,
     idle_buffers: &mut Vec<Vec<(D, T, R)>>,
 ) where
     T: Timestamp,
@@ -176,6 +220,7 @@ fn compact_delayed_buffers<T, D, R>(
 #[cfg(test)]
 mod tests {
     use super::compact_delayed_buffers;
+    use crate::dataflow::utils::XXHasher;
     use std::{
         collections::{BinaryHeap, HashMap},
         time::Duration,
@@ -189,7 +234,7 @@ mod tests {
         dirty.push(Duration::from_secs(20));
         dirty.push(Duration::from_secs(6));
 
-        let mut elements = HashMap::new();
+        let mut elements = HashMap::with_hasher(XXHasher::default());
         elements.insert(
             Duration::from_secs(10),
             tiny_vec![
@@ -231,7 +276,7 @@ mod tests {
 
         compact_delayed_buffers(&mut dirty, &mut elements, &mut idle_buffers);
 
-        let mut expected = HashMap::new();
+        let mut expected = HashMap::with_hasher(XXHasher::default());
         expected.insert(
             Duration::from_secs(6),
             tiny_vec![
@@ -275,7 +320,7 @@ mod tests {
         let mut dirty = BinaryHeap::new();
         dirty.push(Duration::from_secs(10));
 
-        let mut elements = HashMap::new();
+        let mut elements = HashMap::with_hasher(XXHasher::default());
         elements.insert(
             Duration::from_secs(10),
             tiny_vec![
@@ -301,7 +346,7 @@ mod tests {
         let mut dirty = BinaryHeap::new();
         dirty.push(Duration::from_secs(30));
 
-        let mut elements = HashMap::new();
+        let mut elements = HashMap::with_hasher(XXHasher::default());
         elements.insert(
             Duration::from_secs(10),
             tiny_vec![
@@ -335,7 +380,7 @@ mod tests {
         let mut dirty = BinaryHeap::new();
         dirty.push(Duration::from_secs(10));
 
-        let mut elements = HashMap::new();
+        let mut elements = HashMap::with_hasher(XXHasher::default());
         elements.insert(
             Duration::from_secs(10),
             tiny_vec![

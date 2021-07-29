@@ -37,7 +37,7 @@ pub fn display_reachability<S>(
         .reclock(&clock)
         .sink(Pipeline, "Display Reachability Updates", |input| {
             let mut buffer = Vec::new();
-            let mut capabilities = HashMap::new();
+            let mut capabilities = HashMap::with_hasher(XXHasher::default());
 
             input.for_each(move |_capability, data| {
                 data.swap(&mut buffer);

@@ -229,8 +229,11 @@ where
             "Gather Timely Event Durations",
             |_capability, _info| {
                 let mut buffer = Vec::new();
-                let (mut event_map, mut map_buffer, mut stack_buffer) =
-                    (HashMap::new(), HashMap::new(), Vec::new());
+                let (mut event_map, mut map_buffer, mut stack_buffer) = (
+                    HashMap::with_hasher(XXHasher::default()),
+                    HashMap::with_hasher(XXHasher::default()),
+                    Vec::new(),
+                );
 
                 move |input, output| {
                     input.for_each(|capability, data| {

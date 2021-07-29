@@ -66,7 +66,7 @@ pub fn smoke(worker: &mut Worker<Generic>) {
             .iterate(|stream| {
                 stream
                     .map(|x| x.saturating_sub(1))
-                    .concat(&stream)
+                    .concat(stream)
                     .distinct()
             })
             .consolidate()

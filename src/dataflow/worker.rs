@@ -319,44 +319,44 @@ where
         .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
         .template("[{prefix}, {elapsed}] {spinner} {msg}: {len} events, {per_sec}")
         .on_finish(ProgressFinish::WithMessage(
-            format!("Finished replaying {} events", source.to_lowercase()).into(),
+            format!("Finished replaying {} trace", source.to_lowercase()).into(),
         ));
     let finished_style = ProgressStyle::default_spinner()
         .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-        .template("[{prefix}, {elapsed}] Finished replaying {len} {msg} events")
+        .template("[{prefix}, {elapsed}] Finished replaying {len} {msg} trace")
         .on_finish(ProgressFinish::WithMessage(source.to_lowercase().into()));
+
+    let padding_width = if total_sources >= 100 {
+        3
+    } else if total_sources >= 10 {
+        2
+    } else {
+        1
+    };
+    let draw_target = if args.is_quiet() {
+        ProgressDrawTarget::hidden()
+    } else {
+        ProgressDrawTarget::stdout()
+    };
 
     let progress = multi_progress
         .add(
-            ProgressBar::with_draw_target(
-                0,
-                if args.is_quiet() {
-                    ProgressDrawTarget::hidden()
-                } else {
-                    ProgressDrawTarget::stdout()
-                },
-            )
-            .with_style(style)
-            .with_prefix(format!(
-                "{:0width$}/{:0width$}",
-                *source_counter + 1,
-                total_sources,
-                width = if total_sources >= 100 {
-                    3
-                } else if total_sources >= 10 {
-                    2
-                } else {
-                    1
-                },
-            )),
+            ProgressBar::with_draw_target(0, draw_target)
+                .with_style(style)
+                .with_prefix(format!(
+                    "{:0width$}/{:0width$}",
+                    *source_counter,
+                    total_sources,
+                    width = padding_width,
+                )),
         )
-        .with_message(format!("Replaying {} events", source.to_lowercase()));
+        .with_message(format!("Replaying {} trace", source.to_lowercase()));
 
     // I'm a genius, giving every bar the same tick speed looks weird
     // and artificial (almost like the spinners don't actually mean anything),
     // so each spinner gets a little of an offset so that all of them are
     // slightly out of sync
-    utils::set_steady_tick(&progress, *source_counter + 1);
+    utils::set_steady_tick(&progress, *source_counter);
 
     progress_bars.push((progress.clone(), finished_style));
     *source_counter += 1;

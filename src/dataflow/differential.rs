@@ -1,5 +1,5 @@
 use crate::dataflow::{
-    operators::{FilterMapTimed, InspectExt, Max, Min},
+    operators::{FilterMapTimed, Max, Min},
     utils::{Diff, DifferentialLogBundle, OpKey, Time},
 };
 use abomonation_derive::Abomonation;
@@ -62,8 +62,7 @@ where
                 | DifferentialEvent::Drop(_)
                 | DifferentialEvent::TraceShare(_) => None,
             })
-            .as_collection()
-            .debug_frontier();
+            .as_collection();
 
         let spline_levels = differential_events
             .filter_map_timed(|&time, (event_time, worker, event)| match event {
