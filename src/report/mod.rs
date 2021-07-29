@@ -1,6 +1,10 @@
 mod tree;
 
-use crate::{args::Args, dataflow::DataflowData, report::tree::Tree};
+use crate::{
+    args::Args,
+    dataflow::{utils::OpKey, ArrangementStats, DataflowData, Summation},
+    report::tree::Tree,
+};
 use anyhow::{Context, Result};
 use comfy_table::{presets::UTF8_FULL, Cell, ColumnConstraint, Row, Table as InnerTable, Width};
 use ddshow_types::{OperatorAddr, OperatorId, WorkerId};
@@ -15,8 +19,10 @@ use std::{
 pub fn build_report(
     args: &Args,
     data: &DataflowData,
-    name_lookup: &HashMap<(WorkerId, OperatorId), &str>,
-    addr_lookup: &HashMap<(WorkerId, OperatorId), &OperatorAddr>,
+    name_lookup: &HashMap<OpKey, &str>,
+    addr_lookup: &HashMap<OpKey, &OperatorAddr>,
+    agg_operator_stats: &HashMap<OperatorId, &Summation>,
+    agg_arrangement_stats: &HashMap<OperatorId, &ArrangementStats>,
 ) -> Result<()> {
     if !args.no_report_file {
         // Attempt to create the path up to the report file
@@ -52,18 +58,33 @@ pub fn build_report(
             args,
             data,
             &mut file,
-            &name_lookup,
-            &addr_lookup,
+            name_lookup,
+            addr_lookup,
             &all_workers,
+            agg_operator_stats,
+            agg_arrangement_stats,
         )?;
 
         if args.differential_enabled {
-            arrangement_stats(data, &mut file, &name_lookup, &addr_lookup, &all_workers)?;
+            arrangement_stats(
+                &mut file,
+                &name_lookup,
+                &addr_lookup,
+                &all_workers,
+                agg_operator_stats,
+                agg_arrangement_stats,
+            )?;
         } else {
             tracing::debug!("differential logging is disabled, skipping arrangement stats table");
         }
 
-        operator_tree(data, &mut file, &name_lookup, &addr_lookup, &all_workers)?;
+        operator_tree(
+            &mut file,
+            &name_lookup,
+            &addr_lookup,
+            &all_workers,
+            agg_operator_stats,
+        )?;
 
         if args.progress_enabled {
             writeln!(&mut file)?;
@@ -187,18 +208,21 @@ fn worker_stats(args: &Args, data: &DataflowData, file: &mut File) -> Result<()>
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn operator_stats(
     args: &Args,
     data: &DataflowData,
     file: &mut File,
-    name_lookup: &HashMap<(WorkerId, OperatorId), &str>,
-    addr_lookup: &HashMap<(WorkerId, OperatorId), &OperatorAddr>,
+    name_lookup: &HashMap<OpKey, &str>,
+    addr_lookup: &HashMap<OpKey, &OperatorAddr>,
     all_workers: &HashSet<WorkerId>,
+    agg_operator_stats: &HashMap<OperatorId, &Summation>,
+    agg_arrangement_stats: &HashMap<OperatorId, &ArrangementStats>,
 ) -> Result<()> {
     tracing::debug!("generating operator stats table");
 
     // TODO: Sort within timely
-    let mut operators_by_total_runtime = data.aggregated_operator_stats.clone();
+    let mut operators_by_total_runtime: Vec<_> = agg_operator_stats.iter().collect();
     operators_by_total_runtime.sort_by_key(|(_operator, stats)| Reverse(stats.total));
 
     let mut table = Table::new();
@@ -231,7 +255,7 @@ fn operator_stats(
     for (operator, stats, addr, name) in
         operators_by_total_runtime
             .iter()
-            .map(|&(operator, ref stats)| {
+            .map(|&(&operator, &stats)| {
                 let addr = all_workers
                     .iter()
                     .find_map(|&worker| addr_lookup.get(&(worker, operator)));
@@ -242,7 +266,7 @@ fn operator_stats(
                 (operator, stats, addr, name.unwrap_or(""))
             })
     {
-        let arrange = stats.arrangement_size.as_ref().map(|arrange| {
+        let arrange = agg_arrangement_stats.get(&operator).map(|&arrange| {
             (
                 format!("{}", arrange.max_size),
                 format!("{}", arrange.min_size),
@@ -280,7 +304,7 @@ fn operator_stats(
                 ),
             )),
             Cell::new(format!("{:#?}", stats.total)),
-            Cell::new(stats.activations),
+            Cell::new(stats.count),
             Cell::new(format!("{:#?}", stats.average)),
             Cell::new(format!("{:#?}", stats.max)),
             Cell::new(format!("{:#?}", stats.min)),
@@ -302,22 +326,21 @@ fn operator_stats(
 }
 
 fn arrangement_stats(
-    data: &DataflowData,
     file: &mut File,
-    name_lookup: &HashMap<(WorkerId, OperatorId), &str>,
-    addr_lookup: &HashMap<(WorkerId, OperatorId), &OperatorAddr>,
+    name_lookup: &HashMap<OpKey, &str>,
+    addr_lookup: &HashMap<OpKey, &OperatorAddr>,
     all_workers: &HashSet<WorkerId>,
+    agg_operator_stats: &HashMap<OperatorId, &Summation>,
+    agg_arrangement_stats: &HashMap<OperatorId, &ArrangementStats>,
 ) -> Result<()> {
     tracing::debug!("generating arrangement stats table");
 
-    let mut operators_by_arrangement_size: Vec<_> = data
-        .aggregated_operator_stats
+    let mut operators_by_arrangement_size: Vec<_> = agg_arrangement_stats
         .iter()
-        .filter_map(|&(operator, ref stats)| {
-            stats
-                .arrangement_size
-                .as_ref()
-                .map(|arrange| (operator, stats, arrange))
+        .filter_map(|(&operator, &arrange)| {
+            agg_operator_stats
+                .get(&operator)
+                .map(|&stats| (operator, stats, arrange))
         })
         .collect();
 
@@ -376,11 +399,11 @@ fn arrangement_stats(
 }
 
 fn operator_tree(
-    data: &DataflowData,
     file: &mut File,
-    name_lookup: &&HashMap<(WorkerId, OperatorId), &str>,
-    addr_lookup: &&HashMap<(WorkerId, OperatorId), &OperatorAddr>,
+    name_lookup: &&HashMap<OpKey, &str>,
+    addr_lookup: &&HashMap<OpKey, &OperatorAddr>,
     all_workers: &HashSet<WorkerId>,
+    agg_operator_stats: &HashMap<OperatorId, &Summation>,
 ) -> Result<()> {
     tracing::debug!("generating operator tree");
 
@@ -388,7 +411,7 @@ fn operator_tree(
         writeln!(writer, "{:#?}, {}, {}", total, name, addr)
     });
 
-    for &(operator, ref stats) in data.aggregated_operator_stats.iter() {
+    for (&operator, &stats) in agg_operator_stats.iter() {
         let addr = *all_workers
             .iter()
             .find_map(|&worker| addr_lookup.get(&(worker, operator)))

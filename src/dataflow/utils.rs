@@ -6,7 +6,7 @@ use crossbeam_channel::Sender;
 use ddshow_sink::{EventWriter, DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE};
 use ddshow_types::{
     differential_logging::DifferentialEvent, progress_logging::TimelyProgressEvent,
-    timely_logging::TimelyEvent, WorkerId,
+    timely_logging::TimelyEvent, OperatorId, WorkerId,
 };
 use differential_dataflow::{
     difference::Semigroup,
@@ -38,6 +38,7 @@ use timely::{
 
 pub(crate) type Diff = isize;
 pub(crate) type Time = Duration; // Epoch<Duration, Duration>;
+pub(crate) type OpKey = (WorkerId, OperatorId);
 
 pub(crate) type ArrangedVal<S, K, V, D = Diff> =
     Arranged<S, TraceAgent<OrdValSpine<K, V, <S as ScopeParent>::Timestamp, D>>>;

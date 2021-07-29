@@ -1,7 +1,7 @@
 //! The [`OperatorAddr`] type
 
 use crate::ids::{OperatorId, PortId};
-use std::{
+use core::{
     convert::TryFrom,
     fmt::{self, Debug, Display},
     iter::{FromIterator, IntoIterator},
@@ -41,10 +41,12 @@ pub struct OperatorAddr {
 }
 
 impl OperatorAddr {
+    #[inline]
     pub const fn new(addr: TinyVec<[OperatorId; 8]>) -> Self {
         Self { addr }
     }
 
+    #[inline]
     pub fn from_elem(segment: OperatorId) -> Self {
         let zero = OperatorId::new(0);
 
@@ -54,6 +56,7 @@ impl OperatorAddr {
         )))
     }
 
+    #[inline]
     fn from_vec(addr: Vec<OperatorId>) -> Self {
         let tiny_vec = ArrayVec::try_from(addr.as_slice())
             .map_or_else(|_| TinyVec::Heap(addr), TinyVec::Inline);
@@ -61,6 +64,7 @@ impl OperatorAddr {
         Self::new(tiny_vec)
     }
 
+    #[inline]
     pub fn from_slice(addr: &[OperatorId]) -> Self {
         let tiny_vec =
             ArrayVec::try_from(addr).map_or_else(|_| TinyVec::Heap(addr.to_vec()), TinyVec::Inline);
@@ -68,24 +72,29 @@ impl OperatorAddr {
         Self::new(tiny_vec)
     }
 
+    #[inline]
     pub fn is_top_level(&self) -> bool {
         self.len() == 1
     }
 
+    #[inline]
     pub fn push(&mut self, segment: PortId) {
         self.addr.push(OperatorId::new(segment.into_inner()));
     }
 
+    #[inline]
     pub fn push_imm(&self, elem: PortId) -> Self {
         let mut this = self.clone();
         this.push(elem);
         this
     }
 
+    #[inline]
     pub fn pop(&mut self) -> Option<OperatorId> {
         self.addr.pop()
     }
 
+    #[inline]
     pub fn pop_imm(&self) -> (Self, Option<OperatorId>) {
         let mut this = self.clone();
         let popped = this.pop();
@@ -93,34 +102,40 @@ impl OperatorAddr {
         (this, popped)
     }
 
+    #[inline]
     pub fn as_slice(&self) -> &[OperatorId] {
         self.addr.as_slice()
     }
 
+    #[inline]
     pub fn iter(&self) -> slice::Iter<'_, OperatorId> {
         self.as_slice().iter()
     }
 }
 
 impl From<&[OperatorId]> for OperatorAddr {
+    #[inline]
     fn from(addr: &[OperatorId]) -> Self {
         Self::from_slice(addr)
     }
 }
 
 impl From<&Vec<OperatorId>> for OperatorAddr {
+    #[inline]
     fn from(addr: &Vec<OperatorId>) -> Self {
         Self::from_slice(addr)
     }
 }
 
 impl From<Vec<OperatorId>> for OperatorAddr {
+    #[inline]
     fn from(addr: Vec<OperatorId>) -> Self {
         Self::from_vec(addr)
     }
 }
 
 impl From<Vec<usize>> for OperatorAddr {
+    #[inline]
     fn from(addr: Vec<usize>) -> Self {
         // FIXME: Use `Vec::into_raw_parts()` once that's stable
         // FIXME: Use `Vec::into_raw_parts_with_alloc()` once that's stable
@@ -142,12 +157,14 @@ impl From<Vec<usize>> for OperatorAddr {
 impl Deref for OperatorAddr {
     type Target = [OperatorId];
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         &self.addr
     }
 }
 
 impl Extend<OperatorId> for OperatorAddr {
+    #[inline]
     fn extend<T>(&mut self, segments: T)
     where
         T: IntoIterator<Item = OperatorId>,
@@ -157,6 +174,7 @@ impl Extend<OperatorId> for OperatorAddr {
 }
 
 impl<'a> Extend<&'a OperatorId> for OperatorAddr {
+    #[inline]
     fn extend<T>(&mut self, segments: T)
     where
         T: IntoIterator<Item = &'a OperatorId>,
@@ -166,6 +184,7 @@ impl<'a> Extend<&'a OperatorId> for OperatorAddr {
 }
 
 impl FromIterator<OperatorId> for OperatorAddr {
+    #[inline]
     fn from_iter<T: IntoIterator<Item = OperatorId>>(iter: T) -> Self {
         Self {
             addr: <TinyVec<[OperatorId; 8]>>::from_iter(iter),
@@ -174,6 +193,7 @@ impl FromIterator<OperatorId> for OperatorAddr {
 }
 
 impl<'a> FromIterator<&'a OperatorId> for OperatorAddr {
+    #[inline]
     fn from_iter<T: IntoIterator<Item = &'a OperatorId>>(iter: T) -> Self {
         Self {
             addr: iter.into_iter().copied().collect(),
@@ -182,8 +202,10 @@ impl<'a> FromIterator<&'a OperatorId> for OperatorAddr {
 }
 
 impl Debug for OperatorAddr {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_list().entries(self.addr.iter()).finish()
+        // We can forward to our display implementation
+        Display::fmt(self, f)
     }
 }
 
@@ -199,6 +221,7 @@ impl Display for OperatorAddr {
 
 #[cfg(feature = "enable_abomonation")]
 impl Abomonation for OperatorAddr {
+    #[inline]
     unsafe fn entomb<W: io::Write>(&self, write: &mut W) -> io::Result<()> {
         match &self.addr {
             TinyVec::Inline(array) => array.into_inner().entomb(write),
@@ -206,6 +229,7 @@ impl Abomonation for OperatorAddr {
         }
     }
 
+    #[inline]
     unsafe fn exhume<'a, 'b>(&'a mut self, bytes: &'b mut [u8]) -> Option<&'b mut [u8]> {
         let mut inner = Vec::new();
         let output = Vec::exhume(&mut inner, bytes)?;
@@ -214,6 +238,7 @@ impl Abomonation for OperatorAddr {
         Some(output)
     }
 
+    #[inline]
     fn extent(&self) -> usize {
         match &self.addr {
             TinyVec::Inline(array) => array.into_inner().extent(),

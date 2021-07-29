@@ -1,8 +1,8 @@
 use crate::{
     dataflow::{
-        operators::{DelayExt, DiffDuration, InspectExt, JoinArranged, MapExt, MapTimed, Max, Min},
+        operators::{DiffDuration, InspectExt, JoinArranged, MapExt, MapTimed, Max, Min},
         send_recv::ChannelAddrs,
-        utils::{granulate, ArrangedKey, DifferentialLogBundle, Time, TimelyLogBundle},
+        utils::{ArrangedKey, DifferentialLogBundle, Time, TimelyLogBundle},
         Channel, Diff, OperatorAddr,
     },
     ui::{ProgramStats, WorkerStats},
@@ -80,20 +80,16 @@ where
     // Count the total number of each item
     let total_dataflows = only_dataflows
         .map_named("Map: Count Dataflows", |(worker, _)| worker)
-        .count_total()
-        .debug_frontier();
+        .count_total();
     let total_subgraphs = only_subgraphs
         .map_named("Map: Count Subgraphs", |(worker, _)| worker)
-        .count_total()
-        .debug_frontier();
+        .count_total();
     let total_channels = channels
         .map_named("Map: Count Channels", |(worker, _)| worker)
-        .count_total()
-        .debug_frontier();
+        .count_total();
     let total_operators = only_operators
         .map_named("Map: Count Operators", |((worker, _), _)| worker)
-        .count_total()
-        .debug_frontier();
+        .count_total();
 
     let mut total_arrangements = if let Some(differential) = differential {
         differential
@@ -148,7 +144,6 @@ where
     )
     .debug_frontier_with("total_events raw")
     .as_collection()
-    .delay_fast(granulate)
     .debug_frontier_with("total_events after delay")
     .count_total()
     .debug_frontier_with("total_events after count");
@@ -170,7 +165,6 @@ where
     )
     .debug_frontier_with("total_runtime raw")
     .as_collection()
-    .delay_fast(granulate)
     .debug_frontier_with("total_runtime after delay")
     .count_total()
     .debug_frontier_with("total_runtime after count");

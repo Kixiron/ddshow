@@ -5,18 +5,17 @@ mod logging;
 mod replay_loading;
 mod report;
 mod ui;
-mod vega;
 
 use crate::{
     args::Args,
     colormap::{select_color, Color},
-    dataflow::{constants::DDSHOW_VERSION, Channel, DataflowData, DataflowSenders, OperatorStats},
+    dataflow::{constants::DDSHOW_VERSION, Channel, DataflowData, DataflowSenders, Summation},
     replay_loading::{connect_to_sources, wait_for_input},
     ui::{ActivationDuration, DDShowStats, EdgeKind, Lifespan, TimelineEvent},
 };
 use anyhow::{Context, Result};
 use ddshow_types::{timely_logging::OperatesEvent, OperatorAddr, OperatorId, WorkerId};
-use indicatif::{MultiProgress, ProgressDrawTarget};
+use indicatif::{HumanDuration, MultiProgress, ProgressDrawTarget};
 use std::{
     collections::HashMap,
     fs::{self, File},
@@ -27,7 +26,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use structopt::StructOpt;
 
@@ -36,11 +35,17 @@ use structopt::StructOpt;
 // TODO: Set the panic hook to shut down the computation
 //       so that panics don't stick things
 fn main() -> Result<()> {
+    let start_time = Instant::now();
+
     // Grab the args from the user and build the required configs
     let args = Arc::new(Args::from_args());
     logging::init_logging(args.color);
 
     tracing::trace!("initialized and received cli args: {:?}", args);
+
+    if args.debug_replay_files {
+        tracing::warn!("the `--debug-replay-files` arg currently does nothing");
+    }
 
     if let Some(shell) = args.completions {
         tracing::trace!("generating completions for {}", shell);
@@ -100,6 +105,7 @@ fn main() -> Result<()> {
     //       our dataflow will always attempt to connect to that address
     //       if it's present in the env, causing things like ddshow/#7.
     //       See https://github.com/Kixiron/ddshow/issues/7
+    let dataflow_start_time = Instant::now();
     let worker_guards =
         timely::execute::execute_from(builders, others, worker_config, move |worker| {
             // Distribute the tcp streams across workers, converting each of them into an event reader
@@ -138,6 +144,15 @@ fn main() -> Result<()> {
     // Wait for the user's prompt
     let mut data = wait_for_input(&args, &running, &workers_finished, worker_guards, receivers)?;
 
+    let dataflow_elapsed = dataflow_start_time.elapsed();
+    tracing::info!(
+        elapsed = ?dataflow_elapsed,
+        "spent {} within the compute dataflow",
+        HumanDuration(dataflow_elapsed),
+    );
+
+    let extraction_start_time = Instant::now();
+
     let name_lookup: HashMap<_, _> = data
         .name_lookup
         .iter()
@@ -149,76 +164,126 @@ fn main() -> Result<()> {
         .map(|(id, addr)| (*id, addr))
         .collect();
 
-    // Build & emit the textual report
-    report::build_report(&*args, &data, &name_lookup, &addr_lookup)?;
-
-    vega::make_data(&args, &data)?;
-
     if let Some(file) = args.dump_json.as_ref() {
         dump_program_json(&*args, file, &data, &name_lookup, &addr_lookup)?;
     }
 
-    // Extract the data from timely
-    let mut subgraph_ids = Vec::new();
-
     data.nodes
         .sort_unstable_by(|(addr1, _), (addr2, _)| addr1.cmp(addr2));
-    tracing::debug!("finished extracting {} node events", data.nodes.len());
-
     data.subgraphs
         .sort_unstable_by(|(addr1, _), (addr2, _)| addr1.cmp(addr2));
-    tracing::debug!(
-        "finished extracting {} subgraph events",
-        data.subgraphs.len(),
-    );
+    data.edges
+        .sort_unstable_by_key(|(worker, _, channel, _)| (*worker, channel.channel_id()));
 
+    let mut subgraph_ids = Vec::new();
     for &((worker, _), ref event) in data.subgraphs.iter() {
         subgraph_ids.push((worker, event.id));
     }
 
-    let (mut operator_stats, mut raw_timings) = (HashMap::new(), Vec::new());
-    tracing::debug!(
-        "finished extracting {} stats events",
-        data.operator_stats.len(),
+    let (mut operator_stats, mut agg_operator_stats, mut raw_timings) = (
+        HashMap::with_capacity(data.summarized.len()),
+        HashMap::with_capacity(data.aggregated_summaries.len() / 2),
+        Vec::with_capacity(data.summarized.len()),
     );
-
-    for (operator, stats) in data.operator_stats.iter() {
+    for (operator, stats) in data.summarized.iter() {
         if !subgraph_ids.contains(operator) {
             raw_timings.push(stats.total);
         }
 
         operator_stats.insert(*operator, stats);
     }
-
-    data.edges
-        .sort_unstable_by_key(|(worker, _, channel, _)| (*worker, channel.channel_id()));
-    tracing::debug!("finished extracting {} edge events", data.edges.len());
+    for (operator, stats) in data.aggregated_summaries.iter() {
+        agg_operator_stats.insert(*operator, stats);
+    }
 
     let (max_time, min_time) = (
         raw_timings.iter().max().copied().unwrap_or_default(),
         raw_timings.iter().min().copied().unwrap_or_default(),
     );
 
-    tracing::debug!(
-        "finished extracting {} timeline events",
-        data.timeline_events.len(),
-    );
+    let mut arrangement_map = HashMap::with_capacity(data.arrangements.len());
+    for &(operator, ref arrangements) in data.arrangements.iter() {
+        arrangement_map.insert(operator, arrangements);
+    }
+
+    let mut agg_arrangement_stats = HashMap::with_capacity(data.aggregated_arrangements.len());
+    for &(operator, ref arrangements) in data.aggregated_arrangements.iter() {
+        agg_arrangement_stats.insert(operator, arrangements);
+    }
+
+    let mut activations_map = HashMap::with_capacity(data.operator_activations.len());
+    for &(operator, activation) in data.operator_activations.iter() {
+        activations_map
+            .entry(operator)
+            .and_modify(|activations: &mut Vec<_>| activations.push(activation))
+            .or_insert_with(|| {
+                let mut activations = Vec::with_capacity(128);
+                activations.push(activation);
+
+                activations
+            });
+    }
+
+    let mut agg_activations_map = HashMap::with_capacity(data.operator_activations.len());
+    for (&(_worker, operator), activations) in activations_map.iter() {
+        agg_activations_map
+            .entry(operator)
+            .and_modify(|agg: &mut Vec<_>| agg.push(activations))
+            .or_insert_with(|| {
+                let mut agg = Vec::with_capacity(8);
+                agg.push(activations);
+                agg
+            });
+    }
+
+    let mut spline_levels = HashMap::with_capacity(data.spline_levels.len());
+    for &((worker, operator), level) in data.spline_levels.iter() {
+        spline_levels
+            .entry((worker, operator))
+            .and_modify(|levels: &mut Vec<_>| levels.push(level))
+            .or_insert_with(|| {
+                let mut levels = Vec::with_capacity(8);
+                levels.push(level);
+                levels
+            });
+    }
+
+    // Build & emit the textual report
+    report::build_report(
+        &*args,
+        &data,
+        &name_lookup,
+        &addr_lookup,
+        &agg_operator_stats,
+        &agg_arrangement_stats,
+    )?;
 
     let html_nodes: Vec<_> = data
         .nodes
         .iter()
         .filter_map(
             |&((worker, ref addr), OperatesEvent { id, ref name, .. })| {
-                let &OperatorStats {
+                let Summation {
                     max,
                     min,
                     average,
                     total,
-                    activations: invocations,
-                    ref activation_durations,
-                    ref arrangement_size,
-                    ..
-                } = *operator_stats.get(&(worker, id))?;
+                    count: invocations,
+                } = **operator_stats.get(&(worker, id))?;
+
+                let arranged = arrangement_map.get(&(worker, id)).copied();
+                let activation_durations = activations_map
+                    .get(&(worker, id))
+                    .map(|activations| {
+                        activations
+                            .iter()
+                            .map(|(duration, time)| ActivationDuration {
+                                activation_time: duration.as_nanos() as u64,
+                                activated_at: time.as_nanos() as u64,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
 
                 let fill_color = select_color(&args.palette, total, (max_time, min_time));
                 let text_color = fill_color.text_color();
@@ -237,15 +302,9 @@ fn main() -> Result<()> {
                     text_color: format!("{}", text_color),
                     // TODO: Teach JS to deal with durations so we don't have to allocate
                     //       so much garbage
-                    activation_durations: activation_durations
-                        .iter()
-                        .map(|(duration, time)| ActivationDuration {
-                            activation_time: duration.as_nanos() as u64,
-                            activated_at: time.as_nanos() as u64,
-                        })
-                        .collect(),
-                    max_arrangement_size: arrangement_size.as_ref().map(|arr| arr.max_size),
-                    min_arrangement_size: arrangement_size.as_ref().map(|arr| arr.min_size),
+                    activation_durations,
+                    max_arrangement_size: arranged.as_ref().map(|arr| arr.max_size),
+                    min_arrangement_size: arranged.as_ref().map(|arr| arr.min_size),
                 })
             },
         )
@@ -256,13 +315,12 @@ fn main() -> Result<()> {
         .iter()
         .filter_map(
             |&((worker, ref addr), OperatesEvent { id, ref name, .. })| {
-                let OperatorStats {
+                let Summation {
                     max,
                     min,
                     average,
                     total,
-                    activations: invocations,
-                    ..
+                    count: invocations,
                 } = **operator_stats.get(&(worker, id))?;
 
                 let fill_color = select_color(&args.palette, total, (max, min));
@@ -314,6 +372,12 @@ fn main() -> Result<()> {
         &html_subgraphs,
         &html_edges,
         &palette_colors,
+        &arrangement_map,
+        &activations_map,
+        &agg_operator_stats,
+        &agg_arrangement_stats,
+        &agg_activations_map,
+        &spline_levels,
     )?;
 
     if !args.no_report_file {
@@ -339,7 +403,15 @@ fn main() -> Result<()> {
 
     if args.isnt_quiet() {
         println!("Wrote output graph to file:///{}", graph_file);
+        println!("Finished in {}", HumanDuration(start_time.elapsed()));
     }
+
+    let extraction_elapsed = extraction_start_time.elapsed();
+    tracing::info!(
+        elapsed = ?extraction_elapsed,
+        "spent {} within data extraction",
+        HumanDuration(extraction_elapsed),
+    );
 
     Ok(())
 }

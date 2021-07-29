@@ -8,6 +8,7 @@ use std::{
     fmt::{self, Display},
     net::{SocketAddr, TcpStream},
     num::NonZeroUsize,
+    path::PathBuf,
     str::FromStr,
 };
 use structopt::StructOpt;
@@ -154,6 +155,9 @@ struct TestArgs {
     #[structopt(long, default_value = "127.0.0.1:51318")]
     differential_address: SocketAddr,
 
+    #[structopt(long)]
+    disk_log: Option<PathBuf>,
+
     #[structopt(long, default_value = "100")]
     iterations: NonZeroUsize,
 
@@ -176,81 +180,89 @@ impl TestArgs {
     }
 
     pub fn set_hooks(&self, worker: &mut Worker<Generic>) {
-        match self.stream_encoding {
-            StreamEncoding::Abomonation => {
-                use differential_dataflow::logging::DifferentialEvent;
-                use timely::{
-                    dataflow::operators::capture::EventWriter,
-                    logging::{BatchLogger, TimelyEvent},
-                };
+        if let Some(disk_log) = self.disk_log.as_ref() {
+            ddshow_sink::save_timely_logs_to_disk(worker, disk_log).unwrap();
 
-                if let Ok(stream) = TcpStream::connect(&self.timely_address) {
-                    println!(
-                        "connected to timely abomonated host at {}",
-                        self.timely_address,
-                    );
+            if self.differential {
+                ddshow_sink::save_differential_logs_to_disk(worker, disk_log).unwrap();
+            }
+        } else {
+            match self.stream_encoding {
+                StreamEncoding::Abomonation => {
+                    use differential_dataflow::logging::DifferentialEvent;
+                    use timely::{
+                        dataflow::operators::capture::EventWriter,
+                        logging::{BatchLogger, TimelyEvent},
+                    };
 
-                    let writer = EventWriter::new(stream);
-                    let mut logger = BatchLogger::new(writer);
-
-                    worker
-                        .log_register()
-                        .insert::<TimelyEvent, _>("timely", move |time, data| {
-                            logger.publish_batch(time, data)
-                        });
-                } else {
-                    panic!(
-                        "Could not connect timely abomonated logging stream to: {:?}",
-                        self.timely_address,
-                    );
-                }
-
-                if self.differential {
-                    if let Ok(stream) = TcpStream::connect(&self.differential_address) {
+                    if let Ok(stream) = TcpStream::connect(&self.timely_address) {
                         println!(
-                            "connected to differential abomonated host at {}",
-                            self.differential_address,
+                            "connected to timely abomonated host at {}",
+                            self.timely_address,
                         );
 
                         let writer = EventWriter::new(stream);
                         let mut logger = BatchLogger::new(writer);
 
-                        worker.log_register().insert::<DifferentialEvent, _>(
-                            "differential/arrange",
-                            move |time, data| logger.publish_batch(time, data),
-                        );
+                        worker
+                            .log_register()
+                            .insert::<TimelyEvent, _>("timely", move |time, data| {
+                                logger.publish_batch(time, data)
+                            });
                     } else {
                         panic!(
-                            "Could not connect differential abomonated logging stream to: {:?}",
-                            self.differential_address,
+                            "Could not connect timely abomonated logging stream to: {:?}",
+                            self.timely_address,
                         );
                     }
-                }
-            }
 
-            StreamEncoding::Rkyv => {
-                if let Ok(stream) = TcpStream::connect(&self.timely_address) {
-                    println!("connected to timely rkyv host at {}", self.timely_address);
-                    ddshow_sink::enable_timely_logging(worker, stream);
-                } else {
-                    panic!(
-                        "Could not connect timely rkyv logging stream to: {:?}",
-                        self.timely_address,
-                    );
+                    if self.differential {
+                        if let Ok(stream) = TcpStream::connect(&self.differential_address) {
+                            println!(
+                                "connected to differential abomonated host at {}",
+                                self.differential_address,
+                            );
+
+                            let writer = EventWriter::new(stream);
+                            let mut logger = BatchLogger::new(writer);
+
+                            worker.log_register().insert::<DifferentialEvent, _>(
+                                "differential/arrange",
+                                move |time, data| logger.publish_batch(time, data),
+                            );
+                        } else {
+                            panic!(
+                                "Could not connect differential abomonated logging stream to: {:?}",
+                                self.differential_address,
+                            );
+                        }
+                    }
                 }
 
-                if self.differential {
-                    if let Ok(stream) = TcpStream::connect(&self.differential_address) {
-                        println!(
-                            "connected to differential rkyv host at {}",
-                            self.differential_address,
-                        );
-                        ddshow_sink::enable_differential_logging(worker, stream);
+                StreamEncoding::Rkyv => {
+                    if let Ok(stream) = TcpStream::connect(&self.timely_address) {
+                        println!("connected to timely rkyv host at {}", self.timely_address);
+                        ddshow_sink::enable_timely_logging(worker, stream);
                     } else {
                         panic!(
-                            "Could not connect differential rkyv logging stream to: {:?}",
-                            self.differential_address,
+                            "Could not connect timely rkyv logging stream to: {:?}",
+                            self.timely_address,
                         );
+                    }
+
+                    if self.differential {
+                        if let Ok(stream) = TcpStream::connect(&self.differential_address) {
+                            println!(
+                                "connected to differential rkyv host at {}",
+                                self.differential_address,
+                            );
+                            ddshow_sink::enable_differential_logging(worker, stream);
+                        } else {
+                            panic!(
+                                "Could not connect differential rkyv logging stream to: {:?}",
+                                self.differential_address,
+                            );
+                        }
                     }
                 }
             }

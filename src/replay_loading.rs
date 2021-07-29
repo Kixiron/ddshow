@@ -6,7 +6,6 @@ use crate::{
         utils::{self, DifferentialLogBundle, ProgressLogBundle, TimelyLogBundle},
         DataflowData, DataflowReceivers,
     },
-    report,
 };
 use abomonation::Abomonation;
 use anyhow::{Context, Result};
@@ -21,7 +20,6 @@ use rkyv::{
     Deserialize,
 };
 use std::{
-    collections::HashMap,
     ffi::OsStr,
     fmt::Debug,
     fs::{self, File},
@@ -29,13 +27,12 @@ use std::{
     iter,
     net::{SocketAddr, TcpListener, TcpStream},
     num::NonZeroUsize,
-    ops::Deref,
     path::PathBuf,
     sync::{
         atomic::{self, AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use timely::{
     communication::WorkerGuards, dataflow::operators::capture::Event,
@@ -682,11 +679,6 @@ pub fn wait_for_input(
     );
     let num_threads = worker_guards.guards().len();
 
-    let report_update_duration = args
-        .report_update_duration
-        .map(|secs| Duration::from_secs(secs as u64));
-    let mut last_report_update = Instant::now();
-
     loop {
         // If all workers finish their computations
         if workers_finished.load(Ordering::Acquire) == num_threads {
@@ -724,35 +716,6 @@ pub fn wait_for_input(
             "spent {} fuel within the main thread's wait loop",
             fuel.used().unwrap_or(usize::MAX),
         );
-
-        if let Some(duration) = report_update_duration {
-            let elapsed = last_report_update.elapsed();
-
-            if elapsed >= duration {
-                tracing::info!(
-                    "the last report file update happened {:#?} ago, updating the report file",
-                    elapsed,
-                );
-
-                let data = extractor.current_dataflow_data();
-
-                let name_lookup: HashMap<_, _> = data
-                    .name_lookup
-                    .iter()
-                    .map(|(id, name)| (*id, name.deref()))
-                    .collect();
-                let addr_lookup: HashMap<_, _> = data
-                    .addr_lookup
-                    .iter()
-                    .map(|(id, addr)| (*id, addr))
-                    .collect();
-
-                // Build & emit the textual report
-                report::build_report(&*args, &data, &name_lookup, &addr_lookup)?;
-
-                last_report_update = Instant::now();
-            }
-        }
     }
 
     // Terminate the replay

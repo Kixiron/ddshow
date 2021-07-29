@@ -1,7 +1,7 @@
 use crate::dataflow::{
     constants::EVENT_NS_MARGIN,
-    operators::{DelayExt, Multiply, Split},
-    utils::{granulate, DifferentialLogBundle, Time},
+    operators::{Multiply, Split},
+    utils::{DifferentialLogBundle, Time},
 };
 use abomonation_derive::Abomonation;
 use ddshow_types::{
@@ -162,7 +162,6 @@ where
             },
         )
         .as_collection()
-        .delay_fast(granulate)
 }
 
 fn process_differential_event(

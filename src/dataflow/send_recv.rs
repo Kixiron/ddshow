@@ -1,10 +1,11 @@
 use crate::{
     dataflow::{
         constants::DEFAULT_EXTRACTOR_CAPACITY,
-        operator_stats::{AggregatedOperatorStats, OperatorStats},
+        differential::{ArrangementStats, SplineLevel},
         operators::{CrossbeamExtractor, Fuel},
         progress_stats::{Channel, OperatorProgress, ProgressInfo},
-        utils::{channel_sink, Diff, Time},
+        summation::Summation,
+        utils::{channel_sink, Diff, OpKey, Time},
         worker_timeline::TimelineEvent,
         OperatorShape,
     },
@@ -18,8 +19,8 @@ use differential_dataflow::{
     trace::implementations::ord::OrdKeySpine,
     Collection,
 };
-use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, iter::Cycle};
+use serde::Serialize;
+use std::{collections::HashMap, iter::Cycle, time::Duration};
 use strum::{EnumIter, IntoEnumIterator};
 use timely::{
     dataflow::{
@@ -246,6 +247,7 @@ macro_rules! make_send_recv {
             }
 
             #[inline(never)]
+            #[allow(dead_code)]
             pub fn current_dataflow_data(&self) -> DataflowData {
                 $(
                     let $name: Vec<_> = self.$name.1
@@ -264,7 +266,7 @@ macro_rules! make_send_recv {
             }
         }
 
-        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[derive(Clone, Debug, Serialize)]
         pub struct DataflowData {
             $(pub $name: Vec<$ty>,)*
         }
@@ -301,8 +303,6 @@ type EdgeData = (
     // Option<ChannelMessageStats>,
 );
 type SubgraphData = ((WorkerId, OperatorAddr), OperatesEvent);
-type OperatorStatsData = ((WorkerId, OperatorId), OperatorStats);
-type AggOperatorStatsData = (OperatorId, AggregatedOperatorStats);
 type TimelineEventData = TimelineEvent;
 type NameLookupData = ((WorkerId, OperatorId), String);
 type AddrLookupData = ((WorkerId, OperatorId), OperatorAddr);
@@ -314,8 +314,6 @@ make_send_recv! {
     nodes: NodeData,
     edges: EdgeData,
     subgraphs: SubgraphData,
-    operator_stats: OperatorStatsData,
-    aggregated_operator_stats: AggOperatorStatsData,
     dataflow_stats: DataflowStats,
     timeline_events: TimelineEventData = Present,
     name_lookup: NameLookupData,
@@ -323,4 +321,10 @@ make_send_recv! {
     channel_progress: ChannelProgressData,
     operator_shapes: OperatorShape,
     operator_progress: OperatorProgress,
+    operator_activations: (OpKey, (Duration, Duration)),
+    summarized: (OpKey, Summation),
+    aggregated_summaries: (OperatorId, Summation),
+    arrangements: (OpKey, ArrangementStats),
+    aggregated_arrangements: (OperatorId, ArrangementStats),
+    spline_levels: (OpKey, SplineLevel),
 }

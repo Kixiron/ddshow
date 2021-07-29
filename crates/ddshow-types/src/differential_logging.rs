@@ -45,32 +45,38 @@ pub enum DifferentialEvent {
 
 impl DifferentialEvent {
     /// Returns `true` if the differential_event is [`Batch`].
+    #[inline]
     pub const fn is_batch(&self) -> bool {
         matches!(self, Self::Batch(..))
     }
 
     /// Returns `true` if the differential_event is [`Merge`].
+    #[inline]
     pub const fn is_merge(&self) -> bool {
         matches!(self, Self::Merge(..))
     }
 
     /// Returns `true` if the differential_event is [`Drop`].
+    #[inline]
     pub const fn is_drop(&self) -> bool {
         matches!(self, Self::Drop(..))
     }
 
     /// Returns `true` if the differential_event is [`MergeShortfall`].
+    #[inline]
     pub const fn is_merge_shortfall(&self) -> bool {
         matches!(self, Self::MergeShortfall(..))
     }
 
     /// Returns `true` if the differential_event is [`TraceShare`].
+    #[inline]
     pub const fn is_trace_share(&self) -> bool {
         matches!(self, Self::TraceShare(..))
     }
 }
 
 impl From<RawDifferentialEvent> for DifferentialEvent {
+    #[inline]
     fn from(event: RawDifferentialEvent) -> Self {
         match event {
             RawDifferentialEvent::Batch(batch) => Self::Batch(batch.into()),
@@ -85,6 +91,7 @@ impl From<RawDifferentialEvent> for DifferentialEvent {
 }
 
 impl From<DifferentialEvent> for RawDifferentialEvent {
+    #[inline]
     fn from(event: DifferentialEvent) -> Self {
         match event {
             DifferentialEvent::Batch(batch) => Self::Batch(batch.into()),
@@ -97,24 +104,28 @@ impl From<DifferentialEvent> for RawDifferentialEvent {
 }
 
 impl From<TraceShare> for DifferentialEvent {
+    #[inline]
     fn from(share: TraceShare) -> Self {
         Self::TraceShare(share)
     }
 }
 
 impl From<MergeShortfall> for DifferentialEvent {
+    #[inline]
     fn from(shortfall: MergeShortfall) -> Self {
         Self::MergeShortfall(shortfall)
     }
 }
 
 impl From<MergeEvent> for DifferentialEvent {
+    #[inline]
     fn from(merge: MergeEvent) -> Self {
         Self::Merge(merge)
     }
 }
 
 impl From<BatchEvent> for DifferentialEvent {
+    #[inline]
     fn from(batch: BatchEvent) -> Self {
         Self::Batch(batch)
     }
@@ -142,12 +153,14 @@ pub struct BatchEvent {
 }
 
 impl BatchEvent {
+    #[inline]
     pub const fn new(operator: OperatorId, length: usize) -> Self {
         Self { operator, length }
     }
 }
 
 impl From<RawBatchEvent> for BatchEvent {
+    #[inline]
     fn from(event: RawBatchEvent) -> Self {
         Self {
             operator: OperatorId::new(event.operator),
@@ -157,6 +170,7 @@ impl From<RawBatchEvent> for BatchEvent {
 }
 
 impl From<BatchEvent> for RawBatchEvent {
+    #[inline]
     fn from(event: BatchEvent) -> Self {
         Self {
             operator: event.operator.into_inner(),
@@ -187,12 +201,14 @@ pub struct DropEvent {
 }
 
 impl DropEvent {
+    #[inline]
     pub const fn new(operator: OperatorId, length: usize) -> Self {
         Self { operator, length }
     }
 }
 
 impl From<RawDropEvent> for DropEvent {
+    #[inline]
     fn from(event: RawDropEvent) -> Self {
         Self {
             operator: OperatorId::new(event.operator),
@@ -202,6 +218,7 @@ impl From<RawDropEvent> for DropEvent {
 }
 
 impl From<DropEvent> for RawDropEvent {
+    #[inline]
     fn from(event: DropEvent) -> Self {
         Self {
             operator: event.operator.into_inner(),
@@ -238,6 +255,7 @@ pub struct MergeEvent {
 }
 
 impl MergeEvent {
+    #[inline]
     pub const fn new(
         operator: OperatorId,
         scale: usize,
@@ -256,6 +274,7 @@ impl MergeEvent {
 }
 
 impl From<RawMergeEvent> for MergeEvent {
+    #[inline]
     fn from(event: RawMergeEvent) -> Self {
         Self {
             operator: OperatorId::new(event.operator),
@@ -268,6 +287,7 @@ impl From<RawMergeEvent> for MergeEvent {
 }
 
 impl From<MergeEvent> for RawMergeEvent {
+    #[inline]
     fn from(event: MergeEvent) -> Self {
         Self {
             operator: event.operator.into_inner(),
@@ -303,6 +323,7 @@ pub struct MergeShortfall {
 }
 
 impl MergeShortfall {
+    #[inline]
     pub const fn new(operator: OperatorId, scale: usize, shortfall: usize) -> Self {
         Self {
             operator,
@@ -313,6 +334,7 @@ impl MergeShortfall {
 }
 
 impl From<RawMergeShortfall> for MergeShortfall {
+    #[inline]
     fn from(event: RawMergeShortfall) -> Self {
         Self {
             operator: OperatorId::new(event.operator),
@@ -323,6 +345,7 @@ impl From<RawMergeShortfall> for MergeShortfall {
 }
 
 impl From<MergeShortfall> for RawMergeShortfall {
+    #[inline]
     fn from(event: MergeShortfall) -> Self {
         Self {
             operator: event.operator.into_inner(),
@@ -354,12 +377,14 @@ pub struct TraceShare {
 }
 
 impl TraceShare {
+    #[inline]
     pub const fn new(operator: OperatorId, diff: isize) -> Self {
         Self { operator, diff }
     }
 }
 
 impl From<RawTraceShare> for TraceShare {
+    #[inline]
     fn from(event: RawTraceShare) -> Self {
         Self {
             operator: OperatorId::new(event.operator),
@@ -369,6 +394,7 @@ impl From<RawTraceShare> for TraceShare {
 }
 
 impl From<TraceShare> for RawTraceShare {
+    #[inline]
     fn from(event: TraceShare) -> Self {
         Self {
             operator: event.operator.into_inner(),

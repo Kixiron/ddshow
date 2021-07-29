@@ -6,7 +6,7 @@ use crate::{
     ids::{ChannelId, OperatorId, PortId},
     OperatorAddr,
 };
-use std::{fmt::Debug, time::Duration};
+use core::{fmt::Debug, time::Duration};
 use timely::logging::{
     ApplicationEvent as TimelyApplicationEvent, ChannelsEvent as TimelyChannelsEvent,
     CommChannelKind as TimelyCommChannelKind, CommChannelsEvent as TimelyCommChannelsEvent,

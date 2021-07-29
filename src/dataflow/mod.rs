@@ -19,24 +19,25 @@ mod worker;
 mod worker_timeline;
 
 pub use constants::PROGRAM_NS_GRANULARITY;
+pub use differential::{ArrangementStats, SplineLevel};
 pub use operator_stats::OperatorStats;
-pub use progress_stats::OperatorProgress;
-pub use progress_stats::{Channel, ProgressInfo};
+pub use progress_stats::{Channel, OperatorProgress, ProgressInfo};
 pub use send_recv::{DataflowData, DataflowExtractor, DataflowReceivers, DataflowSenders};
 pub use shape::OperatorShape;
+pub use summation::Summation;
 pub use worker::worker_runtime;
 pub use worker_timeline::{EventKind, TimelineEvent};
 
 use crate::{
     args::Args,
     dataflow::{
-        operator_stats::AggregatedOperatorStats,
+        operator_stats::OperatorStatsRelations,
         operators::{FilterMap, InspectExt, JoinArranged, Multiply, SortBy},
         send_recv::ChannelAddrs,
         subgraphs::rewire_channels,
         utils::{
-            ArrangedKey, ArrangedVal, Diff, DifferentialLogBundle, ProgressLogBundle, Time,
-            TimelyLogBundle,
+            granulate, ArrangedKey, ArrangedVal, Diff, DifferentialLogBundle, OpKey,
+            ProgressLogBundle, Time, TimelyLogBundle,
         },
     },
     ui::{DataflowStats, Lifespan, ProgramStats, WorkerStats},
@@ -54,9 +55,10 @@ use differential_dataflow::{
     AsCollection, Collection, ExchangeData,
 };
 use std::iter;
+use std::time::Duration;
 use timely::{
     dataflow::{
-        operators::{generic::operator, probe::Handle as ProbeHandle},
+        operators::{generic::operator, probe::Handle as ProbeHandle, Delay},
         Scope, Stream,
     },
     order::TotalOrder,
@@ -86,6 +88,10 @@ pub fn dataflow<S>(
 where
     S: Scope<Timestamp = Time>,
 {
+    let timely_delayed = timely_stream.delay_batch(granulate);
+    let differential_delayed =
+        differential_stream.map(|differential| differential.delay_batch(granulate));
+
     let (
         operator_lifespans,
         operator_activations,
@@ -102,24 +108,23 @@ where
         channel_scopes,
         dataflow_ids,
         timeline_events,
-    ) = timely_source::extract_timely_info(scope, timely_stream, args.disable_timeline);
+    ) = timely_source::extract_timely_info(scope, &timely_delayed, args.disable_timeline);
 
-    // FIXME: `invocations` looks off, figure that out
-    let operator_stats = operator_stats::operator_stats(
-        scope,
-        &operator_activations.debug_frontier(),
-        differential_stream,
-    )
-    .debug_frontier();
+    let OperatorStatsRelations {
+        summarized,
+        aggregated_summaries,
+        arrangements,
+        aggregated_arrangements,
+        spline_levels,
+    } = operator_stats::operator_stats(scope, &operator_activations, differential_delayed.as_ref());
 
     // FIXME: This is pretty much a guess since there's no way to actually associate
     //        operators/arrangements/channels across workers
     // TODO: This should use a specialized struct to hold relevant things like "total size across workers"
     //       in addition to per-worker stats
-    let aggregated_operator_stats =
-        operator_stats::aggregate_operator_stats(&operator_stats).debug_frontier();
+    // let aggregated_operator_stats = operator_stats::aggregate_operator_stats(&operator_stats);
 
-    // TODO: Turn these into collections of `(WorkerId, OperatorId)` and arrange them
+    // TODO: Turn these into collections of `OpKey` and arrange them
     let (leaves, subgraphs) = sift_leaves_and_scopes(scope, &operator_addrs_by_self);
     let (leaves_arranged, subgraphs_arranged) = (
         leaves
@@ -157,7 +162,7 @@ where
     // TODO: Grabbing events absolutely shits the bed when it comes to large dataflows,
     //       it needs a serious, intrinsic rework and/or disk backed arrangements
     let timeline_events = timeline_events.as_ref().map(|timeline_events| {
-        worker_timeline::worker_timeline(scope, timeline_events, differential_stream)
+        worker_timeline::worker_timeline(scope, timeline_events, differential_delayed.as_ref())
             .debug_frontier()
     });
 
@@ -167,8 +172,8 @@ where
         .arrange_by_key_named("ArrangeByKey: Addressed Operators");
 
     let (program_stats, worker_stats) = program_stats::aggregate_worker_stats(
-        &timely_stream,
-        differential_stream,
+        &timely_delayed,
+        differential_delayed.as_ref(),
         &channels,
         &subgraphs_arranged,
         &operator_addrs_by_self,
@@ -191,9 +196,7 @@ where
         leaves_arranged,
         edges,
         subgraphs_arranged,
-        operator_stats,
         addressed_operators,
-        aggregated_operator_stats,
         dataflow_stats,
         timeline_events,
         operator_names,
@@ -201,6 +204,12 @@ where
         None,
         &operator_shapes,
         operator_progress.as_ref(),
+        operator_activations,
+        summarized,
+        aggregated_summaries,
+        arrangements,
+        aggregated_arrangements,
+        spline_levels,
     );
 
     // TODO: Save ddflow logs
@@ -244,16 +253,20 @@ fn install_data_extraction<S>(
     nodes: ArrangedKey<S, (WorkerId, OperatorAddr), Diff>,
     edges: Collection<S, (WorkerId, OperatesEvent, Channel, OperatesEvent), Diff>,
     subgraphs: ArrangedKey<S, (WorkerId, OperatorAddr), Diff>,
-    operator_stats: Collection<S, ((WorkerId, OperatorId), OperatorStats), Diff>,
     addressed_operators: ArrangedVal<S, (WorkerId, OperatorAddr), OperatesEvent, Diff>,
-    aggregated_operator_stats: Collection<S, (OperatorId, AggregatedOperatorStats), Diff>,
     dataflow_stats: Collection<S, DataflowStats, Diff>,
     timeline_events: Option<Collection<S, TimelineEvent, Present>>,
-    operator_names: ArrangedVal<S, (WorkerId, OperatorId), String, Diff>,
-    operator_ids: ArrangedVal<S, (WorkerId, OperatorId), OperatorAddr, Diff>,
+    operator_names: ArrangedVal<S, OpKey, String, Diff>,
+    operator_ids: ArrangedVal<S, OpKey, OperatorAddr, Diff>,
     channel_progress: Option<Collection<S, (OperatorAddr, ProgressInfo), Diff>>,
     operator_shapes: &Collection<S, OperatorShape, Diff>,
     operator_progress: Option<&Collection<S, OperatorProgress, Diff>>,
+    operator_activations: Collection<S, (OpKey, (Duration, Duration)), Diff>,
+    summarized: Collection<S, (OpKey, Summation), Diff>,
+    aggregated_summaries: Collection<S, (OperatorId, Summation), Diff>,
+    arrangements: Option<Collection<S, (OpKey, ArrangementStats), Diff>>,
+    aggregated_arrangements: Option<Collection<S, (OperatorId, ArrangementStats), Diff>>,
+    spline_levels: Option<Collection<S, (OpKey, SplineLevel), Diff>>,
 ) -> Vec<(ProbeHandle<Time>, &'static str)>
 where
     S: Scope<Timestamp = Time>,
@@ -263,9 +276,7 @@ where
         let nodes = nodes.enter_region(region);
         let edges = edges.enter_region(region);
         let subgraphs = subgraphs.enter_region(region);
-        let operator_stats = operator_stats.enter_region(region);
         let addressed_operators = addressed_operators.enter_region(region);
-        let aggregated_operator_stats = aggregated_operator_stats.enter_region(region);
         let dataflow_stats = dataflow_stats.enter_region(region);
         let timeline_events = timeline_events
             .map(|events| events.enter_region(region))
@@ -283,6 +294,18 @@ where
         let operator_progress = operator_progress
             .map(|progress| progress.enter_region(region))
             .unwrap_or_else(|| operator::empty(region).as_collection());
+        let operator_activations = operator_activations.enter_region(region);
+        let summarized = summarized.enter_region(region);
+        let aggregated_summaries = aggregated_summaries.enter_region(region);
+        let arrangements = arrangements
+            .map(|arrangements| arrangements.enter_region(region))
+            .unwrap_or_else(|| operator::empty(region).as_collection());
+        let aggregated_arrangements = aggregated_arrangements
+            .map(|aggregated| aggregated.enter_region(region))
+            .unwrap_or_else(|| operator::empty(region).as_collection());
+        let spline_levels = spline_levels
+            .map(|splines| splines.enter_region(region))
+            .unwrap_or_else(|| operator::empty(region).as_collection());
 
         let worker_stats = worker_stats
             .enter_region(region)
@@ -299,26 +322,30 @@ where
         //       ddshow" system though, could make some funky results
         //       appear to the user
         senders.install_sinks(
-            (&program_stats.debug_frontier(), true),
-            (&worker_stats.debug_frontier(), true),
-            (&nodes.debug_frontier(), true),
-            (&edges.debug_frontier(), true),
-            (&subgraphs.debug_frontier(), true),
-            (&operator_stats.debug_frontier(), true),
-            (&aggregated_operator_stats.debug_frontier(), true),
-            (&dataflow_stats.debug_frontier(), true),
+            (&program_stats.debug_frontier(), false),  // true
+            (&worker_stats.debug_frontier(), false),   // true
+            (&nodes.debug_frontier(), false),          // true
+            (&edges.debug_frontier(), false),          // true
+            (&subgraphs.debug_frontier(), false),      // true
+            (&dataflow_stats.debug_frontier(), false), // true
             (&timeline_events.debug_frontier(), false),
             (&operator_names.debug_frontier(), false),
             (&operator_ids.debug_frontier(), false),
-            (&channel_progress.debug_frontier(), true),
-            (&operator_shapes.debug_frontier(), true),
-            (&operator_progress.debug_frontier(), true),
+            (&channel_progress.debug_frontier(), false), // true
+            (&operator_shapes.debug_frontier(), false),  // true
+            (&operator_progress.debug_frontier(), false), // true
+            (&operator_activations, false),              // true
+            (&summarized, false),                        // true
+            (&aggregated_summaries, false),              // true
+            (&arrangements, false),                      // true
+            (&aggregated_arrangements, false),           // true
+            (&spline_levels, false),                     // true
         )
     })
 }
 
 fn dataflow_stats<S, Tr1, Tr2, Tr3, Tr4>(
-    operator_lifespans: &Collection<S, ((WorkerId, OperatorId), Lifespan), Diff>,
+    operator_lifespans: &Collection<S, (OpKey, Lifespan), Diff>,
     dataflow_ids: &Arranged<S, TraceAgent<Tr1>>,
     addr_lookup: &Arranged<S, TraceAgent<Tr2>>,
     subgraph_ids: &Arranged<S, TraceAgent<Tr3>>,
@@ -326,12 +353,9 @@ fn dataflow_stats<S, Tr1, Tr2, Tr3, Tr4>(
 ) -> Collection<S, DataflowStats, Diff>
 where
     S: Scope<Timestamp = Time>,
-    Tr1: TraceReader<Key = (WorkerId, OperatorId), Val = (), Time = S::Timestamp, R = Diff>
-        + 'static,
-    Tr2: TraceReader<Key = (WorkerId, OperatorId), Val = OperatorAddr, Time = S::Timestamp, R = Diff>
-        + 'static,
-    Tr3: TraceReader<Key = (WorkerId, OperatorId), Val = (), Time = S::Timestamp, R = Diff>
-        + 'static,
+    Tr1: TraceReader<Key = OpKey, Val = (), Time = S::Timestamp, R = Diff> + 'static,
+    Tr2: TraceReader<Key = OpKey, Val = OperatorAddr, Time = S::Timestamp, R = Diff> + 'static,
+    Tr3: TraceReader<Key = OpKey, Val = (), Time = S::Timestamp, R = Diff> + 'static,
     Tr4: TraceReader<Key = (WorkerId, ChannelId), Val = OperatorAddr, Time = S::Timestamp, R = Diff>
         + 'static,
 {
