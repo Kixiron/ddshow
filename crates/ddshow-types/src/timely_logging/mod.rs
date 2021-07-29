@@ -1,6 +1,6 @@
 mod timely_event;
 
-pub use timely_event::{ArchivedTimelyEvent, TimelyEvent, TimelyEventResolver};
+pub use timely_event::{ArchivedTimelyEvent, DistinguishingId, TimelyEvent, TimelyEventResolver};
 
 use crate::{
     ids::{ChannelId, OperatorId, PortId},

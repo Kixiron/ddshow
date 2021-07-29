@@ -3,6 +3,34 @@
 
 /**
  * {#
+ * TODO: Replace dagre.js/d3.js with cytoscape.js, dagre is now
+ *       unmaintained. See what hierarchical layout algorithms
+ *       that it offers, maybe it'll help to speed things up.
+ * TODO: Graph node collapsing, collapse sub-regions and allow the
+ *       user to expand them to see the nodes and subgraphs within
+ *       them.
+ * TODO: Maybe look into egraph-rs for replacing the current JS-based
+ *       graph rendering libraries, maybe it'll make things faster to
+ *       load and render up. May need a more advanced hierarchical layout
+ *       algorithm, maybe try to get into touch with the author about
+ *       that and for general documentation.
+ *       https://github.com/likr/egraph-rs
+ * TODO: Replace the vega scatter plot with a custom wasm one,
+ *       use a quadtree to support streaming updates and incremental
+ *       re-drawing (only invalidate & redraw the squares actually
+ *       touched by the new data) and a gigatrace-derived index
+ *       to downsample data at zoomed scales. Maybe look into the
+ *       newly-stabilized `core::arch::wasm` simd intrinsics to speed
+ *       things up where possible within index querying.
+ *       https://github.com/trishume/gigatrace
+ * TODO: Straight up write this in typescript and then compile & bundle it,
+ *       this weak & painful typing really sucks. Can probably use wasm_bindgen
+ *       to generate typings for the input data as well, that'll make life so
+ *       much easier.
+ * TODO: Figure out a better method of getting the data into the page, pasting
+ *       it in directly is sub-optimal. Ideally you'd be able to load things
+ *       and maybe even compare different runs.
+ * 
  * @global {any} d3
  * @global {any} dagreD3
  * 
@@ -655,31 +683,31 @@ const ddshow_spec = {
                     title: "Total Runtime",
                     type: "quantitative",
                     axis: {
-                        formatType: "format_duration"
-                    }
+                        formatType: "format_duration",
+                    },
                 },
                 color: {
                     field: "name_and_id",
                     title: null,
                     legend: {
-                        labelExpr: "join([datum.value[0], datum.value[1]], \", \")"
-                    }
+                        labelExpr: "join([datum.value[0], datum.value[1]], \", \")",
+                    },
                 },
                 tooltip: [
                     {
                         field: "name_and_id[0]",
-                        title: "Operator"
+                        title: "Operator",
                     },
                     {
                         field: "name_and_id[1]",
-                        title: "Operator ID"
+                        title: "Operator ID",
                     },
                     {
                         field: "total_runtime",
                         title: "Total Runtime",
-                        formatType: "format_duration"
-                    }
-                ]
+                        formatType: "format_duration",
+                    },
+                ],
             }
         },
         // TODO: hconcat these two
@@ -687,22 +715,22 @@ const ddshow_spec = {
             title: "Maximum Arrangement Size",
             transform: [
                 {
-                    "filter": "datum.max_arrangement_size != null && datum.max_arrangement_size > 0"
+                    "filter": "datum.max_arrangement_size != null && datum.max_arrangement_size > 0",
                 },
                 {
                     window: [{
                         op: "rank",
                         as: "rank"
                     }],
-                    sort: [{ field: "max_arrangement_size", order: "descending" }]
+                    sort: [{ field: "max_arrangement_size", order: "descending" }],
                 },
                 {
-                    filter: "datum.rank <= operators_to_display"
+                    filter: "datum.rank <= operators_to_display",
                 },
                 {
                     calculate: "[datum.max_arrangement_size, datum.min_arrangement_size || 0, datum.arrangement_batches || 0]",
-                    as: "arrangement_stats"
-                }
+                    as: "arrangement_stats",
+                },
             ],
             mark: "bar",
             width: 900,
@@ -713,35 +741,35 @@ const ddshow_spec = {
                     type: "nominal",
                     sort: "-x",
                     axis: {
-                        labelExpr: "join([datum.value[0], datum.value[1]], \", \")"
-                    }
+                        labelExpr: "join([datum.value[0], datum.value[1]], \", \")",
+                    },
                 },
                 x: {
                     field: "max_arrangement_size",
                     title: "Arrangement Size",
-                    type: "quantitative"
+                    type: "quantitative",
                 },
                 tooltip: [
                     {
                         field: "name_and_id[0]",
-                        title: "Operator"
+                        title: "Operator",
                     },
                     {
                         field: "name_and_id[1]",
-                        title: "Operator ID"
+                        title: "Operator ID",
                     },
                     {
                         field: "max_arrangement_size",
-                        title: "Max Size"
+                        title: "Max Size",
                     },
                     {
                         field: "arrangement_stats[1]",
-                        title: "Min Size"
+                        title: "Min Size",
                     },
                     {
                         field: "arrangement_stats[2]",
-                        title: "Batches"
-                    }
+                        title: "Batches",
+                    },
                 ]
             }
         },
@@ -749,22 +777,22 @@ const ddshow_spec = {
             title: "Total Arrangement Batches",
             transform: [
                 {
-                    filter: "datum.arrangement_batches != null && datum.arrangement_batches > 0"
+                    filter: "datum.arrangement_batches != null && datum.arrangement_batches > 0",
+                },
+                {
+                    calculate: "[datum.max_arrangement_size, datum.min_arrangement_size || 0, datum.arrangement_batches || 0]",
+                    as: "arrangement_stats",
                 },
                 {
                     window: [{
                         op: "rank",
-                        as: "rank"
+                        as: "rank",
                     }],
-                    sort: [{ "field": "arrangement_batches", "order": "descending" }]
+                    sort: [{ "field": "arrangement_batches", "order": "descending" }],
                 },
                 {
-                    filter: "datum.rank <= operators_to_display"
+                    filter: "datum.rank <= operators_to_display",
                 },
-                {
-                    calculate: "[datum.max_arrangement_size, datum.min_arrangement_size || 0, datum.arrangement_batches || 0]",
-                    as: "arrangement_stats"
-                }
             ],
             mark: "bar",
             width: 900,

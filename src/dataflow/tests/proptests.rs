@@ -141,7 +141,8 @@ fn timeline_events_inner(
         });
     });
 
-    let mut data_map: HashMap<TimelineEvent, (Duration, Present)> = HashMap::new();
+    let mut data_map: HashMap<TimelineEvent, (Duration, Present), XXHasher> =
+        HashMap::with_hasher(XXHasher::default());
     for (_, data) in recv.extract() {
         for (event, time, diff) in data {
             // Note that we've preserved the event id of events here, this is

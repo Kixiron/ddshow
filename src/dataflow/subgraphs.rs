@@ -9,34 +9,35 @@ use ddshow_types::{
 use differential_dataflow::{
     difference::Abelian,
     lattice::Lattice,
-    operators::{arrange::ArrangeByKey, JoinCore, Threshold},
+    operators::{arrange::ArrangeByKey, JoinCore, Threshold, ThresholdTotal},
     Collection, ExchangeData,
 };
-use timely::dataflow::Scope;
+use timely::{dataflow::Scope, order::TotalOrder};
 
 pub fn rewire_channels<S, D>(
-    _scope: &mut S,
+    scope: &mut S,
     channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
     subgraphs: &ChannelAddrs<S, D>,
 ) -> Collection<S, (WorkerId, Channel), D>
 where
     S: Scope,
-    S::Timestamp: Lattice,
+    S::Timestamp: Lattice + TotalOrder,
     D: Abelian + ExchangeData + Multiply<Output = D> + From<i8>,
 {
-    let (channels, subgraphs) = (
-        channels.debug_frontier_with("channels entered rewrite_channels"),
-        subgraphs,
-    );
+    scope.region_named("Rewire Channels", |region| {
+        let (channels, subgraphs) = (
+            channels.enter_region(region),
+            subgraphs.enter_region(region),
+        );
 
-    let subgraph_crosses =
-        subgraph_crosses(&channels, &subgraphs).debug_frontier_with("subgraph_crosses");
-    let subgraph_normal =
-        subgraph_normal(&channels, &subgraphs).debug_frontier_with("subgraph_normal");
+        let subgraph_crosses = subgraph_crosses(&channels, &subgraphs);
+        let subgraph_normal = subgraph_normal(&channels, &subgraphs);
 
-    subgraph_crosses
-        .concat(&subgraph_normal)
-        .debug_frontier_with("rewire_channels final")
+        subgraph_crosses
+            .concat(&subgraph_normal)
+            .distinct_total_core()
+            .leave_region()
+    })
 }
 
 fn subgraph_crosses<S, D>(
@@ -48,28 +49,21 @@ where
     S::Timestamp: Lattice,
     D: Abelian + ExchangeData + Multiply<Output = D> + From<i8>,
 {
-    let (channels, subgraphs) = (
-        channels.debug_frontier_with("channels enter subgraph_crosses"),
-        subgraphs,
-    );
+    let channels = channels.map(|(worker, channel)| {
+        let mut source = channel.scope_addr.clone();
+        source.push(channel.source[0]);
 
-    let channels = channels
-        .map(|(worker, channel)| {
-            let mut source = channel.scope_addr.clone();
-            source.push(channel.source[0]);
+        let mut target = channel.scope_addr;
+        target.push(channel.target[0]);
 
-            let mut target = channel.scope_addr;
-            target.push(channel.target[0]);
-
+        (
+            (worker, source, channel.source[1]),
             (
-                (worker, source, channel.source[1]),
-                (
-                    (target, channel.target[1]),
-                    OperatorAddr::from_elem(OperatorId::new(channel.id.into_inner())),
-                ),
-            )
-        })
-        .debug_frontier_with("channels mapped");
+                (target, channel.target[1]),
+                OperatorAddr::from_elem(OperatorId::new(channel.id.into_inner())),
+            ),
+        )
+    });
 
     let channels_forward = channels.arrange_by_key_named("ArrangeByKey: Subgraph Channels");
     let channels_reverse = channels
@@ -81,7 +75,6 @@ where
                 )
             },
         )
-        .debug_frontier_with("channels_reverse")
         .arrange_by_key_named("ArrangeByKey: Subgraph Channels Reversed");
 
     let propagated_channels =
@@ -144,9 +137,7 @@ where
 
             links
                 .concatenate(vec![ingress, egress])
-                .debug_frontier_with("propagated_channels links, ingress and egress concat")
                 .distinct_core::<D>()
-                .debug_frontier_with("propagated_channels output")
         });
 
     propagated_channels
@@ -165,11 +156,8 @@ where
                 }
             },
         )
-        .debug_frontier_with("propagated_channels filter_mapped")
-        .antijoin_arranged(&subgraphs)
-        .debug_frontier_with("propagated_channels antijoined")
+        .antijoin_arranged(subgraphs)
         .map(|((worker, _), channel)| (worker, channel))
-        .debug_frontier_with("propagated_channels mapped")
 }
 
 fn subgraph_normal<S, D>(
@@ -181,11 +169,6 @@ where
     S::Timestamp: Lattice,
     D: Abelian + ExchangeData + Multiply<Output = D>,
 {
-    let (channels, subgraphs) = (
-        channels.debug_frontier_with("channels entered subgraph_normal"),
-        subgraphs,
-    );
-
     let channels = channels
         .filter_map(|(worker, channel)| {
             if channel.source[0] != PortId::zero() && channel.target[0] != PortId::zero() {
@@ -200,15 +183,11 @@ where
                 None
             }
         })
-        .debug_frontier_with("channels filter_mapped (subgraph_normal)")
-        .antijoin_arranged(&subgraphs)
-        .debug_frontier_with("channels antijoined (subgraph_normal)")
+        .antijoin_arranged(subgraphs)
         .map(|((worker, source_addr), (channel_id, target_addr))| {
             ((worker, target_addr), (channel_id, source_addr))
         })
-        .debug_frontier_with("channels mapped (subgraph_normal)")
-        .antijoin_arranged(&subgraphs)
-        .debug_frontier_with("channels antijoined again (subgraph_normal)");
+        .antijoin_arranged(subgraphs);
 
     channels
         .map(|((worker, target_addr), (channel_id, source_addr))| {

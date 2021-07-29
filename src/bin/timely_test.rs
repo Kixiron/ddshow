@@ -104,7 +104,7 @@ fn main() {
                 .iterate(|stream| {
                     stream
                         .map(|x| x.saturating_sub(1))
-                        .concat(&stream)
+                        .concat(stream)
                         .distinct()
                 })
                 .consolidate()

@@ -5,7 +5,7 @@ use crate::{
         operators::{CrossbeamExtractor, Fuel},
         progress_stats::{Channel, OperatorProgress, ProgressInfo},
         summation::Summation,
-        utils::{channel_sink, Diff, OpKey, Time},
+        utils::{channel_sink, Diff, OpKey, Time, XXHasher},
         worker_timeline::TimelineEvent,
         OperatorShape,
     },
@@ -14,7 +14,7 @@ use crate::{
 use crossbeam_channel::{Receiver, Sender};
 use ddshow_types::{timely_logging::OperatesEvent, OperatorAddr, OperatorId, WorkerId};
 use differential_dataflow::{
-    difference::{Present, Semigroup},
+    difference::Semigroup,
     operators::arrange::{Arranged, TraceAgent},
     trace::implementations::ord::OrdKeySpine,
     Collection,
@@ -112,7 +112,6 @@ macro_rules! make_send_recv {
         }
 
         impl Drop for DataflowSenders {
-            #[inline(never)]
             fn drop(&mut self) {
                 $(
                     if cfg!(debug_assertions) && !self.$name.1 {
@@ -152,7 +151,7 @@ macro_rules! make_send_recv {
 
         #[derive(Clone)]
         pub struct DataflowExtractor {
-            $(pub $name: (Extractor<$ty, $($diff)?>, HashMap<$ty, make_send_recv!(@diff $($diff)?)>),)*
+            $(pub $name: (Extractor<$ty, $($diff)?>, HashMap<$ty, make_send_recv!(@diff $($diff)?), XXHasher>),)*
             step: Cycle<DataflowStepIter>,
             consumed: ChangeBatch<Time>,
             last_consumed: Time,
@@ -166,7 +165,10 @@ macro_rules! make_send_recv {
                 Self {
                     $($name: (
                         CrossbeamExtractor::new($name),
-                        HashMap::with_capacity(DEFAULT_EXTRACTOR_CAPACITY),
+                        HashMap::with_capacity_and_hasher(
+                            DEFAULT_EXTRACTOR_CAPACITY,
+                            XXHasher::default(),
+                        ),
                     ),)*
                     step: DataflowStep::iter().cycle(),
                     consumed: ChangeBatch::new(),
@@ -175,7 +177,6 @@ macro_rules! make_send_recv {
             }
 
             /// Extract data from the current dataflow in a non-blocking manner
-            #[inline(never)]
             pub fn extract_with_fuel(&mut self, fuel: &mut Fuel) {
                 for step in self.step.by_ref().take(NUM_VARIANTS) {
                     if fuel.is_exhausted() {
@@ -213,7 +214,6 @@ macro_rules! make_send_recv {
             // }
 
             // TODO: Does this need to guard against never-disconnected channels?
-            #[inline(never)]
             pub fn extract_all(mut self) -> DataflowData {
                 $({
                     let (extractor, sink) = &mut self.$name;
@@ -246,7 +246,6 @@ macro_rules! make_send_recv {
                 DataflowData::new($($name,)*)
             }
 
-            #[inline(never)]
             #[allow(dead_code)]
             pub fn current_dataflow_data(&self) -> DataflowData {
                 $(
@@ -315,7 +314,7 @@ make_send_recv! {
     edges: EdgeData,
     subgraphs: SubgraphData,
     dataflow_stats: DataflowStats,
-    timeline_events: TimelineEventData = Present,
+    timeline_events: TimelineEventData,
     name_lookup: NameLookupData,
     addr_lookup: AddrLookupData,
     channel_progress: ChannelProgressData,

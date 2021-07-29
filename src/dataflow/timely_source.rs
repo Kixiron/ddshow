@@ -1,7 +1,7 @@
 use crate::{
     dataflow::{
-        operators::{Fuel, InspectExt},
-        utils::Time,
+        operators::Fuel,
+        utils::{Time, XXHasher},
         worker_timeline::{process_timely_event, EventMap, EventProcessor},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelineEvent,
         TimelyLogBundle, WorkerId,
@@ -11,10 +11,10 @@ use crate::{
 use ddshow_types::timely_logging::{ChannelsEvent, OperatesEvent, StartStop, TimelyEvent};
 use differential_dataflow::{
     collection::AsCollection,
-    difference::{Present, Semigroup},
+    difference::Semigroup,
     lattice::Lattice,
     operators::arrange::{Arrange, ArrangeByKey},
-    Collection,
+    Collection, Hashable,
 };
 use std::{
     cmp::{Ordering, Reverse},
@@ -67,7 +67,7 @@ type TimelyCollections<S> = (
     // Dataflow operator ids
     ArrangedKey<S, (WorkerId, OperatorId)>,
     // Timely event data, will be `None` if timeline analysis is disabled
-    Option<Collection<S, TimelineEvent, Present>>,
+    Option<Collection<S, TimelineEvent, Diff>>,
 );
 
 type WorkList = BinaryHeap<Reverse<WorkItem>>;
@@ -130,16 +130,19 @@ where
         //       for diagnostic data
         timely_stream,
         // Distribute events across all workers based on the worker they originated from
-        // This should be done by default when the number of ddshow workers is the same
-        // as the number of timely ones, but this ensures that it happens for disk replay
-        // and unbalanced numbers of workers to ensure work is fairly divided
+        // and the operator the event belongs to. This should be done by default when the
+        // number of ddshow workers is the same as the number of timely ones, but this
+        // ensures that it happens for disk replay and unbalanced numbers of workers to
+        // ensure work is fairly divided
         //
         // However, this isn't the true reason it's like this: The way that event
         // processing/association is written depends on each worker having *all* events
         // for a given target worker. If events from a target worker are split across
         // multiple source workers then the events will be dropped or otherwise be ignored
         // or cause inconsistency.
-        Exchange::new(|(_, worker, _): &TimelyLogBundle| worker.into_inner() as u64),
+        Exchange::new(|(_, worker, event): &TimelyLogBundle| {
+            (worker, event.distinguishing_id()).hashed()
+        }),
     );
 
     let mut builder = Builder::new(builder);
@@ -147,10 +150,10 @@ where
 
     // TODO: Use stacks for these, migrate to something more like `EventProcessor`
     let (mut lifespan_map, mut activation_map, mut event_map, mut map_buffer, mut stack_buffer) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::with_hasher(XXHasher::default()),
+        HashMap::with_hasher(XXHasher::default()),
+        HashMap::with_hasher(XXHasher::default()),
+        HashMap::with_hasher(XXHasher::default()),
         Vec::new(),
     );
 
@@ -204,10 +207,10 @@ where
 
                 work_list = BinaryHeap::new();
                 work_list_buffers = Vec::new();
-                lifespan_map = HashMap::new();
-                activation_map = HashMap::new();
-                event_map = HashMap::new();
-                map_buffer = HashMap::new();
+                lifespan_map = HashMap::with_hasher(XXHasher::default());
+                activation_map = HashMap::with_hasher(XXHasher::default());
+                event_map = HashMap::with_hasher(XXHasher::default());
+                map_buffer = HashMap::with_hasher(XXHasher::default());
                 stack_buffer = Vec::new();
             }
 
@@ -233,35 +236,25 @@ where
     } = streams.into_collections();
 
     // TODO: Granulate the times within the operator
-    let operator_names = operator_names
-        .debug_frontier()
-        .arrange_by_key_named("ArrangeByKey: Operator Names");
-    let operator_ids = operator_ids
-        .debug_frontier()
-        .arrange_by_key_named("ArrangeByKey: Operator Ids");
-    let operator_addrs = operator_addrs
-        .debug_frontier()
-        .arrange_by_key_named("ArrangeByKey: Operator Addrs");
-    let operator_addrs_by_self = operator_addrs_by_self
-        .debug_frontier()
-        .arrange_named("Arrange: Operator Addrs by Self");
-    let channel_scope_addrs = channel_scope_addrs
-        .debug_frontier()
-        .arrange_by_key_named("ArrangeByKey: Channel Scope Addrs");
-    let dataflow_ids = dataflow_ids
-        .debug_frontier()
-        .arrange_named("Arrange: Dataflow Ids");
+    let operator_names = operator_names.arrange_by_key_named("ArrangeByKey: Operator Names");
+    let operator_ids = operator_ids.arrange_by_key_named("ArrangeByKey: Operator Ids");
+    let operator_addrs = operator_addrs.arrange_by_key_named("ArrangeByKey: Operator Addrs");
+    let operator_addrs_by_self =
+        operator_addrs_by_self.arrange_named("Arrange: Operator Addrs by Self");
+    let channel_scope_addrs =
+        channel_scope_addrs.arrange_by_key_named("ArrangeByKey: Channel Scope Addrs");
+    let dataflow_ids = dataflow_ids.arrange_named("Arrange: Dataflow Ids");
 
     // Granulate all streams and turn them into collections
     (
-        lifespans.debug_frontier(),
-        activation_durations.debug_frontier(),
-        operator_creations.debug_frontier(),
-        channel_creations.debug_frontier(),
-        raw_channels.debug_frontier(),
+        lifespans,
+        activation_durations,
+        operator_creations,
+        channel_creations,
+        raw_channels,
         // FIXME: This isn't granulated since I have no idea what depends
         //       on the timestamp being the event time
-        raw_operators.debug_frontier(),
+        raw_operators,
         operator_names,
         operator_ids,
         operator_addrs,
@@ -269,15 +262,15 @@ where
         channel_scope_addrs,
         dataflow_ids,
         // Note: Don't granulate this
-        worker_events.debug_frontier(),
+        worker_events,
     )
 }
 #[allow(clippy::too_many_arguments)]
 fn work_loop(
     fuel: &mut Fuel,
     handles: &mut OutputHandles,
-    lifespan_map: &mut HashMap<(WorkerId, OperatorId), Duration>,
-    activation_map: &mut HashMap<(WorkerId, OperatorId), Duration>,
+    lifespan_map: &mut HashMap<(WorkerId, OperatorId), Duration, XXHasher>,
+    activation_map: &mut HashMap<(WorkerId, OperatorId), Duration, XXHasher>,
     work_list: &mut WorkList,
     work_list_buffers: &mut Vec<Vec<TimelyLogBundle>>,
     event_map: &mut EventMap,
@@ -431,8 +424,8 @@ fn ingest_event(
     session_time: Time,
     handles: &mut OutputHandles,
     capabilities: &OutputCapabilities,
-    lifespan_map: &mut HashMap<(WorkerId, OperatorId), Duration>,
-    activation_map: &mut HashMap<(WorkerId, OperatorId), Duration>,
+    lifespan_map: &mut HashMap<(WorkerId, OperatorId), Duration, XXHasher>,
+    activation_map: &mut HashMap<(WorkerId, OperatorId), Duration, XXHasher>,
 ) {
     match event {
         TimelyEvent::Operates(operates) => {
@@ -512,7 +505,20 @@ fn ingest_event(
 
                 StartStop::Stop => {
                     if let Some(start_time) = activation_map.remove(&(worker, operator)) {
-                        let duration = time - start_time;
+                        if start_time > time {
+                            tracing::warn!(
+                                worker = ?worker,
+                                operator = ?operator,
+                                start_time = ?start_time,
+                                end_time = ?time,
+                                "stop event occurred before start event",
+                            );
+                        }
+
+                        let duration = time
+                            .checked_sub(start_time)
+                            .unwrap_or_else(|| Duration::from_secs(0));
+
                         handles
                             .activation_durations
                             .session(&capabilities.activation_durations)
@@ -873,5 +879,5 @@ timely_source_processor! {
     operator_addrs_by_self: ((WorkerId, OperatorAddr), ()),
     channel_scope_addrs: ((WorkerId, ChannelId), OperatorAddr),
     dataflow_ids: ((WorkerId, OperatorId), ()),
-    worker_events: TimelineEvent; if timeline_enabled = Present,
+    worker_events: TimelineEvent; if timeline_enabled,
 }

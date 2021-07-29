@@ -14,6 +14,8 @@ use timely::{
     progress::ChangeBatch,
 };
 
+use crate::dataflow::utils::{Diff, XXHasher};
+
 pub trait OperatorExt<G, D, R> {
     fn distinct_named<N: AsRef<str>, R2: Abelian + From<i8>>(&self, name: N) -> Collection<G, D, R2>
     where
@@ -54,11 +56,10 @@ impl<T> CrossbeamExtractor<T> {
     }
 }
 
-impl<T, D, R> CrossbeamExtractor<Event<T, (D, T, R)>>
+impl<T, D> CrossbeamExtractor<Event<T, (D, T, Diff)>>
 where
     T: Debug + Ord + Hash + Clone,
     D: Debug + Ord + Hash + Clone,
-    R: Semigroup,
 {
     /// Extracts in a non-blocking manner, exerting fuel for any data pulled from the channel
     /// and returning when the fuel is exhausted or the channel is empty. Returns `true` if
@@ -66,7 +67,7 @@ where
     pub fn extract_with_fuel(
         &self,
         fuel: &mut Fuel,
-        sink: &mut HashMap<D, R>,
+        sink: &mut HashMap<D, Diff, XXHasher>,
         consumed: &mut ChangeBatch<T>,
     ) -> bool {
         while !fuel.is_exhausted() {
@@ -141,7 +142,7 @@ where
 
     #[allow(dead_code)]
     pub fn extract_all(self) -> Vec<D> {
-        let mut data = HashMap::new();
+        let mut data = HashMap::with_hasher(XXHasher::default());
         for (event, _time, diff) in self.extract().into_iter().flat_map(|(_, data)| data) {
             data.entry(event)
                 .and_modify(|d| *d += &diff)
@@ -149,6 +150,7 @@ where
         }
 
         data.into_iter()
+            // FIXME: For some events this actually matters, the diff info should be kept
             .filter_map(|(data, diff)| if !diff.is_zero() { Some(data) } else { None })
             .collect()
     }

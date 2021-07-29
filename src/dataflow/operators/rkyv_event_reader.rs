@@ -52,7 +52,11 @@ where
     D: Archive,
     D::Archived: Deserialize<D, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
 {
-    fn next(&mut self, is_finished: &mut bool) -> io::Result<Option<TimelyEvent<T, D>>> {
+    fn next(
+        &mut self,
+        is_finished: &mut bool,
+        bytes_read: &mut usize,
+    ) -> io::Result<Option<TimelyEvent<T, D>>> {
         // Align to read
         let alignment_offset = match self.consumed & 15 {
             0 => 0,
@@ -163,6 +167,7 @@ where
         }
 
         if let Ok(len) = self.reader.read(&mut self.bytes[..]) {
+            *bytes_read += 1;
             if len == 0 {
                 self.peer_finished = true;
             }
@@ -185,7 +190,7 @@ where
     type Item = TimelyEvent<T, D>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        EventIterator::next(self, &mut false).ok().flatten()
+        EventIterator::next(self, &mut false, &mut 0).ok().flatten()
     }
 }
 

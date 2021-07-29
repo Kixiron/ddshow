@@ -22,6 +22,7 @@ use indicatif::ProgressBar;
 use std::{
     convert::TryFrom,
     fs::{self, File},
+    hash::BuildHasherDefault,
     io::BufWriter,
     num::Wrapping,
     ops::Range,
@@ -35,10 +36,13 @@ use timely::{
     },
     PartialOrder,
 };
+use xxhash_rust::xxh3::Xxh3;
 
 pub(crate) type Diff = isize;
 pub(crate) type Time = Duration; // Epoch<Duration, Duration>;
 pub(crate) type OpKey = (WorkerId, OperatorId);
+
+pub(crate) type XXHasher = BuildHasherDefault<Xxh3>;
 
 pub(crate) type ArrangedVal<S, K, V, D = Diff> =
     Arranged<S, TraceAgent<OrdValSpine<K, V, <S as ScopeParent>::Timestamp, D>>>;
@@ -121,7 +125,7 @@ where
 
     let timely_path = log_file_path(TIMELY_LOG_FILE, save_logs, scope.index())?;
 
-    tracing::debug!(
+    tracing::info!(
         "installing timely file sink on worker {} pointed at {}",
         scope.index(),
         timely_path.display(),
@@ -142,7 +146,7 @@ where
         let differential_path =
             log_file_path(DIFFERENTIAL_ARRANGEMENT_LOG_FILE, save_logs, scope.index())?;
 
-        tracing::debug!(
+        tracing::info!(
             "installing differential file sink on worker {} pointed at {}",
             scope.index(),
             differential_path.display(),

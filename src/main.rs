@@ -9,7 +9,10 @@ mod ui;
 use crate::{
     args::Args,
     colormap::{select_color, Color},
-    dataflow::{constants::DDSHOW_VERSION, Channel, DataflowData, DataflowSenders, Summation},
+    dataflow::{
+        constants::DDSHOW_VERSION, utils::XXHasher, Channel, DataflowData, DataflowSenders,
+        Summation,
+    },
     replay_loading::{connect_to_sources, wait_for_input},
     ui::{ActivationDuration, DDShowStats, EdgeKind, Lifespan, TimelineEvent},
 };
@@ -53,6 +56,14 @@ fn main() -> Result<()> {
 
         return Ok(());
     }
+
+    // Create the output directory
+    fs::create_dir_all(&args.output_dir).with_context(|| {
+        anyhow::anyhow!(
+            "failed to create output directory '{}'",
+            args.output_dir.display(),
+        )
+    })?;
 
     let (communication_config, worker_config) = args.timely_config();
 
@@ -153,12 +164,12 @@ fn main() -> Result<()> {
 
     let extraction_start_time = Instant::now();
 
-    let name_lookup: HashMap<_, _> = data
+    let name_lookup: HashMap<_, _, XXHasher> = data
         .name_lookup
         .iter()
         .map(|(id, name)| (*id, name.deref()))
         .collect();
-    let addr_lookup: HashMap<_, _> = data
+    let addr_lookup: HashMap<_, _, XXHasher> = data
         .addr_lookup
         .iter()
         .map(|(id, addr)| (*id, addr))
@@ -181,8 +192,8 @@ fn main() -> Result<()> {
     }
 
     let (mut operator_stats, mut agg_operator_stats, mut raw_timings) = (
-        HashMap::with_capacity(data.summarized.len()),
-        HashMap::with_capacity(data.aggregated_summaries.len() / 2),
+        HashMap::with_capacity_and_hasher(data.summarized.len(), XXHasher::default()),
+        HashMap::with_capacity_and_hasher(data.aggregated_summaries.len() / 2, XXHasher::default()),
         Vec::with_capacity(data.summarized.len()),
     );
     for (operator, stats) in data.summarized.iter() {
@@ -201,17 +212,20 @@ fn main() -> Result<()> {
         raw_timings.iter().min().copied().unwrap_or_default(),
     );
 
-    let mut arrangement_map = HashMap::with_capacity(data.arrangements.len());
+    let mut arrangement_map =
+        HashMap::with_capacity_and_hasher(data.arrangements.len(), XXHasher::default());
     for &(operator, ref arrangements) in data.arrangements.iter() {
         arrangement_map.insert(operator, arrangements);
     }
 
-    let mut agg_arrangement_stats = HashMap::with_capacity(data.aggregated_arrangements.len());
+    let mut agg_arrangement_stats =
+        HashMap::with_capacity_and_hasher(data.aggregated_arrangements.len(), XXHasher::default());
     for &(operator, ref arrangements) in data.aggregated_arrangements.iter() {
         agg_arrangement_stats.insert(operator, arrangements);
     }
 
-    let mut activations_map = HashMap::with_capacity(data.operator_activations.len());
+    let mut activations_map =
+        HashMap::with_capacity_and_hasher(data.operator_activations.len(), XXHasher::default());
     for &(operator, activation) in data.operator_activations.iter() {
         activations_map
             .entry(operator)
@@ -224,7 +238,8 @@ fn main() -> Result<()> {
             });
     }
 
-    let mut agg_activations_map = HashMap::with_capacity(data.operator_activations.len());
+    let mut agg_activations_map =
+        HashMap::with_capacity_and_hasher(data.operator_activations.len(), XXHasher::default());
     for (&(_worker, operator), activations) in activations_map.iter() {
         agg_activations_map
             .entry(operator)
@@ -236,7 +251,8 @@ fn main() -> Result<()> {
             });
     }
 
-    let mut spline_levels = HashMap::with_capacity(data.spline_levels.len());
+    let mut spline_levels =
+        HashMap::with_capacity_and_hasher(data.spline_levels.len(), XXHasher::default());
     for &((worker, operator), level) in data.spline_levels.iter() {
         spline_levels
             .entry((worker, operator))
@@ -420,8 +436,8 @@ fn dump_program_json(
     args: &Args,
     file: &Path,
     data: &DataflowData,
-    _name_lookup: &HashMap<(WorkerId, OperatorId), &str>,
-    _addr_lookup: &HashMap<(WorkerId, OperatorId), &OperatorAddr>,
+    _name_lookup: &HashMap<(WorkerId, OperatorId), &str, XXHasher>,
+    _addr_lookup: &HashMap<(WorkerId, OperatorId), &OperatorAddr, XXHasher>,
 ) -> Result<()> {
     let file = BufWriter::new(File::create(file).context("failed to create json file")?);
 

@@ -1,7 +1,10 @@
-use crate::timely_logging::{
-    ApplicationEvent, ChannelsEvent, CommChannelsEvent, GuardedMessageEvent, GuardedProgressEvent,
-    InputEvent, MessagesEvent, OperatesEvent, ParkEvent, PushProgressEvent, ScheduleEvent,
-    ShutdownEvent,
+use crate::{
+    timely_logging::{
+        ApplicationEvent, ChannelsEvent, CommChannelsEvent, GuardedMessageEvent,
+        GuardedProgressEvent, InputEvent, MessagesEvent, OperatesEvent, ParkEvent,
+        PushProgressEvent, ScheduleEvent, ShutdownEvent,
+    },
+    ChannelId, OperatorId,
 };
 #[cfg(feature = "enable_abomonation")]
 use abomonation_derive::Abomonation;
@@ -353,6 +356,52 @@ impl TimelyEvent {
             Err(self)
         }
     }
+
+    #[inline]
+    pub const fn distinguishing_id(&self) -> DistinguishingId {
+        match *self {
+            Self::Operates(OperatesEvent { id, .. }) | Self::Shutdown(ShutdownEvent { id }) => {
+                DistinguishingId::OperatorExists(id)
+            }
+            Self::Schedule(ScheduleEvent { id, .. }) => DistinguishingId::OperatorSchedule(id),
+            Self::Channels(ChannelsEvent { id, .. }) => DistinguishingId::Channel(id),
+            Self::PushProgress(PushProgressEvent { op_id }) => {
+                DistinguishingId::PushProgress(op_id)
+            }
+            Self::Messages(MessagesEvent {
+                channel,
+                source,
+                target,
+                ..
+            }) => DistinguishingId::Messages(channel, source, target),
+            Self::Application(ApplicationEvent { id, .. }) => DistinguishingId::Application(id),
+            Self::GuardedMessage(_) => DistinguishingId::GuardedMessage,
+            Self::GuardedProgress(_) => DistinguishingId::GuardedProgress,
+            Self::CommChannels(CommChannelsEvent { identifier, .. }) => {
+                DistinguishingId::CommChannel(identifier)
+            }
+            Self::Input(_) => DistinguishingId::Input,
+            Self::Park(_) => DistinguishingId::Park,
+            Self::Text(_) => DistinguishingId::Text,
+        }
+    }
+}
+
+/// Distinguishes a [`TimelyEvent`]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DistinguishingId {
+    OperatorExists(OperatorId),
+    OperatorSchedule(OperatorId),
+    Channel(ChannelId),
+    PushProgress(OperatorId),
+    Messages(ChannelId, OperatorId, OperatorId),
+    Application(usize),
+    GuardedMessage,
+    GuardedProgress,
+    CommChannel(usize),
+    Input,
+    Park,
+    Text,
 }
 
 impl From<RawTimelyEvent> for TimelyEvent {
