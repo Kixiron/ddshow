@@ -33,6 +33,7 @@ pub struct Bundle<D, Id = WorkerId> {
 }
 
 impl<D, Id> Bundle<D, Id> {
+    #[inline]
     pub fn new(time: Duration, worker: Id, event: D) -> Self {
         Self {
             time,
@@ -43,6 +44,7 @@ impl<D, Id> Bundle<D, Id> {
 }
 
 impl<D, Id> From<(Duration, Id, D)> for Bundle<D, Id> {
+    #[inline]
     fn from((time, worker, event): (Duration, Id, D)) -> Self {
         Self {
             time,
@@ -53,6 +55,7 @@ impl<D, Id> From<(Duration, Id, D)> for Bundle<D, Id> {
 }
 
 impl<D, Id> From<Bundle<D, Id>> for (Duration, Id, D) {
+    #[inline]
     fn from(
         Bundle {
             time,
@@ -83,18 +86,21 @@ pub struct CapabilityBundle<T> {
 }
 
 impl<T> CapabilityBundle<T> {
+    #[inline]
     pub fn new(time: T, diff: i64) -> Self {
         Self { time, diff }
     }
 }
 
 impl<T> From<(T, i64)> for CapabilityBundle<T> {
+    #[inline]
     fn from((time, diff): (T, i64)) -> Self {
         Self { time, diff }
     }
 }
 
 impl<T> From<CapabilityBundle<T>> for (T, i64) {
+    #[inline]
     fn from(CapabilityBundle { time, diff }: CapabilityBundle<T>) -> Self {
         (time, diff)
     }
@@ -123,16 +129,19 @@ pub enum Event<T, D> {
 
 impl<T, D> Event<T, D> {
     /// Returns `true` if the event is [`Event::Progress`].
+    #[inline]
     pub const fn is_progress(&self) -> bool {
         matches!(self, Self::Progress(..))
     }
 
     /// Returns `true` if the event is [`Event::Messages`]
+    #[inline]
     pub const fn is_messages(&self) -> bool {
         matches!(self, Self::Messages(..))
     }
 
     /// Returns progress data if the event is [`Event::Progress`]
+    #[inline]
     pub const fn as_progress(&self) -> Option<&Vec<(T, i64)>> {
         if let Self::Progress(progress) = self {
             Some(progress)
@@ -142,6 +151,7 @@ impl<T, D> Event<T, D> {
     }
 
     /// Returns message data if the event is [`Event::Messages`]
+    #[inline]
     pub const fn as_messages(&self) -> Option<(&T, &Vec<D>)> {
         if let Self::Messages(time, messages) = self {
             Some((time, messages))
@@ -152,6 +162,7 @@ impl<T, D> Event<T, D> {
 }
 
 impl<T, D> From<TimelyEvent<T, D>> for Event<T, D> {
+    #[inline]
     fn from(event: TimelyEvent<T, D>) -> Self {
         match event {
             TimelyEvent::Progress(progress) => Self::Progress(progress),
@@ -161,6 +172,7 @@ impl<T, D> From<TimelyEvent<T, D>> for Event<T, D> {
 }
 
 impl<T, D> From<Event<T, D>> for TimelyEvent<T, D> {
+    #[inline]
     fn from(val: Event<T, D>) -> Self {
         match val {
             Event::Progress(progress) => Self::Progress(progress),

@@ -1,8 +1,9 @@
-#![allow(clippy::unused_unit)]
-
 use crate::{
     args::Args,
-    dataflow::{DataflowData, OperatorProgress, OperatorShape, TimelineEvent as RawTimelineEvent},
+    dataflow::{
+        utils::OpKey, ArrangementStats as DataflowArrangementStats, DataflowData, OperatorProgress,
+        OperatorShape, SplineLevel, Summation, TimelineEvent as RawTimelineEvent,
+    },
 };
 use abomonation_derive::Abomonation;
 use anyhow::{Context as _, Result};
@@ -11,6 +12,7 @@ use ddshow_types::{ChannelId, OperatorAddr, OperatorId, PortId, WorkerId};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::BufWriter,
     time::Duration,
@@ -31,6 +33,12 @@ pub fn render(
     subgraphs: &[Subgraph],
     edges: &[Edge],
     palette_colors: &[String],
+    arrangement_map: &HashMap<OpKey, &DataflowArrangementStats>,
+    activation_map: &HashMap<OpKey, Vec<(Duration, Duration)>>,
+    agg_operator_stats: &HashMap<OperatorId, &Summation>,
+    agg_arrangement_stats: &HashMap<OperatorId, &DataflowArrangementStats>,
+    agg_activations: &HashMap<OperatorId, Vec<&Vec<(Duration, Duration)>>>,
+    spline_levels: &HashMap<OpKey, Vec<SplineLevel>>,
 ) -> Result<()> {
     let output_dir = args.output_dir.canonicalize().with_context(|| {
         anyhow::anyhow!("failed to canonicalize '{}'", args.output_dir.display())
@@ -44,7 +52,15 @@ pub fn render(
     fs::write(output_dir.join("dagre-d3.js"), DAGRE_JS)
         .context("failed to write output graph to file")?;
 
-    let vega_data = vega_data(data);
+    let vega_data = vega_data(
+        data,
+        arrangement_map,
+        activation_map,
+        agg_operator_stats,
+        agg_arrangement_stats,
+        agg_activations,
+        spline_levels,
+    );
     let graph_data = GraphData {
         nodes,
         subgraphs,
@@ -140,10 +156,18 @@ pub enum VegaNodeKind {
     Subgraph,
 }
 
-fn vega_data(data: &DataflowData) -> Vec<VegaNode<'_>> {
-    data.aggregated_operator_stats
+fn vega_data<'a>(
+    data: &'a DataflowData,
+    arrangement_map: &'a HashMap<OpKey, &'a DataflowArrangementStats>,
+    activation_map: &'a HashMap<OpKey, Vec<(Duration, Duration)>>,
+    agg_operator_stats: &'a HashMap<OperatorId, &'a Summation>,
+    agg_arrangement_stats: &'a HashMap<OperatorId, &'a DataflowArrangementStats>,
+    agg_activations: &'a HashMap<OperatorId, Vec<&'a Vec<(Duration, Duration)>>>,
+    spline_levels: &'a HashMap<OpKey, Vec<SplineLevel>>,
+) -> Vec<VegaNode<'a>> {
+    agg_operator_stats
         .iter()
-        .filter_map(|&(id, ref stats)| {
+        .filter_map(|(&id, &stats)| {
             let name = &data
                 .name_lookup
                 .iter()
@@ -156,11 +180,21 @@ fn vega_data(data: &DataflowData) -> Vec<VegaNode<'_>> {
                 .find(|&&((_, op_id), _)| id == op_id)?
                 .1;
 
-            let activation_durations = stats
-                .activation_durations
-                .iter()
-                .map(|(start, duration)| (start.as_nanos() as u64, duration.as_nanos() as u64))
-                .collect();
+            let activation_durations = agg_activations
+                .get(&id)
+                .map(|activations| {
+                    activations
+                        .iter()
+                        .flat_map(|activations| {
+                            activations.iter().map(|(start, duration)| {
+                                (start.as_nanos() as u64, duration.as_nanos() as u64)
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let arranged = agg_arrangement_stats.get(&id);
 
             let node_kind = if data
                 .subgraphs
@@ -173,42 +207,50 @@ fn vega_data(data: &DataflowData) -> Vec<VegaNode<'_>> {
             };
 
             let per_worker = data
-                .operator_stats
+                .summarized
                 .iter()
                 .filter(|&&((_, op_id), _)| op_id == id)
                 .map(|&((worker, _), ref stats)| {
-                    let activation_durations = stats
-                        .activation_durations
-                        .iter()
-                        .map(|(start, duration)| {
-                            (start.as_nanos() as u64, duration.as_nanos() as u64)
+                    let activation_durations = activation_map
+                        .get(&(worker, id))
+                        .map(|activations| {
+                            activations
+                                .iter()
+                                .map(|(start, duration)| {
+                                    (start.as_nanos() as u64, duration.as_nanos() as u64)
+                                })
+                                .collect()
                         })
-                        .collect();
+                        .unwrap_or_default();
+
+                    let arranged = arrangement_map.get(&(worker, id));
+
+                    let spline_levels = spline_levels.get(&(worker, id)).map(|spline_levels| {
+                        spline_levels
+                            .iter()
+                            .map(
+                                |&SplineLevel {
+                                     event_time,
+                                     complete_size,
+                                     scale,
+                                 }| {
+                                    (event_time.as_nanos() as u64, complete_size, scale)
+                                },
+                            )
+                            .collect()
+                    });
 
                     let stats = VegaWorkerNode {
-                        activations: stats.activations,
+                        activations: stats.count,
                         total_runtime: stats.total.as_nanos() as u64,
                         average_activation_time: stats.average.as_nanos() as u64,
                         max_activation_time: stats.max.as_nanos() as u64,
                         min_activation_time: stats.min.as_nanos() as u64,
                         activation_durations,
-                        max_arrangement_size: stats
-                            .arrangement_size
-                            .as_ref()
-                            .map(|arr| arr.max_size),
-                        min_arrangement_size: stats
-                            .arrangement_size
-                            .as_ref()
-                            .map(|arr| arr.min_size),
-                        arrangement_batches: stats.arrangement_size.as_ref().map(|arr| arr.batches),
-                        spline_levels: stats.arrangement_size.as_ref().map(|arr| {
-                            arr.spline_levels
-                                .iter()
-                                .map(|&(time, complete, scale)| {
-                                    (time.as_nanos() as u64, complete, scale)
-                                })
-                                .collect()
-                        }),
+                        max_arrangement_size: arranged.map(|arr| arr.max_size),
+                        min_arrangement_size: arranged.map(|arr| arr.min_size),
+                        arrangement_batches: arranged.map(|arr| arr.batches),
+                        spline_levels,
                     };
 
                     (worker, stats)
@@ -219,15 +261,15 @@ fn vega_data(data: &DataflowData) -> Vec<VegaNode<'_>> {
                 id,
                 name,
                 addr,
-                activations: stats.activations,
+                activations: stats.count,
                 total_runtime: stats.total.as_nanos() as u64,
                 average_activation_time: stats.average.as_nanos() as u64,
                 max_activation_time: stats.max.as_nanos() as u64,
                 min_activation_time: stats.min.as_nanos() as u64,
                 activation_durations,
-                max_arrangement_size: stats.arrangement_size.as_ref().map(|arr| arr.max_size),
-                min_arrangement_size: stats.arrangement_size.as_ref().map(|arr| arr.min_size),
-                arrangement_batches: stats.arrangement_size.as_ref().map(|arr| arr.batches),
+                max_arrangement_size: arranged.map(|arr| arr.max_size),
+                min_arrangement_size: arranged.map(|arr| arr.min_size),
+                arrangement_batches: arranged.map(|arr| arr.batches),
                 node_kind,
                 per_worker,
             })

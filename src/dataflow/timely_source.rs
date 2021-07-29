@@ -1,8 +1,7 @@
 use crate::{
     dataflow::{
-        constants::IDLE_EXTRACTION_FUEL,
-        operators::{DelayExt, Fuel, InspectExt},
-        utils::{granulate, Time},
+        operators::{Fuel, InspectExt},
+        utils::Time,
         worker_timeline::{process_timely_event, EventMap, EventProcessor},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelineEvent,
         TimelyLogBundle, WorkerId,
@@ -157,7 +156,7 @@ where
 
     let mut work_list = BinaryHeap::new();
     let mut work_list_buffers = Vec::new();
-    let mut fuel = Fuel::limited(IDLE_EXTRACTION_FUEL);
+    let mut fuel = Fuel::unlimited(); // Fuel::limited(IDLE_EXTRACTION_FUEL);
 
     builder.build(move |_| {
         move |frontiers| {
@@ -170,8 +169,6 @@ where
             let mut handles = outputs.activate();
 
             timely_stream.for_each(|capability, data| {
-                tracing::trace!(target: "timely_source_inputs", time = ?capability.time());
-
                 let mut buffer = work_list_buffers.pop().unwrap_or_default();
                 data.swap(&mut buffer);
 
@@ -855,11 +852,11 @@ macro_rules! timely_source_processor {
     };
 
     (@as_collection $self:ident, $name:ident, $cond:ident) => {
-        $self.$name.map(|$name| $name.as_collection().delay_fast(granulate))
+        $self.$name.map(|$name| $name.as_collection())
     };
 
     (@as_collection $self:ident, $name:ident,) => {
-        $self.$name.as_collection().delay_fast(granulate)
+        $self.$name.as_collection()
     };
 }
 

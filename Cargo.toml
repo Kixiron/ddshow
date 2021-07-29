@@ -28,21 +28,21 @@ timely-next = []
 atty = "0.2.14"
 ctrlc = "3.1.9"
 anyhow = "1.0.38"
-tracing = "0.1.25"
-colorous = "1.0.3"
+tracing = "0.1.26"
+colorous = "1.0.5"
 bytecheck = "0.6.3"
 byteorder = "1.4.3"
-structopt = "0.3.21"
+structopt = "0.3.22"
 num-traits = "0.2.14"
-serde_json = "1.0.64"
+serde_json = "1.0.65"
 abomonation = "0.7.3"
-comfy-table = "4.0.0"
-ordered-float = "2.5.1"
+comfy-table = "4.0.1"
+ordered-float = "2.7.0"
 crossbeam-channel = "0.5.0"
 abomonation_derive = "0.5.0"
 strum = { version = "0.21.0", features = ["derive"] }
-serde = { version = "1.0.123", features = ["derive"] }
-tinyvec = { version = "1.2.0", features = ["alloc", "serde"] }
+serde = { version = "1.0.126", features = ["derive"] }
+tinyvec = { version = "1.3.1", features = ["alloc", "serde"] }
 indicatif = { version = "0.16.2", features = ["improved_unicode"] }
 
 timely = "0.12.0"
@@ -51,11 +51,11 @@ differential-dataflow = { version = "0.12.0", default-features = false }
 # differential-dataflow = { git = "https://github.com/TimelyDataflow/differential-dataflow" }
 
     [dependencies.tera]
-    version = "1.6.1"
+    version = "1.12.1"
     default-features = false
 
     [dependencies.tracing-subscriber]
-    version = "0.2.16"
+    version = "0.2.19"
     default-features = false
     features = ["env-filter", "fmt", "ansi"]
 
@@ -75,12 +75,12 @@ differential-dataflow = { version = "0.12.0", default-features = false }
     features = ["validation", "tinyvec", "tinyvec_alloc"]
 
 [dev-dependencies]
-rand = "0.8.0"
+rand = "0.8.4"
 proptest = "1.0.0"
 libtest-mimic = "0.3.0"
 
 [build-dependencies.vergen]
-version = "5.1.6"
+version = "5.1.13"
 default-features = false
 features = ["build", "cargo", "rustc"]
 

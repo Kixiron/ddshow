@@ -140,28 +140,35 @@ fn compact_delayed_buffers<T, D, R>(
     D: Data,
     R: Semigroup,
 {
-    if let Some(dirty_time) = dirty.pop() {
-        if let Some(updates) = elements.get_mut(&dirty_time) {
-            if let Some(mut consolidated) = updates.pop() {
-                // Reserve the required space to combine all the buffers
-                consolidated.reserve(updates.iter().map(|updates| updates.len()).sum());
+    // TODO: Maybe add an actual fuel mechanism?
+    for _ in 0..50 {
+        if let Some(dirty_time) = dirty.pop() {
+            // TODO: Maybe remove the entry if it has no update vectors in it?
+            if let Some(updates) = elements.get_mut(&dirty_time) {
+                if let Some(mut consolidated) = updates.pop() {
+                    // Reserve the required space to combine all the buffers
+                    consolidated.reserve(updates.iter().map(|updates| updates.len()).sum());
 
-                // FIXME: A k-way merge would be more efficient
-                for mut updates in updates.drain(..) {
-                    consolidated.extend(updates.drain(..));
+                    // FIXME: A k-way merge would be more efficient
+                    for mut updates in updates.drain(..) {
+                        consolidated.extend(updates.drain(..));
 
-                    // Give the freshly empty buffer back to the list of
-                    // idle buffers we maintain
-                    idle_buffers.push(updates);
-                }
+                        // Give the freshly empty buffer back to the list of
+                        // idle buffers we maintain
+                        idle_buffers.push(updates);
+                    }
 
-                consolidation::consolidate_updates(&mut consolidated);
+                    // Compact the updates within the newly filled vector
+                    consolidation::consolidate_updates(&mut consolidated);
 
-                // Skip pushing the consolidated vector if it's empty
-                if !consolidated.is_empty() {
-                    updates.push(consolidated);
+                    // Skip pushing the consolidated vector if it's empty
+                    if !consolidated.is_empty() {
+                        updates.push(consolidated);
+                    }
                 }
             }
+        } else {
+            break;
         }
     }
 }
@@ -174,6 +181,91 @@ mod tests {
         time::Duration,
     };
     use tinyvec::{tiny_vec, TinyVec};
+
+    #[test]
+    fn buffers_are_compacted() {
+        let mut dirty = BinaryHeap::new();
+        dirty.push(Duration::from_secs(10));
+        dirty.push(Duration::from_secs(20));
+        dirty.push(Duration::from_secs(6));
+
+        let mut elements = HashMap::new();
+        elements.insert(
+            Duration::from_secs(10),
+            tiny_vec![
+                vec![("foobar", Duration::from_secs(11), -2)],
+                vec![
+                    ("foo", Duration::from_secs(10), 10),
+                    ("foo", Duration::from_secs(10), 10463),
+                ],
+                vec![("foobar", Duration::from_secs(11), 5)]
+            ],
+        );
+        elements.insert(
+            Duration::from_secs(20),
+            tiny_vec![
+                vec![("fo42obar", Duration::from_secs(21), -652)],
+                vec![
+                    ("ffgdfoo", Duration::from_secs(24), 1560),
+                    ("f45yoo", Duration::from_secs(30), 130),
+                ],
+                vec![("foobar", Duration::from_secs(22), 5)]
+            ],
+        );
+        elements.insert(
+            Duration::from_secs(6),
+            tiny_vec![
+                vec![("ffdsgr", Duration::from_secs(6), -2)],
+                vec![
+                    ("fgsdfg", Duration::from_secs(8), 100),
+                    ("foo", Duration::from_secs(10), 143),
+                ],
+                vec![("foofdssdfar", Duration::from_secs(6), 57)],
+                vec![("foofdssdfar", Duration::from_secs(6), -57)],
+                vec![("foofdssdfar", Duration::from_secs(6), 57)],
+                vec![("foofdssdfar", Duration::from_secs(6), -60)]
+            ],
+        );
+
+        let mut idle_buffers = Vec::new();
+
+        compact_delayed_buffers(&mut dirty, &mut elements, &mut idle_buffers);
+
+        let mut expected = HashMap::new();
+        expected.insert(
+            Duration::from_secs(6),
+            tiny_vec![
+                [Vec<(&str, Duration, isize)>; 16] => vec![
+                    ("ffdsgr", Duration::from_secs(6), -2),
+                    ("fgsdfg", Duration::from_secs(8), 100),
+                    ("foo", Duration::from_secs(10), 143),
+                    ("foofdssdfar", Duration::from_secs(6), -3),
+                ],
+            ],
+        );
+        expected.insert(
+            Duration::from_secs(10),
+            tiny_vec![
+                [Vec<(&str, Duration, isize)>; 16] => vec![
+                    ("foo", Duration::from_secs(10), 10473),
+                    ("foobar", Duration::from_secs(11), 3),
+                ],
+            ],
+        );
+        expected.insert(
+            Duration::from_secs(20),
+            tiny_vec![
+                [Vec<(&str, Duration, isize)>; 16] => vec![
+                    ("f45yoo", Duration::from_secs(30), 130),
+                    ("ffgdfoo", Duration::from_secs(24), 1560),
+                    ("fo42obar", Duration::from_secs(21), -652),
+                    ("foobar", Duration::from_secs(22), 5),
+                ],
+            ],
+        );
+
+        assert_eq!(elements, expected);
+    }
 
     // Regression test for the case when an element has a single buffer.
     // There was previously a bug where it infinitely looped when this
@@ -201,6 +293,40 @@ mod tests {
         assert!(dirty.is_empty());
         assert_eq!(elements.len(), 1);
         assert_eq!(elements[&Duration::from_secs(10)], TinyVec::new());
+        assert!(idle_buffers.is_empty());
+    }
+
+    #[test]
+    fn dirty_doesnt_exist() {
+        let mut dirty = BinaryHeap::new();
+        dirty.push(Duration::from_secs(30));
+
+        let mut elements = HashMap::new();
+        elements.insert(
+            Duration::from_secs(10),
+            tiny_vec![
+                [Vec<(&str, Duration, isize)>; 16] => vec![
+                    ("foo", Duration::from_secs(10), 10),
+                    ("foo", Duration::from_secs(10), -10),
+                ],
+            ],
+        );
+
+        let mut idle_buffers = Vec::new();
+
+        compact_delayed_buffers(&mut dirty, &mut elements, &mut idle_buffers);
+
+        assert!(dirty.is_empty());
+        assert_eq!(elements.len(), 1);
+        assert_eq!(
+            elements[&Duration::from_secs(10)],
+            tiny_vec![
+                [Vec<(&str, Duration, isize)>; 16] => vec![
+                    ("foo", Duration::from_secs(10), 10),
+                    ("foo", Duration::from_secs(10), -10),
+                ],
+            ],
+        );
         assert!(idle_buffers.is_empty());
     }
 

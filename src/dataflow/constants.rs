@@ -1,11 +1,13 @@
 //! Various constants and defaults for ddshow
 
-use std::{num::NonZeroUsize, time::Duration};
+use core::{num::NonZeroUsize, time::Duration};
 
 /// Only cause the program stats to update every N milliseconds to
-/// prevent this from absolutely thrashing the scheduler
+/// prevent this from absolutely thrashing the scheduler.
+///
+/// The value is currently set to 50 milliseconds
 // TODO: Make this configurable by the user
-pub const PROGRAM_NS_GRANULARITY: u128 = 5_000_000;
+pub const PROGRAM_NS_GRANULARITY: u128 = 50_000_000;
 
 /// The default capacity to initialize extractor maps to
 pub(crate) const DEFAULT_EXTRACTOR_CAPACITY: usize = 1024;
@@ -20,7 +22,7 @@ pub(crate) const TCP_READ_TIMEOUT: Option<Duration> = Some(Duration::from_millis
 /// main thread's spin loop
 // Safety: 1,000,000 isn't zero
 pub(crate) const IDLE_EXTRACTION_FUEL: NonZeroUsize =
-    unsafe { NonZeroUsize::new_unchecked(1_000_000) };
+    unsafe { NonZeroUsize::new_unchecked(100_000_000) };
 
 /// The delay to reactivate replay operators after
 pub(crate) const DEFAULT_REACTIVATION_DELAY: Duration = Duration::from_millis(200);

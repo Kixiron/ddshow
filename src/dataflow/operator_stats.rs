@@ -1,19 +1,17 @@
 use crate::dataflow::{
-    differential::{self, ArrangementStats},
-    operators::{DiffDuration, HierarchicalReduce, InspectExt, Keys, Max, Maybe, Min},
+    differential::{self, ArrangementStats, SplineLevel},
+    operators::{DiffDuration, Max, Min},
     summation::{summation, Summation},
-    utils::{Diff, DifferentialLogBundle, Time},
+    utils::{Diff, DifferentialLogBundle, OpKey, Time},
     OperatorId, WorkerId,
 };
 use abomonation_derive::Abomonation;
-use differential_dataflow::{
-    difference::DiffPair,
-    operators::{Consolidate, CountTotal, Join, Reduce},
-    Collection,
-};
+use differential_dataflow::{difference::DiffPair, operators::CountTotal, Collection};
 use serde::{Deserialize, Serialize};
 use std::{iter, time::Duration};
-use timely::dataflow::{operators::Enter, Scope, Stream};
+use timely::dataflow::{Scope, Stream};
+
+type ActivationTimes<S> = Collection<S, ((WorkerId, OperatorId), (Duration, Duration)), Diff>;
 
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Abomonation, Deserialize, Serialize,
@@ -26,11 +24,6 @@ pub struct OperatorStats {
     pub average: Duration,
     pub total: Duration,
     pub activations: usize,
-    /// Operator activation times `(start, duration)`
-    pub activation_durations: Vec<(Duration, Duration)>,
-    pub arrangement_size: Option<ArrangementStats>,
-    // pub messages_sent: usize,
-    // pub messages_received: usize,
 }
 
 #[derive(
@@ -43,102 +36,173 @@ pub struct AggregatedOperatorStats {
     pub average: Duration,
     pub total: Duration,
     pub activations: usize,
-    /// Operator activation times `(start, duration)`
-    pub activation_durations: Vec<(Duration, Duration)>,
-    pub arrangement_size: Option<ArrangementStats>,
+    // /// Operator activation times `(start, duration)`
+    // pub activation_durations: Vec<(Duration, Duration)>,
+    // pub arrangement_size: Option<ArrangementStats>,
     // pub messages_sent: usize,
     // pub messages_received: usize,
 }
 
-type ActivationTimes<S> = Collection<S, ((WorkerId, OperatorId), (Duration, Duration)), Diff>;
+pub struct OperatorStatsRelations<S>
+where
+    S: Scope<Timestamp = Time>,
+{
+    pub summarized: Collection<S, (OpKey, Summation), Diff>,
+    pub aggregated_summaries: Collection<S, (OperatorId, Summation), Diff>,
+    pub arrangements: Option<Collection<S, (OpKey, ArrangementStats), Diff>>,
+    pub aggregated_arrangements: Option<Collection<S, (OperatorId, ArrangementStats), Diff>>,
+    pub spline_levels: Option<Collection<S, (OpKey, SplineLevel), Diff>>,
+}
 
 pub fn operator_stats<S>(
     scope: &mut S,
     activation_times: &ActivationTimes<S>,
     differential_stream: Option<&Stream<S, DifferentialLogBundle>>,
-) -> Collection<S, ((WorkerId, OperatorId), OperatorStats), Diff>
+) -> OperatorStatsRelations<S>
 where
     S: Scope<Timestamp = Time>,
 {
-    scope.region_named("Build Operator Stats", |region| {
-        let (activation_times, differential_stream) = (
-            activation_times.enter_region(region),
-            differential_stream.map(|stream| stream.enter(region)),
-        );
+    let summarized =
+        summation(&activation_times.map(|(operator, (_start, duration))| (operator, duration)));
+    let (arrangements, spline_levels) = if let Some(stream) = differential_stream {
+        let (arranged, splines) = differential::arrangement_stats(scope, stream);
 
-        let execution_statistics =
-            summation(&activation_times.map(|(operator, (_start, duration))| (operator, duration)));
+        (Some(arranged), Some(splines))
+    } else {
+        (None, None)
+    };
 
-        let mut activation_durations = activation_times.reduce_named(
-            "Aggregate Activation Times",
-            |_, activations, output| {
-                let mut activations: Vec<_> = activations
-                    .iter()
-                    .map(|&(&activation, _)| activation)
-                    .collect();
-                activations.sort_unstable_by_key(|activation| activation.0);
-
-                output.push((activations, 1));
-            },
-        );
-        activation_durations = activation_durations
-            .map(|(operator, _)| (operator, Vec::new()))
-            .antijoin(&activation_durations.keys())
-            .concat(&activation_durations)
-            .consolidate_named("Consolidate Activation Durations");
-
-        let operator_stats = execution_statistics.join_map(
-            &activation_durations,
-            |&(worker, id),
-             &Summation {
-                 max,
-                 min,
-                 total,
-                 average,
-                 count: activations,
-             },
-             activation_durations| {
-                let stats = OperatorStats {
-                    id,
-                    worker,
+    let aggregated_summaries = summarized
+        .explode(
+            |(
+                (_worker, operator),
+                Summation {
                     max,
                     min,
                     average,
                     total,
-                    activations,
-                    // TODO: Populate this
-                    activation_durations: activation_durations.clone(),
-                    arrangement_size: None,
+                    count,
+                },
+            )| {
+                let diff = DiffPair::new(
+                    1,
+                    DiffPair::new(
+                        Max::new(DiffDuration::new(max)),
+                        DiffPair::new(
+                            Min::new(DiffDuration::new(min)),
+                            DiffPair::new(
+                                DiffDuration::new(average),
+                                DiffPair::new(DiffDuration::new(total), count as isize),
+                            ),
+                        ),
+                    ),
+                );
+
+                iter::once((operator, diff))
+            },
+        )
+        .count_total()
+        .map(
+            |(
+                operator,
+                DiffPair {
+                    element1: total_workers,
+                    element2:
+                        DiffPair {
+                            element1: Max { value: max },
+                            element2:
+                                DiffPair {
+                                    element1: Min { value: min },
+                                    element2:
+                                        DiffPair {
+                                            element1: summed_average,
+                                            element2:
+                                                DiffPair {
+                                                    element1: summed_total,
+                                                    element2: activations,
+                                                },
+                                        },
+                                },
+                        },
+                },
+            )| {
+                let average = summed_average
+                    .to_duration()
+                    .checked_div(total_workers as u32)
+                    .unwrap_or_else(|| Duration::from_secs(0));
+                let total = summed_total
+                    .to_duration()
+                    .checked_div(total_workers as u32)
+                    .unwrap_or_else(|| Duration::from_secs(0));
+
+                let stats = Summation {
+                    max: max.to_duration(),
+                    min: min.to_duration(),
+                    average,
+                    total,
+                    count: activations as usize,
                 };
 
-                ((worker, id), stats)
+                (operator, stats)
             },
         );
 
-        differential_stream
-            .as_ref()
-            .map(|stream| {
-                let arrangement_stats = differential::arrangement_stats(region, stream);
-
-                let modified_stats = operator_stats.join_map(
-                    &arrangement_stats,
-                    |&operator, stats, arrangement_stats| {
-                        let mut stats = stats.clone();
-                        stats.arrangement_size = Some(arrangement_stats.clone());
-
-                        (operator, stats)
-                    },
+    let aggregated_arrangements = arrangements.as_ref().map(|arrangements| {
+        arrangements
+            .explode(|((_worker, operator), stats)| {
+                let diff = DiffPair::new(
+                    1,
+                    DiffPair::new(
+                        Max::new(stats.max_size as isize),
+                        DiffPair::new(Min::new(stats.min_size as isize), stats.batches as isize),
+                    ),
                 );
 
-                operator_stats
-                    .antijoin(&modified_stats.map(|(operator, _)| operator))
-                    .concat(&modified_stats)
+                iter::once((operator, diff))
             })
-            .unwrap_or(operator_stats)
-            .leave_region()
-    })
+            .count_total()
+            .map(
+                |(
+                    operator,
+                    DiffPair {
+                        element1: total_workers,
+                        element2:
+                            DiffPair {
+                                element1: Max { value: max_size },
+                                element2:
+                                    DiffPair {
+                                        element1: Min { value: min_size },
+                                        element2: batches,
+                                    },
+                            },
+                    },
+                )| {
+                    let average_batches = (batches as usize)
+                        .checked_div(total_workers as usize)
+                        .unwrap_or(0);
+
+                    (
+                        operator,
+                        ArrangementStats {
+                            max_size: max_size as usize,
+                            min_size: min_size as usize,
+                            batches: average_batches,
+                        },
+                    )
+                },
+            )
+    });
+
+    OperatorStatsRelations {
+        summarized,
+        aggregated_summaries,
+        arrangements,
+        aggregated_arrangements,
+        spline_levels,
+    }
 }
 
+/*
 pub(crate) fn aggregate_operator_stats<S>(
     operator_stats: &Collection<S, ((WorkerId, OperatorId), OperatorStats), Diff>,
 ) -> Collection<S, (OperatorId, AggregatedOperatorStats), Diff>
@@ -329,3 +393,4 @@ where
         (operator, stats)
     })
 }
+*/

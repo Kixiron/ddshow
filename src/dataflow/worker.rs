@@ -123,7 +123,9 @@ where
         //       prompts are accurate to the user? Does that matter
         //       enough to take precedence over the possible performance
         //       impact? (is there a perf impact?)
-        let fuel = if args.is_file_sourced() {
+        let fuel = if false
+        /* args.is_file_sourced() */
+        {
             Fuel::limited(NonZeroUsize::new(100_000_000).unwrap())
 
         // If the dataflow is being sourced from a running program,

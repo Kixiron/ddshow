@@ -1,5 +1,6 @@
 pub use colorous::Gradient;
 
+use differential_dataflow::Config as DifferentialConfig;
 use std::{
     fmt::{self, Display},
     net::SocketAddr,
@@ -159,7 +160,10 @@ impl Args {
         } else {
             CommunicationConfig::Process(self.workers.get())
         };
-        let worker_config = WorkerConfig::default();
+        let mut worker_config = WorkerConfig::default();
+
+        let differential_config = DifferentialConfig::default().idle_merge_effort(Some(1000));
+        differential_dataflow::configure(&mut worker_config, &differential_config);
 
         // TODO: Implement `Debug` for `timely::Config`
         tracing::trace!("created timely config");

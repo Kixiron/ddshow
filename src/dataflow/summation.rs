@@ -8,6 +8,7 @@ use differential_dataflow::difference::DiffPair;
 use differential_dataflow::{
     lattice::Lattice, operators::CountTotal, Collection, ExchangeData, Hashable,
 };
+use serde::Serialize;
 use std::time::Duration;
 use timely::{dataflow::Scope, order::TotalOrder};
 
@@ -88,7 +89,7 @@ where
     summation
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Abomonation, Serialize)]
 pub struct Summation {
     pub max: Duration,
     pub min: Duration,

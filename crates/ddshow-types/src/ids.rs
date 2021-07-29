@@ -1,6 +1,6 @@
 //! All dataflow related ids
 
-use std::fmt::{self, Debug, Display};
+use core::fmt::{self, Debug, Display, Write};
 use timely::logging::WorkerIdentifier;
 
 #[cfg(feature = "enable_abomonation")]
@@ -50,12 +50,16 @@ impl From<usize> for WorkerId {
 }
 
 impl Debug for WorkerId {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "WorkerId({})", self.worker)
+        f.write_str("WorkerId(")?;
+        Display::fmt(&self.worker, f)?;
+        f.write_char(')')
     }
 }
 
 impl Display for WorkerId {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Display::fmt(&self.worker, f)
     }
@@ -92,18 +96,23 @@ impl OperatorId {
 }
 
 impl From<PortId> for OperatorId {
+    #[inline]
     fn from(port: PortId) -> Self {
         Self::new(port.into_inner())
     }
 }
 
 impl Debug for OperatorId {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "OperatorId({})", self.operator)
+        f.write_str("OperatorId(")?;
+        Display::fmt(&self.operator, f)?;
+        f.write_char(')')
     }
 }
 
 impl Display for OperatorId {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Display::fmt(&self.operator, f)
     }
@@ -150,12 +159,16 @@ impl PortId {
 }
 
 impl Debug for PortId {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PortId({})", self.port)
+        f.write_str("PortId(")?;
+        Display::fmt(&self.port, f)?;
+        f.write_char(')')
     }
 }
 
 impl Display for PortId {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Display::fmt(&self.port, f)
     }
@@ -192,12 +205,16 @@ impl ChannelId {
 }
 
 impl Debug for ChannelId {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ChannelId({})", self.channel)
+        f.write_str("ChannelId(")?;
+        Display::fmt(&self.channel, f)?;
+        f.write_char(')')
     }
 }
 
 impl Display for ChannelId {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Display::fmt(&self.channel, f)
     }

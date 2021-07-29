@@ -89,7 +89,10 @@ where
             .buffer1
             .get(consumed..consumed + mem::size_of::<u128>())
         {
-            let archive_length = u128::from_le_bytes(header_slice.try_into().unwrap()) as usize;
+            let archive_length = header_slice
+                .try_into()
+                .expect("the slice is the length of a u128");
+            let archive_length = u128::from_le_bytes(archive_length) as usize;
             let archive_start = consumed + mem::size_of::<u128>();
 
             if let Some(slice) = self
