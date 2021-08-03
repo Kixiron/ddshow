@@ -147,6 +147,8 @@ pub fn connect_to_sources(
         None
     };
 
+    let mut indices = (0..args.workers.get()).cycle();
+
     // Connect to the timely sources
     let (timely_event_receivers, are_timely_sources, num_sources) = acquire_replay_sources(
         args,
@@ -157,6 +159,7 @@ pub fn connect_to_sources(
         args.replay_logs.as_deref(),
         TIMELY_LOG_FILE,
         "Timely",
+        &mut indices,
     )?;
     total_sources += num_sources;
 
@@ -171,6 +174,7 @@ pub fn connect_to_sources(
             args.replay_logs.as_deref(),
             DIFFERENTIAL_ARRANGEMENT_LOG_FILE,
             "Differential",
+            &mut indices,
         )?;
         total_sources += num_sources;
 
@@ -190,6 +194,7 @@ pub fn connect_to_sources(
             args.replay_logs.as_deref(),
             TIMELY_PROGRESS_LOG_FILE,
             "Progress",
+            &mut indices,
         )?;
         total_sources += num_sources;
 
@@ -220,9 +225,9 @@ pub fn connect_to_sources(
 }
 
 /// Connect to and prepare the replay sources
-#[tracing::instrument(skip(args))]
+#[tracing::instrument(skip(args, indices))]
 #[allow(clippy::too_many_arguments)]
-pub fn acquire_replay_sources<T, D1, D2>(
+pub fn acquire_replay_sources<T, D1, D2, I>(
     args: &Args,
     address: SocketAddr,
     listener: Option<TcpListener>,
@@ -231,6 +236,7 @@ pub fn acquire_replay_sources<T, D1, D2>(
     log_dirs: Option<&[PathBuf]>,
     file_prefix: &str,
     target: &str,
+    indices: &mut I,
 ) -> Result<(AcquiredStreams<T, D1, D2>, bool, usize)>
 where
     Event<T, D2>: Clone,
@@ -239,6 +245,7 @@ where
     T::Archived: Deserialize<T, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
     D1: Debug + Archive + Send + 'static,
     D1::Archived: Deserialize<D1, SharedDeserializeMap> + for<'a> CheckBytes<DefaultValidator<'a>>,
+    I: Iterator<Item = usize>,
 {
     let mut num_sources = 0;
 
@@ -438,7 +445,7 @@ where
     };
 
     let are_replay_sources = !replay_sources.is_empty();
-    let event_receivers = make_streams(workers.get(), replay_sources)?;
+    let event_receivers = make_streams(workers.get(), replay_sources, indices)?;
 
     Ok((event_receivers, are_replay_sources, num_sources))
 }
@@ -446,16 +453,20 @@ where
 pub type EventReceivers<R, A> = Arc<[Receiver<ReplaySource<R, A>>]>;
 
 #[tracing::instrument(
-    skip(sources),
+    skip(sources, indices),
     fields(
         num_sources = sources.len(),
         source_kind = sources.kind(),
     ),
 )]
-pub fn make_streams<R, A>(
+pub fn make_streams<R, A, I>(
     num_workers: usize,
     sources: ReplaySource<R, A>,
-) -> Result<EventReceivers<R, A>> {
+    indices: &mut I,
+) -> Result<EventReceivers<R, A>>
+where
+    I: Iterator<Item = usize>,
+{
     let readers: Vec<_> = match sources {
         ReplaySource::Rkyv(rkyv) => {
             let mut readers = Vec::with_capacity(num_workers);
@@ -468,8 +479,8 @@ pub fn make_streams<R, A>(
                 rkyv.len() / num_workers,
             );
 
-            for (idx, source) in rkyv.into_iter().enumerate() {
-                readers[idx % num_workers].push(source);
+            for source in rkyv {
+                readers[indices.next().unwrap()].push(source);
             }
 
             readers.into_iter().map(ReplaySource::Rkyv).collect()
@@ -486,8 +497,8 @@ pub fn make_streams<R, A>(
                 abomonation.len() / num_workers,
             );
 
-            for (idx, source) in abomonation.into_iter().enumerate() {
-                readers[idx % num_workers].push(source);
+            for source in abomonation {
+                readers[indices.next().unwrap()].push(source);
             }
 
             readers.into_iter().map(ReplaySource::Abomonation).collect()
@@ -667,6 +678,8 @@ pub fn wait_for_input(
     args: &Args,
     running: &AtomicBool,
     workers_finished: &AtomicUsize,
+    replays_finished: &AtomicUsize,
+    total_replays: usize,
     worker_guards: WorkerGuards<Result<()>>,
     receivers: DataflowReceivers,
 ) -> Result<DataflowData> {
@@ -687,7 +700,13 @@ pub fn wait_for_input(
     );
     let num_threads = worker_guards.guards().len();
 
+    // let progress = ProgressBar::with_draw_target(1, ProgressDrawTarget::hidden())
+    //     .with_style(ProgressStyle::default_bar())
+    //     .with_message("Processing data...");
+
     loop {
+        // progress.tick();
+
         // If all workers finish their computations
         if workers_finished.load(Ordering::Acquire) == num_threads {
             tracing::info!(
@@ -711,6 +730,10 @@ pub fn wait_for_input(
 
             break;
         }
+
+        // if replays_finished.load(Ordering::Relaxed) == total_replays {
+        //     // progress.set_draw_target(ProgressDrawTarget::stdout());
+        // }
 
         // After we've checked all of our exit conditions we can pull some
         // data from out of the target dataflow

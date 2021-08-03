@@ -20,13 +20,15 @@ use differential_dataflow::{
 };
 use indicatif::ProgressBar;
 use std::{
+    any::Any,
     convert::TryFrom,
     fs::{self, File},
     hash::BuildHasherDefault,
     io::BufWriter,
     num::Wrapping,
-    ops::Range,
+    ops::{Deref, DerefMut, Range},
     path::{Path, PathBuf},
+    thread::{self, JoinHandle},
     time::{Duration, SystemTime},
 };
 use timely::{
@@ -62,14 +64,12 @@ pub type ReachabilityLogBundle<Id = WorkerId> = (Duration, Id, TrackerEvent);
 /// to reduce the load on timely
 pub(crate) fn granulate(&time: &Time) -> Time {
     let timestamp = time.as_nanos();
-    let window_idx = (timestamp / PROGRAM_NS_GRANULARITY) + 1;
+    let window_idx = (timestamp / PROGRAM_NS_GRANULARITY).saturating_add(1);
+    let minted = Duration::from_nanos((window_idx * PROGRAM_NS_GRANULARITY.get()) as u64);
 
-    let minted = Duration::from_nanos((window_idx * PROGRAM_NS_GRANULARITY) as u64);
-    debug_assert_eq!(
-        u64::try_from(window_idx * PROGRAM_NS_GRANULARITY).map(|res| res as u128),
-        Ok(window_idx * PROGRAM_NS_GRANULARITY),
-    );
-
+    debug_assert!(u64::try_from(window_idx * PROGRAM_NS_GRANULARITY.get())
+        .map(|res| res as u128)
+        .is_ok());
     debug_assert!(time.less_equal(&minted));
 
     minted
@@ -259,5 +259,65 @@ impl Pcg64 {
 
     pub fn gen_range(&mut self, range: Range<u64>) -> u64 {
         range.start + self.next_u64() % (range.end - range.start)
+    }
+}
+
+#[derive(Debug)]
+pub struct JoinOnDrop<T>(Option<JoinHandle<T>>);
+
+impl<T> JoinOnDrop<T> {
+    pub const fn new(handle: JoinHandle<T>) -> Self {
+        Self(Some(handle))
+    }
+
+    #[inline]
+    pub fn unpark(&self) {
+        self.thread().unpark();
+    }
+
+    #[allow(dead_code)]
+    pub fn into_handle(mut self) -> JoinHandle<T> {
+        self.0
+            .take()
+            .expect("the handle will always exist while the struct does")
+    }
+}
+
+impl<T> Deref for JoinOnDrop<T> {
+    type Target = JoinHandle<T>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+            .as_ref()
+            .expect("the handle will always exist while the struct does")
+    }
+}
+
+impl<T> DerefMut for JoinOnDrop<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+            .as_mut()
+            .expect("the handle will always exist while the struct does")
+    }
+}
+
+impl<T> Drop for JoinOnDrop<T> {
+    fn drop(&mut self) {
+        #[cold]
+        #[track_caller]
+        #[inline(never)]
+        fn cold_panic(err: Box<dyn Any>) -> ! {
+            panic!("failed to join thread on drop: {:?}", err)
+        }
+
+        if let Some(handle) = self.0.take() {
+            tracing::debug!("joining a thread handle on drop");
+
+            if let Err(err) = handle.join() {
+                if !thread::panicking() {
+                    cold_panic(err);
+                }
+            }
+        }
     }
 }

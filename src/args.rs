@@ -162,7 +162,7 @@ impl Args {
         };
         let mut worker_config = WorkerConfig::default();
 
-        let differential_config = DifferentialConfig::default().idle_merge_effort(Some(1000));
+        let differential_config = DifferentialConfig::default().idle_merge_effort(None);
         differential_dataflow::configure(&mut worker_config, &differential_config);
 
         // TODO: Implement `Debug` for `timely::Config`

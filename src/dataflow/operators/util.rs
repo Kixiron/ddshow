@@ -132,7 +132,7 @@ where
             // to keep our memory usage from exploding. This is overly
             // aggressive but there's not an alternative until `.shrink_to()`
             // stabilizes.
-            if sink.capacity() > sink.len() * 4 {
+            if sink.capacity() > sink.len() * 2 {
                 sink.shrink_to_fit();
             }
         }
@@ -247,8 +247,19 @@ impl Fuel {
 }
 
 macro_rules! located {
+    ($name:expr, $caller:expr) => {{
+        let caller: &::core::panic::Location = $caller;
+        ::std::format!(
+            "{} @ {}:{}:{}",
+            $name,
+            caller.file(),
+            caller.line(),
+            caller.column(),
+        )
+    }};
+
     ($name:expr) => {{
-        let caller = ::std::panic::Location::caller();
+        let caller = ::core::panic::Location::caller();
         ::std::format!(
             "{} @ {}:{}:{}",
             $name,

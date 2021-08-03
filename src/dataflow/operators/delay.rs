@@ -1,6 +1,7 @@
 use crate::dataflow::utils::XXHasher;
 use differential_dataflow::{consolidation, difference::Semigroup, AsCollection, Collection, Data};
 use std::{
+    cmp::Reverse,
     collections::{BinaryHeap, HashMap},
     panic::Location,
 };
@@ -35,35 +36,114 @@ where
     where
         F: FnMut(&S::Timestamp) -> S::Timestamp + Clone + 'static,
     {
-        let name = located!("Delay");
+        let caller = Location::caller();
+        let name = located!("Delay", caller);
 
         let mut elements = HashMap::with_hasher(XXHasher::default());
         let mut idle_buffers = Vec::new();
+        let mut dirty = BinaryHeap::new();
 
         self.unary_notify(Pipeline, &name, None, move |input, output, notificator| {
             input.for_each(|time, data| {
                 let mut buffer = idle_buffers.pop().unwrap_or_default();
                 data.swap(&mut buffer);
+                buffer.shrink_to_fit();
 
                 let new_time = delay(&time);
                 debug_assert!(time.time().less_equal(&new_time));
 
                 notificator.notify_at(time.delayed(&new_time));
                 elements
-                    .entry(new_time)
+                    .entry(new_time.clone())
                     .or_insert_with(TinyVec::<[_; 16]>::new)
                     .push(buffer);
+                dirty.push(Reverse(new_time));
             });
 
+            if let Some(Reverse(dirty_time)) = dirty.pop() {
+                // TODO: Maybe remove the entry if it has no update vectors in it?
+                if let Some(updates) = elements.get_mut(&dirty_time) {
+                    let largest_buf = updates
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, buf)| (idx, buf.capacity()))
+                        .max_by_key(|&(_, cap)| cap)
+                        .map(|(idx, _)| idx);
+
+                    if let Some(mut consolidated) = largest_buf.map(|idx| updates.remove(idx)) {
+                        // Reserve the required space to combine all the buffers
+                        consolidated.reserve(updates.iter().map(|updates| updates.len()).sum());
+
+                        // FIXME: A k-way merge would be more efficient
+                        for mut updates in updates.drain(..) {
+                            consolidated.extend(updates.drain(..));
+
+                            if idle_buffers.len() < 128 {
+                                // Give the freshly empty buffer back to the list of
+                                // idle buffers we maintain
+                                idle_buffers.push(updates);
+                            }
+                        }
+
+                        // Skip pushing the consolidated vector if it's empty
+                        if !consolidated.is_empty() {
+                            consolidated.shrink_to_fit();
+                            updates.push(consolidated);
+                        }
+                    }
+
+                    updates.shrink_to_fit();
+                }
+            }
+
             // for each available notification, send corresponding set
-            notificator.for_each(|time, _, _| {
+            notificator.for_each(|time, notifications, notificator| {
+                tracing::trace!(
+                    target: "delay_frontiers",
+                    notify_time = ?time.time(),
+                    frontier = ?notificator.frontier(0),
+                    notifications,
+                    "DelayFast @ {}:{}:{}",
+                    caller.file(),
+                    caller.line(),
+                    caller.column(),
+                );
+
                 if let Some(data) = elements.remove(&time) {
+                    tracing::trace!(
+                        target: "delay_notifs",
+                        stream_kind = "stream",
+                        in_flight_elements = elements.len(),
+                        "activated at {:?} to deliver {} messages",
+                        time,
+                        data.iter().map(|buf| buf.len()).sum::<usize>(),
+                    );
+
+                    let mut session = output.session(&time);
                     for mut buffer in data.into_iter() {
-                        output.session(&time).give_vec(&mut buffer);
-                        idle_buffers.push(buffer);
+                        session.give_vec(&mut buffer);
+
+                        if idle_buffers.len() < 128 {
+                            idle_buffers.push(buffer);
+                        }
                     }
                 }
             });
+
+            if dirty.capacity() > dirty.len() * 2 {
+                dirty.shrink_to_fit();
+            }
+
+            elements.retain(|_, buf| !buf.is_empty());
+            if elements.capacity() > elements.len() * 2 {
+                elements.shrink_to_fit();
+            }
+
+            idle_buffers.retain(|buf| buf.len() >= 16 && buf.len() <= 1024);
+            idle_buffers.truncate(128);
+            if idle_buffers.capacity() > idle_buffers.len() * 2 {
+                idle_buffers.shrink_to_fit();
+            }
         })
     }
 }
@@ -84,7 +164,7 @@ where
         F: FnMut(&S::Timestamp) -> S::Timestamp + Clone + 'static,
     {
         let caller = Location::caller();
-        let name = located!("Delay");
+        let name = located!("Delay", caller);
 
         let mut elements = HashMap::with_hasher(XXHasher::default());
         let mut idle_buffers = Vec::new();
@@ -128,23 +208,25 @@ where
                         *differential_time = new_time;
                     }
 
+                    buffer.shrink_to_fit();
                     notificator.notify_at(time.delayed(&stream_time));
                     elements
                         .entry(stream_time.clone())
                         .or_insert_with(TinyVec::<[_; 16]>::new)
                         .push(buffer);
-                    dirty.push(stream_time);
+                    dirty.push(Reverse(stream_time));
                 });
 
                 // Perform some cleanup on the data we have just sitting around
                 compact_delayed_buffers(&mut dirty, &mut elements, &mut idle_buffers);
 
                 // for each available notification, send corresponding set
-                notificator.for_each(|time, _, notificator| {
+                notificator.for_each(|time, notifications, notificator| {
                     tracing::trace!(
                         target: "delay_frontiers",
                         notify_time = ?time.time(),
                         frontier = ?notificator.frontier(0),
+                        notifications,
                         "DelayFast @ {}:{}:{}",
                         caller.file(),
                         caller.line(),
@@ -152,21 +234,40 @@ where
                     );
 
                     if let Some(mut buffers) = elements.remove(&time) {
-                        for mut data in buffers.drain(..) {
-                            output.session(&time).give_vec(&mut data);
+                        tracing::trace!(
+                            target: "delay_notifs",
+                            stream_kind = "collection",
+                            in_flight_elements = elements.len(),
+                            "activated at {:?} to deliver {} messages",
+                            time,
+                            buffers.iter().map(|buf| buf.len()).sum::<usize>(),
+                        );
 
-                            // Give the freshly empty buffer back to the list of
-                            // idle buffers we maintain
-                            idle_buffers.push(data);
+                        let mut session = output.session(&time);
+                        for mut data in buffers.drain(..) {
+                            session.give_vec(&mut data);
+
+                            if idle_buffers.len() < 128 {
+                                // Give the freshly empty buffer back to the list of
+                                // idle buffers we maintain
+                                idle_buffers.push(data);
+                            }
                         }
                     }
                 });
 
-                if elements.capacity() > elements.len() * 4 {
+                if dirty.capacity() > dirty.len() * 2 {
+                    dirty.shrink_to_fit();
+                }
+
+                elements.retain(|_, buf| !buf.is_empty());
+                if elements.capacity() > elements.len() * 2 {
                     elements.shrink_to_fit();
                 }
 
-                if idle_buffers.capacity() > idle_buffers.len() * 4 {
+                idle_buffers.retain(|buf| buf.len() >= 16 && buf.len() <= 1024);
+                idle_buffers.truncate(128);
+                if idle_buffers.capacity() > idle_buffers.len() * 2 {
                     idle_buffers.shrink_to_fit();
                 }
             })
@@ -176,7 +277,7 @@ where
 
 /// Consolidate updates within their timestamp
 fn compact_delayed_buffers<T, D, R>(
-    dirty: &mut BinaryHeap<T>,
+    dirty: &mut BinaryHeap<Reverse<T>>,
     elements: &mut HashMap<T, Element<T, D, R>, XXHasher>,
     idle_buffers: &mut Vec<Vec<(D, T, R)>>,
 ) where
@@ -185,34 +286,40 @@ fn compact_delayed_buffers<T, D, R>(
     R: Semigroup,
 {
     // TODO: Maybe add an actual fuel mechanism?
-    for _ in 0..50 {
-        if let Some(dirty_time) = dirty.pop() {
-            // TODO: Maybe remove the entry if it has no update vectors in it?
-            if let Some(updates) = elements.get_mut(&dirty_time) {
-                if let Some(mut consolidated) = updates.pop() {
-                    // Reserve the required space to combine all the buffers
-                    consolidated.reserve(updates.iter().map(|updates| updates.len()).sum());
 
-                    // FIXME: A k-way merge would be more efficient
-                    for mut updates in updates.drain(..) {
-                        consolidated.extend(updates.drain(..));
+    if let Some(Reverse(dirty_time)) = dirty.pop() {
+        // TODO: Maybe remove the entry if it has no update vectors in it?
+        if let Some(updates) = elements.get_mut(&dirty_time) {
+            let largest_buf = updates
+                .iter()
+                .enumerate()
+                .map(|(idx, buf)| (idx, buf.capacity()))
+                .max_by_key(|&(_, cap)| cap)
+                .map(|(idx, _)| idx);
 
+            if let Some(mut consolidated) = largest_buf.map(|idx| updates.remove(idx)) {
+                // Reserve the required space to combine all the buffers
+                consolidated.reserve(updates.iter().map(|updates| updates.len()).sum());
+
+                // FIXME: A k-way merge would be more efficient
+                for mut updates in updates.drain(..) {
+                    consolidated.extend(updates.drain(..));
+
+                    if idle_buffers.len() < 128 {
                         // Give the freshly empty buffer back to the list of
                         // idle buffers we maintain
                         idle_buffers.push(updates);
                     }
+                }
 
-                    // Compact the updates within the newly filled vector
-                    consolidation::consolidate_updates(&mut consolidated);
+                // Compact the updates within the newly filled vector
+                consolidation::consolidate_updates(&mut consolidated);
 
-                    // Skip pushing the consolidated vector if it's empty
-                    if !consolidated.is_empty() {
-                        updates.push(consolidated);
-                    }
+                // Skip pushing the consolidated vector if it's empty
+                if !consolidated.is_empty() {
+                    updates.push(consolidated);
                 }
             }
-        } else {
-            break;
         }
     }
 }
@@ -222,6 +329,7 @@ mod tests {
     use super::compact_delayed_buffers;
     use crate::dataflow::utils::XXHasher;
     use std::{
+        cmp::Reverse,
         collections::{BinaryHeap, HashMap},
         time::Duration,
     };
@@ -230,9 +338,9 @@ mod tests {
     #[test]
     fn buffers_are_compacted() {
         let mut dirty = BinaryHeap::new();
-        dirty.push(Duration::from_secs(10));
-        dirty.push(Duration::from_secs(20));
-        dirty.push(Duration::from_secs(6));
+        dirty.push(Reverse(Duration::from_secs(10)));
+        dirty.push(Reverse(Duration::from_secs(20)));
+        dirty.push(Reverse(Duration::from_secs(6)));
 
         let mut elements = HashMap::with_hasher(XXHasher::default());
         elements.insert(
@@ -274,6 +382,9 @@ mod tests {
 
         let mut idle_buffers = Vec::new();
 
+        compact_delayed_buffers(&mut dirty, &mut elements, &mut idle_buffers);
+        compact_delayed_buffers(&mut dirty, &mut elements, &mut idle_buffers);
+        compact_delayed_buffers(&mut dirty, &mut elements, &mut idle_buffers);
         compact_delayed_buffers(&mut dirty, &mut elements, &mut idle_buffers);
 
         let mut expected = HashMap::with_hasher(XXHasher::default());
@@ -318,7 +429,7 @@ mod tests {
     #[test]
     fn single_buffer_in_element() {
         let mut dirty = BinaryHeap::new();
-        dirty.push(Duration::from_secs(10));
+        dirty.push(Reverse(Duration::from_secs(10)));
 
         let mut elements = HashMap::with_hasher(XXHasher::default());
         elements.insert(
@@ -344,7 +455,7 @@ mod tests {
     #[test]
     fn dirty_doesnt_exist() {
         let mut dirty = BinaryHeap::new();
-        dirty.push(Duration::from_secs(30));
+        dirty.push(Reverse(Duration::from_secs(30)));
 
         let mut elements = HashMap::with_hasher(XXHasher::default());
         elements.insert(
@@ -378,7 +489,7 @@ mod tests {
     #[test]
     fn single_buffer_in_element_consolidates() {
         let mut dirty = BinaryHeap::new();
-        dirty.push(Duration::from_secs(10));
+        dirty.push(Reverse(Duration::from_secs(10)));
 
         let mut elements = HashMap::with_hasher(XXHasher::default());
         elements.insert(
