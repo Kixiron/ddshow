@@ -71,15 +71,16 @@ fn main() -> Result<()> {
         timely_event_receivers,
         differential_event_receivers,
         progress_event_receivers,
-        _total_sources,
+        total_sources,
     ) = if let Some(sources) = connect_to_sources(&args)? {
         sources
     } else {
         return Ok(());
     };
 
-    let (running, workers_finished, progress_bars) = (
+    let (running, workers_finished, replays_finished, progress_bars) = (
         Arc::new(AtomicBool::new(true)),
+        Arc::new(AtomicUsize::new(0)),
         Arc::new(AtomicUsize::new(0)),
         Arc::new(MultiProgress::new()),
     );
@@ -89,8 +90,12 @@ fn main() -> Result<()> {
         ProgressDrawTarget::stdout()
     });
 
-    let (replay_shutdown, moved_args, moved_workers_finished) =
-        (running.clone(), args.clone(), workers_finished.clone());
+    let (replay_shutdown, moved_replays_finished, moved_args, moved_workers_finished) = (
+        running.clone(),
+        replays_finished.clone(),
+        args.clone(),
+        workers_finished.clone(),
+    );
 
     let ctrlc_running = running.clone();
     ctrlc::set_handler(move || {
@@ -144,6 +149,7 @@ fn main() -> Result<()> {
                 senders.clone(),
                 replay_shutdown.clone(),
                 moved_workers_finished.clone(),
+                moved_replays_finished.clone(),
                 progress_bars.clone(),
                 timely_traces,
                 differential_traces,
@@ -153,7 +159,15 @@ fn main() -> Result<()> {
         .map_err(|err| anyhow::anyhow!("failed to start up timely computation: {}", err))?;
 
     // Wait for the user's prompt
-    let mut data = wait_for_input(&args, &running, &workers_finished, worker_guards, receivers)?;
+    let mut data = wait_for_input(
+        &args,
+        &running,
+        &workers_finished,
+        &replays_finished,
+        total_sources,
+        worker_guards,
+        receivers,
+    )?;
 
     let dataflow_elapsed = dataflow_start_time.elapsed();
     tracing::info!(

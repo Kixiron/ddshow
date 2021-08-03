@@ -354,6 +354,7 @@ dependencies = [
  "colorous",
  "comfy-table",
  "crossbeam-channel 0.5.1",
+ "crossbeam-deque",
  "ctrlc",
  "ddshow-sink",
  "ddshow-types",

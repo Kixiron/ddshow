@@ -2,6 +2,7 @@ use crate::{
     args::Args,
     dataflow::{
         self,
+        constants::FILE_SOURCED_FUEL,
         operators::{EventIterator, Fuel, InspectExt, ReplayWithShutdown},
         utils::{self, Time},
         DataflowSenders,
@@ -20,7 +21,6 @@ use differential_dataflow::{logging::DifferentialEvent as RawDifferentialEvent, 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressFinish, ProgressStyle};
 use std::{
     fmt::Debug,
-    num::NonZeroUsize,
     panic::Location,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -31,7 +31,10 @@ use std::{
 };
 use timely::{
     communication::Allocate,
-    dataflow::{operators::Map, Scope, Stream},
+    dataflow::{
+        operators::{Filter, Map},
+        ProbeHandle, Scope, Stream,
+    },
     logging::TimelyEvent as RawTimelyEvent,
     worker::Worker,
 };
@@ -44,6 +47,7 @@ pub fn worker_runtime<A>(
     senders: DataflowSenders,
     replay_shutdown: Arc<AtomicBool>,
     workers_finished: Arc<AtomicUsize>,
+    replays_finished: Arc<AtomicUsize>,
     multi_progress: Arc<MultiProgress>,
     timely_traces: TimelyReplaySource,
     differential_traces: Option<DifferentialReplaySource>,
@@ -123,10 +127,8 @@ where
         //       prompts are accurate to the user? Does that matter
         //       enough to take precedence over the possible performance
         //       impact? (is there a perf impact?)
-        let fuel = if false
-        /* args.is_file_sourced() */
-        {
-            Fuel::limited(NonZeroUsize::new(100_000_000).unwrap())
+        let fuel = if args.is_file_sourced() {
+            Fuel::limited(FILE_SOURCED_FUEL)
 
         // If the dataflow is being sourced from a running program,
         // take as many events as we possibly can so that we don't
@@ -151,6 +153,7 @@ where
                 &args,
                 timely_traces,
                 replay_shutdown.clone(),
+                replays_finished.clone(),
                 fuel.clone(),
                 &multi_progress,
                 "Timely",
@@ -168,13 +171,15 @@ where
                     &args,
                     traces,
                     replay_shutdown.clone(),
+                    replays_finished.clone(),
                     fuel.clone(),
                     &multi_progress,
                     "Differential",
                     &mut progress_bars,
                     &mut source_counter,
                     total_sources,
-                );
+                )
+                .filter(|(_, _, event)| !event.is_trace_share());
 
                 Some(stream)
             } else {
@@ -195,6 +200,7 @@ where
                     &args,
                     traces,
                     replay_shutdown.clone(),
+                    replays_finished.clone(),
                     fuel.clone(),
                     &multi_progress,
                     "Progress",
@@ -273,12 +279,12 @@ where
         bar.finish_using_style();
     }
 
-    let total_finished = workers_finished.fetch_add(1, Ordering::Release);
     tracing::info!(
+        workers_finished = workers_finished.fetch_add(1, Ordering::Release),
         "timely worker {}/{} finished ({}/{} workers have finished)",
         worker.index() + 1,
         args.workers,
-        total_finished,
+        workers_finished.fetch_add(1, Ordering::Release),
         args.workers,
     );
 
@@ -292,6 +298,7 @@ fn replay_traces<S, Event, RawEvent, R, A>(
     args: &Args,
     traces: ReplaySource<R, A>,
     replay_shutdown: Arc<AtomicBool>,
+    replays_finished: Arc<AtomicUsize>,
     fuel: Fuel,
     multi_progress: &MultiProgress,
     source: &'static str,
@@ -301,10 +308,10 @@ fn replay_traces<S, Event, RawEvent, R, A>(
 ) -> Stream<S, (Duration, WorkerId, Event)>
 where
     S: Scope<Timestamp = Time>,
-    Event: Data + From<RawEvent>,
-    RawEvent: Debug + Clone + 'static,
-    R: EventIterator<Duration, (Duration, WorkerId, Event)> + 'static,
-    A: EventIterator<Duration, (Duration, usize, RawEvent)> + 'static,
+    Event: Data + From<RawEvent> + Send,
+    RawEvent: Debug + Clone + Send + 'static,
+    R: EventIterator<Duration, (Duration, WorkerId, Event)> + Send + 'static,
+    A: EventIterator<Duration, (Duration, usize, RawEvent)> + Send + 'static,
 {
     let caller = Location::caller();
     let name = format!(
@@ -372,13 +379,25 @@ where
         ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
             &name,
             scope,
+            // TODO: Implement this
+            ProbeHandle::new(),
             replay_shutdown,
+            replays_finished,
             fuel,
             Some(progress),
         ),
 
         ReplaySource::Abomonation(abomonation) => abomonation
-            .replay_with_shutdown_into_named(&name, scope, replay_shutdown, fuel, Some(progress))
+            .replay_with_shutdown_into_named(
+                &name,
+                scope,
+                // TODO: Implement this
+                ProbeHandle::new(),
+                replay_shutdown,
+                replays_finished,
+                fuel,
+                Some(progress),
+            )
             .map(|(time, worker, event): (Duration, usize, RawEvent)| {
                 (time, WorkerId::new(worker), Event::from(event))
             }),

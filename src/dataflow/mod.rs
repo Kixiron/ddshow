@@ -54,8 +54,7 @@ use differential_dataflow::{
     trace::TraceReader,
     AsCollection, Collection, ExchangeData,
 };
-use std::iter;
-use std::time::Duration;
+use std::{iter, time::Duration};
 use timely::{
     dataflow::{
         operators::{generic::operator, probe::Handle as ProbeHandle},
@@ -88,9 +87,90 @@ pub fn dataflow<S>(
 where
     S: Scope<Timestamp = Time>,
 {
-    let timely_delayed = timely_stream.delay_fast(granulate);
+    // {
+    //     use ddshow_sink::TIMELY_LOGGER_NAME;
+    //     use std::{
+    //         collections::HashMap,
+    //         io::{self, Write},
+    //         time::Instant,
+    //     };
+    //     use timely::logging::{StartStop, TimelyEvent as RawTimelyEvent};
+    //
+    //     let mut names = HashMap::new();
+    //     let mut totals = HashMap::new();
+    //     let mut activations = HashMap::new();
+    //     let mut last_time = Instant::now();
+    //
+    //     scope
+    //         .log_register()
+    //         .insert::<RawTimelyEvent, _>(TIMELY_LOGGER_NAME, move |_time, data| {
+    //             for (time, worker, event) in data.drain(..) {
+    //                 match event {
+    //                     RawTimelyEvent::Operates(operates) => {
+    //                         if let Some(old) = names.insert((worker, operates.id), operates.name) {
+    //                             println!(
+    //                                 "displaced name: worker {}, operator {}, '{}'",
+    //                                 worker, operates.id, old,
+    //                             );
+    //                         }
+    //                     }
+    //
+    //                     RawTimelyEvent::Schedule(schedule) => match schedule.start_stop {
+    //                         StartStop::Start => {
+    //                             activations.insert((worker, schedule.id), time);
+    //                         }
+    //                         StartStop::Stop => {
+    //                             if let Some(start_time) = activations.remove(&(worker, schedule.id))
+    //                             {
+    //                                 let elapsed = time - start_time;
+    //
+    //                                 totals
+    //                                     .entry((worker, schedule.id))
+    //                                     .and_modify(|duration| *duration += elapsed)
+    //                                     .or_insert(elapsed);
+    //                             }
+    //                         }
+    //                     },
+    //
+    //                     RawTimelyEvent::Channels(_)
+    //                     | RawTimelyEvent::PushProgress(_)
+    //                     | RawTimelyEvent::Messages(_)
+    //                     | RawTimelyEvent::Shutdown(_)
+    //                     | RawTimelyEvent::Application(_)
+    //                     | RawTimelyEvent::GuardedMessage(_)
+    //                     | RawTimelyEvent::GuardedProgress(_)
+    //                     | RawTimelyEvent::CommChannels(_)
+    //                     | RawTimelyEvent::Input(_)
+    //                     | RawTimelyEvent::Park(_)
+    //                     | RawTimelyEvent::Text(_) => {}
+    //                 }
+    //             }
+    //
+    //             {
+    //                 let stdout = io::stdout();
+    //                 let mut stdout = stdout.lock();
+    //
+    //                 writeln!(&mut stdout, "{:#?} {{", last_time.elapsed()).unwrap();
+    //                 for (&(worker, operator), &total) in totals.iter() {
+    //                     let name = names.get(&(worker, operator)).unwrap();
+    //
+    //                     writeln!(
+    //                         &mut stdout,
+    //                         "    worker {}, operator {}, '{}': {:#?}",
+    //                         worker, operator, name, total,
+    //                     )
+    //                     .unwrap();
+    //                 }
+    //                 writeln!(&mut stdout, "}}").unwrap();
+    //
+    //                 stdout.flush().unwrap();
+    //             }
+    //         });
+    // }
+
+    let timely_delayed = timely_stream.delay_fast(granulate); // .delay_batch(granulate);
     let differential_delayed =
-        differential_stream.map(|differential| differential.delay_fast(granulate));
+        differential_stream.map(|differential| differential.delay_fast(granulate)); // .delay_batch(granulate));
 
     let (
         operator_lifespans,
@@ -108,7 +188,7 @@ where
         channel_scopes,
         dataflow_ids,
         timeline_events,
-    ) = timely_source::extract_timely_info(scope, &timely_delayed, args.disable_timeline);
+    ) = timely_source::extract_timely_info(scope, timely_stream, args.disable_timeline);
 
     let OperatorStatsRelations {
         summarized,

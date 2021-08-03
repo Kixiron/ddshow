@@ -1,7 +1,8 @@
 use crate::{
     dataflow::{
-        operators::Fuel,
-        utils::{Time, XXHasher},
+        constants::FILE_SOURCED_FUEL,
+        operators::{DelayExt, Fuel},
+        utils::{granulate, Time, XXHasher},
         worker_timeline::{process_timely_event, EventMap, EventProcessor},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelineEvent,
         TimelyLogBundle, WorkerId,
@@ -94,9 +95,7 @@ impl Ord for WorkItem {
 
 impl PartialOrd for WorkItem {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.capabilities
-            .time()
-            .partial_cmp(&other.capabilities.time())
+        Some(self.capabilities.time().cmp(&other.capabilities.time()))
     }
 }
 
@@ -159,7 +158,7 @@ where
 
     let mut work_list = BinaryHeap::new();
     let mut work_list_buffers = Vec::new();
-    let mut fuel = Fuel::unlimited(); // Fuel::limited(IDLE_EXTRACTION_FUEL);
+    let mut fuel = Fuel::limited(FILE_SOURCED_FUEL);
 
     builder.build(move |_| {
         move |frontiers| {
@@ -286,7 +285,11 @@ fn work_loop(
             mut capabilities,
         })) = work_list.pop()
         {
-            tracing::trace!(target: "timely_source_work_loop", time = ?capabilities.time());
+            tracing::trace!(
+                target: "timely_source_work_loop",
+                time = ?capabilities.time(),
+                peek = ?work_list.peek().map(|item| item.0.capabilities.time()),
+            );
             fuel.exert(buffer.len());
 
             for (time, worker, event) in buffer.drain(..) {
@@ -340,7 +343,7 @@ fn work_loop(
     // Keep our memory usage somewhat under control
     // TODO: Factor out into a function or method
     {
-        if lifespan_map.capacity() >= 128 && lifespan_map.capacity() > lifespan_map.len() * 4 {
+        if lifespan_map.capacity() >= 128 && lifespan_map.capacity() > lifespan_map.len() * 2 {
             tracing::trace!(
                 "shrank lifespan map from a capacity of {} to {}",
                 lifespan_map.capacity(),
@@ -350,7 +353,7 @@ fn work_loop(
             lifespan_map.shrink_to_fit();
         }
 
-        if activation_map.capacity() >= 128 && activation_map.capacity() > activation_map.len() * 4
+        if activation_map.capacity() >= 128 && activation_map.capacity() > activation_map.len() * 2
         {
             tracing::trace!(
                 "shrank activation map from a capacity of {} to {}",
@@ -361,7 +364,7 @@ fn work_loop(
             activation_map.shrink_to_fit();
         }
 
-        if work_list.capacity() >= 128 && work_list.capacity() > work_list.len() * 4 {
+        if work_list.capacity() >= 128 && work_list.capacity() > work_list.len() * 2 {
             tracing::trace!(
                 "shrank work list from a capacity of {} to {}",
                 work_list.capacity(),
@@ -371,8 +374,10 @@ fn work_loop(
             work_list.shrink_to_fit();
         }
 
+        work_list_buffers.retain(|buf| buf.capacity() >= 16 && buf.capacity() <= 256);
+        work_list_buffers.truncate(128);
         if work_list_buffers.capacity() >= 128
-            && work_list_buffers.capacity() > work_list_buffers.len() * 4
+            && work_list_buffers.capacity() > work_list_buffers.len() * 2
         {
             tracing::trace!(
                 "shrank work list buffers from a capacity of {} to {}",
@@ -383,7 +388,7 @@ fn work_loop(
             work_list_buffers.shrink_to_fit();
         }
 
-        if event_map.capacity() >= 128 && event_map.capacity() > event_map.len() * 4 {
+        if event_map.capacity() >= 128 && event_map.capacity() > event_map.len() * 2 {
             tracing::trace!(
                 "shrank event map from a capacity of {} to {}",
                 event_map.capacity(),
@@ -393,7 +398,7 @@ fn work_loop(
             event_map.shrink_to_fit();
         }
 
-        if map_buffer.capacity() >= 128 && map_buffer.capacity() > map_buffer.len() * 4 {
+        if map_buffer.capacity() >= 128 && map_buffer.capacity() > map_buffer.len() * 2 {
             tracing::trace!(
                 "shrank map buffer from a capacity of {} to {}",
                 map_buffer.capacity(),
@@ -404,7 +409,8 @@ fn work_loop(
         }
 
         stack_buffer.retain(|buffer| buffer.capacity() >= 128);
-        if stack_buffer.capacity() >= 128 && stack_buffer.capacity() > stack_buffer.len() * 4 {
+        stack_buffer.truncate(128);
+        if stack_buffer.capacity() >= 128 && stack_buffer.capacity() > stack_buffer.len() * 2 {
             tracing::trace!(
                 "shrank stack buffer from a capacity of {} to {}",
                 stack_buffer.capacity(),
@@ -858,11 +864,16 @@ macro_rules! timely_source_processor {
     };
 
     (@as_collection $self:ident, $name:ident, $cond:ident) => {
-        $self.$name.map(|$name| $name.as_collection())
+        $self
+            .$name
+            .map(|$name| $name.as_collection().delay_fast(granulate))
     };
 
     (@as_collection $self:ident, $name:ident,) => {
-        $self.$name.as_collection()
+        $self
+            .$name
+            .as_collection()
+            .delay_fast(granulate)
     };
 }
 

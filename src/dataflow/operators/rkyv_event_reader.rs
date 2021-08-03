@@ -167,7 +167,7 @@ where
         }
 
         if let Ok(len) = self.reader.read(&mut self.bytes[..]) {
-            *bytes_read += 1;
+            *bytes_read += len;
             if len == 0 {
                 self.peer_finished = true;
             }
