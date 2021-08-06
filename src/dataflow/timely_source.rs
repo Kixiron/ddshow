@@ -32,33 +32,29 @@ pub(crate) struct TimelyCollections<S>
 where
     S: Scope<Timestamp = Time>,
 {
-    // Operator lifespans
+    /// Operator lifespans
     pub(crate) lifespans: Collection<S, (OpKey, Lifespan), Diff>,
-    // Operator activation times `(start, duration)`
+    /// Operator activation times `(start, duration)`
     pub(crate) activations: Collection<S, (OpKey, (Duration, Duration)), Diff>,
-    // Operator creation times
-    pub(crate) operator_creations: Collection<S, (OpKey, Duration), Diff>,
-    // Channel creation times
-    pub(crate) channel_creations: Collection<S, ((WorkerId, ChannelId), Duration), Diff>,
-    // Raw channel events
+    /// Raw channel events
     // TODO: Remove the need for this
     pub(crate) raw_channel_events: Collection<S, ChannelsEvent, Diff>,
-    // Raw operator events
+    /// Raw operator events
     // TODO: Remove the need for this
     pub(crate) raw_operator_events: Collection<S, OperatesEvent, Diff>,
-    // Operator names
+    /// Operator names
     pub(crate) operator_names: ArrangedVal<S, OpKey, String>,
-    // Operator ids to addresses
+    /// Operator ids to addresses
     pub(crate) operator_ids_to_addrs: ArrangedVal<S, OpKey, OperatorAddr>,
-    // Operator addresses to ids
+    /// Operator addresses to ids
     pub(crate) operator_addrs_to_ids: ArrangedVal<S, (WorkerId, OperatorAddr), OperatorId>,
-    // Operator addresses
+    /// Operator addresses
     pub(crate) operator_addrs: ArrangedKey<S, OperatorAddr>,
-    // Channel scope addresses
+    /// Channel scope addresses
     pub(crate) channel_scope_addrs: ArrangedVal<S, (WorkerId, ChannelId), OperatorAddr>,
-    // Dataflow operator ids
+    /// Dataflow operator ids
     pub(crate) dataflow_ids: ArrangedKey<S, OpKey>,
-    // Timely event data, will be `None` if timeline analysis is disabled
+    /// Timely event data, will be `None` if timeline analysis is disabled
     pub(crate) timeline_events: Option<Collection<S, TimelineEvent, Diff>>,
 }
 
@@ -99,19 +95,6 @@ where
             }
         })
         .debug_frontier_with("raw_operators")
-        .as_collection();
-
-    let operator_creations = only_operates_events
-        .filter_map_ref_timed_named(
-            "Operator Creations",
-            |&timestamp, &(time, worker, ref event)| match event {
-                TimelyEvent::Operates(operates) => {
-                    Some((((worker, operates.id), time), timestamp, 1))
-                }
-                _ => None,
-            },
-        )
-        .debug_frontier_with("operator_creations")
         .as_collection();
 
     let operator_names = only_operates_events
@@ -155,15 +138,14 @@ where
         .arrange_by_key_named("ArrangeByKey: Operator Ids to Addrs");
 
     let operator_addrs = only_operates_events
-        .filter_map_ref_timed_named(
-            "Operator Addrs by Self",
-            |&timestamp, &(_, worker, ref event)| match event {
+        .filter_map_ref_timed_named("Operator Addrs by Self", |&timestamp, (_, _, event)| {
+            match event {
                 TimelyEvent::Operates(operates) => {
                     Some(((operates.addr.clone(), ()), timestamp, 1))
                 }
                 _ => None,
-            },
-        )
+            }
+        })
         .as_collection()
         .debug_frontier_with("operator_addrs")
         // TODO: Distinct this or use `Present`
@@ -379,19 +361,6 @@ where
         .as_collection()
         .debug_frontier_with("raw_channels");
 
-    let channel_creations = only_channels_events
-        .filter_map_ref_timed_named(
-            "Channel Creations",
-            |&timestamp, &(time, worker, ref event)| match event {
-                TimelyEvent::Channels(channel) => {
-                    Some((((worker, channel.id), time), timestamp, 1))
-                }
-                _ => None,
-            },
-        )
-        .as_collection()
-        .debug_frontier_with("channel_creations");
-
     let channel_scope_addrs = only_channels_events
         .filter_map_ref_timed_named(
             "Channel Scope Addrs",
@@ -451,8 +420,6 @@ where
     TimelyCollections {
         lifespans: lifespans.leave_region(),
         activations: activations.leave_region(),
-        operator_creations: operator_creations.leave_region(),
-        channel_creations: channel_creations.leave_region(),
         raw_channel_events: raw_channels.leave_region(),
         raw_operator_events: raw_operators.leave_region(),
         operator_names: operator_names.leave_region(),
