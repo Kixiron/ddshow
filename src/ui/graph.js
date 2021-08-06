@@ -36,7 +36,6 @@
  * 
  * @typedef {{
  *     id: number;
- *     worker: number;
  *     addr: number[];
  *     name: string;
  *     max_activation_time: string;
@@ -55,7 +54,6 @@
  * 
  * @typedef {{
  *    id: number;
- *    worker: number;
  *    addr: number[];
  *    name: string;
  *    max_activation_time: string;
@@ -70,7 +68,6 @@
  * @typedef {{
  *     src: number[];
  *     dest: number[];
- *     worker: number;
  *     channel_id: number;
  *     edge_kind: EdgeKind;
  * }} Edge
@@ -92,15 +89,8 @@
  * @typedef {{ Merge: { operator_id: number } }} Merge
  * 
  * @typedef {{
- *     consumed: ProgressStats;
- *     produced: ProgressStats;
- *     channel_id: number;
- * }} ProgressInfo
- * 
- * @typedef {{
  *     id: number;
  *     addr: number[];
- *     worker: number;
  *     inputs: number[];
  *     outputs: number[];
  * }} OperatorShape
@@ -113,6 +103,17 @@
  * }} OperatorProgress
  * #}
  */
+
+// {#
+/** @type {any} */
+const d3 = undefined;
+/** @type {any} */
+const dagreD3 = undefined;
+/** @type {any} */
+const vega = undefined;
+/** @type {any} */
+const vegaEmbed = undefined;
+// #}
 
 /** @type {RawNode[]} */
 const raw_nodes = {{ nodes | json_encode() }};
@@ -132,10 +133,8 @@ const timeline_events = {{ timeline_events | json_encode() }};
 /** @type {OperatorShape[]} */
 const operator_shapes = {{ operator_shapes | json_encode() }};
 
-/** @type {OperatorProgress[]} */
-const operator_progress = {{ operator_progress | json_encode() }};
-
 const vega_data = {{ vega_data | json_encode() }};
+
 
 const dataflow_svg = d3.select("#dataflow-graph");
 const svg = dataflow_svg.append("g");
@@ -153,8 +152,6 @@ const render = new dagreD3.render();
 
 /** @type {Set<string>} */
 let error_nodes = new Set();
-/** @type {Set<number>} */
-let worker_ids = new Set();
 /** @type {Set<string>} */
 let operator_addrs = new Set();
 /** @type {Map<number, string>} */
@@ -194,8 +191,6 @@ const create_error_node = target_addr => {
 const slash_regexp = new RegExp("\\\\", "g");
 
 for (const subgraph of raw_subgraphs) {
-    worker_ids.add(subgraph.worker);
-
     const subgraph_name = subgraph.name;
     operator_names.set(subgraph.id, subgraph_name);
 
@@ -224,8 +219,6 @@ for (const subgraph of raw_subgraphs) {
 }
 
 for (const node of raw_nodes) {
-    worker_ids.add(node.worker);
-
     const node_name = node.name;
     operator_names.set(node.id, node_name);
 
@@ -269,25 +262,31 @@ for (const edge of raw_edges) {
     const src_id = format_addr(edge.src);
     const dest_id = format_addr(edge.dest);
 
-    if (!node_id_exists(src_id)) {
-        create_error_node(src_id);
-    }
-    if (!node_id_exists(dest_id)) {
-        create_error_node(dest_id);
-    }
+    if (edge.src.slice(0, edge.src.length - 1) !== edge.dest && edge.dest.slice(0, edge.dest.length - 1) !== edge.src) {
+        if (!node_id_exists(src_id)) {
+            create_error_node(src_id);
+        }
+        if (!node_id_exists(dest_id)) {
+            create_error_node(dest_id);
+        }
 
-    graph.setEdge(
-        src_id,
-        dest_id,
-        {
-            style: style,
-            data: { kind: "Edge", ...edge },
-        },
-    );
+        graph.setEdge(
+            src_id,
+            dest_id,
+            {
+                style: style,
+                data: { kind: "Edge", ...edge },
+            },
+        );
+    }
 }
 
 // Render the graph
-render(svg, graph);
+try {
+    render(svg, graph);
+} catch (err) {
+    console.error(`failed to render dataflow graph: ${err}`);
+}
 
 // Create the tooltip div
 const tooltip = d3.select("#dataflow-graph-div")
@@ -321,37 +320,6 @@ svg.selectAll("g.node")
                     min arrangement size: ${node.min_arrangement_size}`;
             }
 
-            /** @types {[number, number]} */
-            let operator_inputs = [];
-            /** @types {[number, number]} */
-            let operator_outputs = [];
-
-            for (const progress of operator_progress) {
-                if (progress.operator === node.id) {
-                    for (const [input_port, [messages, _channel]] of progress.input_messages) {
-                        if (messages !== 0) {
-                            operator_inputs.push([input_port, messages]);
-                        }
-                    }
-
-                    for (const [output_port, [messages, _channel]] of progress.output_messages) {
-                        if (messages !== 0) {
-                            operator_outputs.push([output_port, messages]);
-                        }
-                    }
-                }
-            }
-
-            operator_inputs.sort(([port1, _msg1], [port2, _msg2]) => port1 - port2);
-            operator_outputs.sort(([port1, _msg1], [port2, _msg2]) => port1 - port2);
-
-            for (const [port, messages] of operator_inputs) {
-                html += `<br>Consumed ${messages} messages at port ${port}`;
-            }
-            for (const [port, messages] of operator_outputs) {
-                html += `<br>Produced ${messages} messages at port ${port}`;
-            }
-
             tooltip
                 .html(html)
                 .style("top", (d3.event.pageY - 40) + "px")
@@ -375,7 +343,7 @@ svg.selectAll("g.edgePath")
                 return;
             }
 
-            /** @type Edge */
+            /** @type {Edge} */
             const edge = unsafe_edge.data;
 
             /**
@@ -399,35 +367,6 @@ svg.selectAll("g.edgePath")
             const dest_name = get_node_name(edge.dest);
 
             let html = `channel from ${src_name} to ${dest_name}`;
-
-            /** @types {[number, number]} */
-            let channel_inputs = [];
-            /** @types {[number, number]} */
-            let channel_outputs = [];
-
-            for (const progress of operator_progress) {
-                for (const [input_port, [messages, channel]] of progress.input_messages) {
-                    if (channel === edge.channel_id) {
-                        channel_inputs.push([input_port, messages]);
-                    }
-                }
-
-                for (const [output_port, [messages, channel]] of progress.output_messages) {
-                    if (channel === edge.channel_id) {
-                        channel_outputs.push([output_port, messages]);
-                    }
-                }
-            }
-
-            channel_inputs.sort(([port1, _msg1], [port2, _msg2]) => port1 - port2);
-            channel_outputs.sort(([port1, _msg1], [port2, _msg2]) => port1 - port2);
-
-            for (const [port, messages] of channel_inputs) {
-                html += `<br>Consumed ${messages} messages from port ${port}`;
-            }
-            for (const [port, messages] of channel_outputs) {
-                html += `<br>Produced ${messages} messages from port ${port}`;
-            }
 
             tooltip
                 .html(html)

@@ -5,6 +5,7 @@ use timely::dataflow::{
     operators::{Inspect, Operator},
     Scope, Stream,
 };
+use tracing::{level_filters::STATIC_MAX_LEVEL, metadata::LevelFilter};
 
 pub trait InspectExt {
     type Value;
@@ -100,7 +101,7 @@ where
 
     #[track_caller]
     fn debug_frontier(&self) -> Self {
-        if cfg!(debug_assertions) {
+        if STATIC_MAX_LEVEL >= LevelFilter::TRACE {
             let worker = self.scope().index();
             let caller = Location::caller();
             let mut buffer = Vec::new();
@@ -130,7 +131,7 @@ where
 
     #[track_caller]
     fn debug_frontier_with(&self, with: &str) -> Self {
-        if cfg!(debug_assertions) {
+        if STATIC_MAX_LEVEL == LevelFilter::TRACE {
             let with = with.to_owned();
             let worker = self.scope().index();
             let caller = Location::caller();

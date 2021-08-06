@@ -8,10 +8,10 @@ use core::{
 /// Only cause the program stats to update every N milliseconds to
 /// prevent this from absolutely thrashing the scheduler.
 ///
-/// The value is currently set to 50 milliseconds
+/// The value is currently set to 5 milliseconds
 // TODO: Make this configurable by the user
-// Safety: 50,000,000 isn't zero
-pub const PROGRAM_NS_GRANULARITY: NonZeroU128 = unsafe { NonZeroU128::new_unchecked(50_000_000) };
+// Safety: 5,000,000 isn't zero
+pub const PROGRAM_NS_GRANULARITY: NonZeroU128 = unsafe { NonZeroU128::new_unchecked(5_000_000) };
 
 /// The default capacity to initialize extractor maps to
 pub(crate) const DEFAULT_EXTRACTOR_CAPACITY: usize = 1024;
@@ -24,9 +24,9 @@ pub(crate) const TCP_READ_TIMEOUT: Option<Duration> = Some(Duration::from_millis
 
 /// The fuel used to extract data from the dataflow within the
 /// main thread's spin loop
-// Safety: 1,000,000 isn't zero
+// Safety: 10,000,000 isn't zero
 pub(crate) const IDLE_EXTRACTION_FUEL: NonZeroUsize =
-    unsafe { NonZeroUsize::new_unchecked(100_000_000) };
+    unsafe { NonZeroUsize::new_unchecked(10_000_000) };
 
 /// The fuel used to extract events from a file-backed source
 ///
@@ -40,11 +40,11 @@ pub(crate) const IDLE_EXTRACTION_FUEL: NonZeroUsize =
 /// at the forefront of our dataflow) which overloads the system
 /// with gratuitously large vectors, causing us to quickly reach
 /// an OOM situation
-// Safety: 10,000 isn't zero
-pub(crate) const FILE_SOURCED_FUEL: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(50_000) };
+// Safety: 50,000 isn't zero
+pub(crate) const FILE_SOURCED_FUEL: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(10_000) };
 
 /// The delay to reactivate replay operators after
-pub(crate) const DEFAULT_REACTIVATION_DELAY: Duration = Duration::from_millis(200);
+pub(crate) const DEFAULT_REACTIVATION_DELAY: Duration = Duration::from_millis(500);
 
 /// The current version of DDShow
 pub const DDSHOW_VERSION: &str = concat!(

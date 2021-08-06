@@ -1,6 +1,6 @@
 use crate::dataflow::{
     differential::{self, ArrangementStats, SplineLevel},
-    operators::{DiffDuration, Max, Min},
+    operators::{DiffDuration, InspectExt, Max, Min},
     summation::{summation, Summation},
     utils::{Diff, DifferentialLogBundle, OpKey, Time},
     OperatorId, WorkerId,
@@ -63,11 +63,15 @@ where
     S: Scope<Timestamp = Time>,
 {
     let summarized =
-        summation(&activation_times.map(|(operator, (_start, duration))| (operator, duration)));
+        summation(&activation_times.map(|(operator, (_start, duration))| (operator, duration)))
+            .debug_frontier_with("summarized time");
     let (arrangements, spline_levels) = if let Some(stream) = differential_stream {
         let (arranged, splines) = differential::arrangement_stats(scope, stream);
 
-        (Some(arranged), Some(splines))
+        (
+            Some(arranged.debug_frontier_with("arranged")),
+            Some(splines.debug_frontier_with("splines")),
+        )
     } else {
         (None, None)
     };
@@ -145,7 +149,8 @@ where
 
                 (operator, stats)
             },
-        );
+        )
+        .debug_frontier_with("aggregated summaries");
 
     let aggregated_arrangements = arrangements.as_ref().map(|arrangements| {
         arrangements
@@ -191,6 +196,7 @@ where
                     )
                 },
             )
+            .debug_frontier_with("aggregated arrangements")
     });
 
     OperatorStatsRelations {

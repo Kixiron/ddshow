@@ -2,8 +2,8 @@ use crate::{
     args::Args,
     dataflow::{
         utils::{OpKey, XXHasher},
-        ArrangementStats as DataflowArrangementStats, DataflowData, OperatorProgress,
-        OperatorShape, SplineLevel, Summation, TimelineEvent as RawTimelineEvent,
+        ArrangementStats as DataflowArrangementStats, DataflowData, OperatorShape, SplineLevel,
+        Summation, TimelineEvent as RawTimelineEvent,
     },
 };
 use abomonation_derive::Abomonation;
@@ -69,7 +69,7 @@ pub fn render(
         palette_colors,
         timeline_events: &data.timeline_events,
         operator_shapes: &data.operator_shapes,
-        operator_progress: &data.operator_progress,
+        // operator_progress: &data.operator_progress,
         vega_data: &vega_data,
     };
 
@@ -197,11 +197,7 @@ fn vega_data<'a>(
 
             let arranged = agg_arrangement_stats.get(&id);
 
-            let node_kind = if data
-                .subgraphs
-                .iter()
-                .any(|((_, op_addr), _)| op_addr == addr)
-            {
+            let node_kind = if data.subgraphs.iter().any(|(op_addr, _)| op_addr == addr) {
                 VegaNodeKind::Subgraph
             } else {
                 VegaNodeKind::Node
@@ -702,14 +698,13 @@ pub struct GraphData<'a> {
     pub palette_colors: &'a [String],
     pub timeline_events: &'a [RawTimelineEvent],
     pub operator_shapes: &'a [OperatorShape],
-    pub operator_progress: &'a [OperatorProgress],
+    // pub operator_progress: &'a [OperatorProgress],
     pub vega_data: &'a [VegaNode<'a>],
 }
 
 #[derive(Debug, Serialize)]
 pub struct Node<'a> {
     pub id: OperatorId,
-    pub worker: WorkerId,
     pub addr: &'a OperatorAddr,
     pub name: &'a str,
     pub max_activation_time: String,
@@ -733,7 +728,6 @@ pub struct ActivationDuration {
 #[derive(Debug, Serialize)]
 pub struct Subgraph<'a> {
     pub id: OperatorId,
-    pub worker: WorkerId,
     pub addr: &'a OperatorAddr,
     pub name: &'a str,
     pub max_activation_time: String,
@@ -749,7 +743,6 @@ pub struct Subgraph<'a> {
 pub struct Edge<'a> {
     pub src: &'a OperatorAddr,
     pub dest: &'a OperatorAddr,
-    pub worker: WorkerId,
     pub channel_id: ChannelId,
     pub edge_kind: EdgeKind,
 }

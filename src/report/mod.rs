@@ -53,8 +53,11 @@ pub fn build_report(
         tracing::debug!("creating report file: {}", args.report_file.display());
         let mut file = File::create(&args.report_file).context("failed to create report file")?;
 
-        let all_workers: HashSet<_, XXHasher> =
-            data.nodes.iter().map(|&((worker, _), _)| worker).collect();
+        let all_workers: HashSet<_, XXHasher> = data
+            .addr_lookup
+            .iter()
+            .map(|&((worker, _), _)| worker)
+            .collect();
 
         program_overview(args, data, &mut file)?;
         worker_stats(args, data, &mut file)?;
@@ -89,13 +92,6 @@ pub fn build_report(
             &all_workers,
             agg_operator_stats,
         )?;
-
-        if args.progress_enabled {
-            writeln!(&mut file)?;
-            channel_traffic(data, &mut file)?;
-        } else {
-            tracing::debug!("progress logging is disabled, skipping channel stats table");
-        }
     } else {
         tracing::debug!("report files are disabled, skipping generation");
     }
@@ -436,31 +432,6 @@ fn operator_tree(
     });
 
     write!(file, "Operator Tree\n{}", tree).context("failed to write to report file")
-}
-
-fn channel_traffic(data: &DataflowData, file: &mut File) -> Result<()> {
-    let mut table = Table::new();
-    table.set_header(&[
-        "Operator Address",
-        "Channel Id",
-        "Produced Messages",
-        "Consumed Messages",
-        "Produced Capability Updates",
-        "Consumed Capability Updates",
-    ]);
-
-    for (addr, info) in data.channel_progress.iter() {
-        table.add_row(IntoIterator::into_iter([
-            Cell::new(addr),
-            Cell::new(info.channel_id),
-            Cell::new(info.produced.messages),
-            Cell::new(info.consumed.messages),
-            Cell::new(info.produced.capability_updates),
-            Cell::new(info.consumed.capability_updates),
-        ]));
-    }
-
-    writeln!(file, "{}", table).context("failed to write to report file")
 }
 
 struct Table {

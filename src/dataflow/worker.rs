@@ -4,7 +4,7 @@ use crate::{
         self,
         constants::FILE_SOURCED_FUEL,
         operators::{EventIterator, Fuel, InspectExt, ReplayWithShutdown},
-        utils::{self, Time},
+        utils::Time,
         DataflowSenders,
     },
     logging,
@@ -18,15 +18,12 @@ use ddshow_types::{
     timely_logging::TimelyEvent, WorkerId,
 };
 use differential_dataflow::{logging::DifferentialEvent as RawDifferentialEvent, Data};
-use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressFinish, ProgressStyle};
 use std::{
-    fmt::Debug,
     panic::Location,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
-    thread,
     time::{Duration, Instant},
 };
 use timely::{
@@ -48,7 +45,7 @@ pub fn worker_runtime<A>(
     replay_shutdown: Arc<AtomicBool>,
     workers_finished: Arc<AtomicUsize>,
     replays_finished: Arc<AtomicUsize>,
-    multi_progress: Arc<MultiProgress>,
+    // multi_progress: Arc<MultiProgress>,
     timely_traces: TimelyReplaySource,
     differential_traces: Option<DifferentialReplaySource>,
     progress_traces: Option<ProgressReplaySource>,
@@ -70,22 +67,7 @@ where
         logging::init_dataflow_logging(worker)?;
     }
 
-    // worker
-    //     .log_register()
-    //     .insert::<RawTimelyEvent, _>("timely", move |outer_time, data| {
-    //         for (inner_time, worker, event) in data {
-    //             tracing::trace!(
-    //                 target: "ddshow_timely_events",
-    //                 outer_time = ?*outer_time,
-    //                 inner_time = ?*inner_time,
-    //                 worker = *worker,
-    //                 event = ?&*event,
-    //             );
-    //         }
-    //     });
-
     let dataflow_id = worker.next_dataflow_index();
-    let mut progress_bars = Vec::new();
 
     let (index, peers, differential, progress) = (
         worker.index(),
@@ -118,6 +100,7 @@ where
         total_sources = total_sources,
     );
 
+    let mut master_probe = ProbeHandle::new();
     let probes = worker.dataflow_named("DDShow Analysis Dataflow", |scope| {
         // If the dataflow is being sourced from a file, limit the
         // number of events read out in each batch so we don't overload
@@ -151,13 +134,12 @@ where
             replay_traces::<_, TimelyEvent, RawTimelyEvent, _, _>(
                 scope,
                 &args,
+                master_probe.clone(),
                 timely_traces,
                 replay_shutdown.clone(),
                 replays_finished.clone(),
                 fuel.clone(),
-                &multi_progress,
                 "Timely",
-                &mut progress_bars,
                 &mut source_counter,
                 total_sources,
             )
@@ -169,13 +151,12 @@ where
                 let stream = replay_traces::<_, DifferentialEvent, RawDifferentialEvent, _, _>(
                     scope,
                     &args,
+                    master_probe.clone(),
                     traces,
                     replay_shutdown.clone(),
                     replays_finished.clone(),
                     fuel.clone(),
-                    &multi_progress,
                     "Differential",
-                    &mut progress_bars,
                     &mut source_counter,
                     total_sources,
                 )
@@ -198,13 +179,12 @@ where
                 let stream = replay_traces::<_, TimelyProgressEvent, TimelyProgressEvent, _, _>(
                     scope,
                     &args,
+                    master_probe.clone(),
                     traces,
                     replay_shutdown.clone(),
                     replays_finished.clone(),
                     fuel.clone(),
-                    &multi_progress,
                     "Progress",
-                    &mut progress_bars,
                     &mut source_counter,
                     total_sources,
                 );
@@ -221,6 +201,7 @@ where
             dataflow::dataflow(
                 scope,
                 &*args,
+                &mut master_probe,
                 &timely_stream,
                 differential_stream.as_ref(),
                 progress_stream.as_ref(),
@@ -229,14 +210,7 @@ where
         })
     })?;
 
-    // Spawn a thread to display the worker progress bars
-    if worker.index() == 0 {
-        thread::spawn(move || {
-            multi_progress.join().expect("failed to poll progress bars");
-        });
-    }
-
-    'work_loop: while !probes.iter().all(|(probe, _)| probe.done()) {
+    'work_loop: while !master_probe.done() {
         let start_time = Instant::now();
         if !replay_shutdown.load(Ordering::Acquire) {
             tracing::info!(
@@ -254,11 +228,11 @@ where
         if !worker.step_or_park(Some(Duration::from_millis(500))) {
             tracing::info!(
                 worker_id = worker.index(),
-                "worker {} no longer has work to do",
+                "worker {} stepped without work to do",
                 worker.index(),
             );
 
-            break 'work_loop;
+            // break 'work_loop;
         }
 
         let elapsed = start_time.elapsed();
@@ -268,15 +242,11 @@ where
                 .iter()
                 .map(|(probe, name)| probe.with_frontier(|frontier| format!("{}: {:?}", name, frontier)))
                 .collect::<Vec<_>>(),
+            master_probe = %master_probe.with_frontier(|frontier| format!("{:?}",frontier)),
             "worker {} stepped for {:#?}",
             worker.index(),
             elapsed,
         );
-    }
-
-    for (bar, style) in progress_bars {
-        bar.set_style(style);
-        bar.finish_using_style();
     }
 
     tracing::info!(
@@ -295,21 +265,20 @@ where
 #[allow(clippy::too_many_arguments)]
 fn replay_traces<S, Event, RawEvent, R, A>(
     scope: &mut S,
-    args: &Args,
+    _args: &Args,
+    probe: ProbeHandle<Time>,
     traces: ReplaySource<R, A>,
     replay_shutdown: Arc<AtomicBool>,
     replays_finished: Arc<AtomicUsize>,
     fuel: Fuel,
-    multi_progress: &MultiProgress,
     source: &'static str,
-    progress_bars: &mut Vec<(ProgressBar, ProgressStyle)>,
     source_counter: &mut usize,
-    total_sources: usize,
+    _total_sources: usize,
 ) -> Stream<S, (Duration, WorkerId, Event)>
 where
     S: Scope<Timestamp = Time>,
     Event: Data + From<RawEvent> + Send,
-    RawEvent: Debug + Clone + Send + 'static,
+    RawEvent: Data + Send + 'static,
     R: EventIterator<Duration, (Duration, WorkerId, Event)> + Send + 'static,
     A: EventIterator<Duration, (Duration, usize, RawEvent)> + Send + 'static,
 {
@@ -322,50 +291,6 @@ where
         caller.column(),
     );
 
-    let style = ProgressStyle::default_spinner()
-        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-        .template("[{prefix}, {elapsed}] {spinner} {msg}: {len} events, {per_sec}")
-        .on_finish(ProgressFinish::WithMessage(
-            format!("Finished replaying {} trace", source.to_lowercase()).into(),
-        ));
-    let finished_style = ProgressStyle::default_spinner()
-        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-        .template("[{prefix}, {elapsed}] Finished replaying {len} {msg} trace")
-        .on_finish(ProgressFinish::WithMessage(source.to_lowercase().into()));
-
-    let padding_width = if total_sources >= 100 {
-        3
-    } else if total_sources >= 10 {
-        2
-    } else {
-        1
-    };
-    let draw_target = if args.is_quiet() {
-        ProgressDrawTarget::hidden()
-    } else {
-        ProgressDrawTarget::stdout()
-    };
-
-    let progress = multi_progress
-        .add(
-            ProgressBar::with_draw_target(0, draw_target)
-                .with_style(style)
-                .with_prefix(format!(
-                    "{:0width$}/{:0width$}",
-                    *source_counter,
-                    total_sources,
-                    width = padding_width,
-                )),
-        )
-        .with_message(format!("Replaying {} trace", source.to_lowercase()));
-
-    // I'm a genius, giving every bar the same tick speed looks weird
-    // and artificial (almost like the spinners don't actually mean anything),
-    // so each spinner gets a little of an offset so that all of them are
-    // slightly out of sync
-    utils::set_steady_tick(&progress, *source_counter);
-
-    progress_bars.push((progress.clone(), finished_style));
     *source_counter += 1;
 
     tracing::debug!(
@@ -376,32 +301,36 @@ where
     );
 
     match traces {
-        ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
-            &name,
-            scope,
-            // TODO: Implement this
-            ProbeHandle::new(),
-            replay_shutdown,
-            replays_finished,
-            fuel,
-            Some(progress),
-        ),
+        ReplaySource::Rkyv(rkyv) => rkyv
+            .replay_with_shutdown_into_named(
+                &name,
+                scope,
+                probe,
+                replay_shutdown,
+                replays_finished,
+                fuel,
+            )
+            .debug_frontier_with(&format!("very raw {} stream", source)),
 
         ReplaySource::Abomonation(abomonation) => abomonation
             .replay_with_shutdown_into_named(
                 &name,
                 scope,
-                // TODO: Implement this
-                ProbeHandle::new(),
+                probe,
                 replay_shutdown,
                 replays_finished,
                 fuel,
-                Some(progress),
+            )
+            .debug_frontier_with(&format!("very raw {} stream", source))
+            .debug_inspect(
+                move |x| tracing::trace!(target: "raw_event_streams", "immediate {} event: {:?}", source, x),
             )
             .map(|(time, worker, event): (Duration, usize, RawEvent)| {
                 (time, WorkerId::new(worker), Event::from(event))
             }),
     }
-    .debug_inspect(move |x| tracing::trace!("{} event: {:?}", source, x))
-    .debug_frontier()
+    .debug_inspect(
+        move |x| tracing::trace!(target: "raw_event_streams", "{} event: {:?}", source, x),
+    )
+    .debug_frontier_with(&format!("raw {} stream", source))
 }

@@ -9,8 +9,6 @@ use ddshow_types::{
     timely_logging::TimelyEvent, OperatorId, WorkerId,
 };
 use differential_dataflow::{
-    difference::Semigroup,
-    lattice::Lattice,
     operators::{
         arrange::{Arranged, TraceAgent},
         Consolidate,
@@ -18,10 +16,10 @@ use differential_dataflow::{
     trace::implementations::ord::{OrdKeySpine, OrdValSpine},
     Collection, ExchangeData, Hashable,
 };
-use indicatif::ProgressBar;
 use std::{
     any::Any,
     convert::TryFrom,
+    fmt::{self, Debug, Display},
     fs::{self, File},
     hash::BuildHasherDefault,
     io::BufWriter,
@@ -29,7 +27,7 @@ use std::{
     ops::{Deref, DerefMut, Range},
     path::{Path, PathBuf},
     thread::{self, JoinHandle},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 use timely::{
     dataflow::{
@@ -62,6 +60,7 @@ pub type ReachabilityLogBundle<Id = WorkerId> = (Duration, Id, TrackerEvent);
 /// Puts timestamps into non-overlapping buckets that contain
 /// the timestamps from `last_bucket..PROGRAM_NS_GRANULARITY`
 /// to reduce the load on timely
+#[allow(dead_code)]
 pub(crate) fn granulate(&time: &Time) -> Time {
     let timestamp = time.as_nanos();
     let window_idx = (timestamp / PROGRAM_NS_GRANULARITY).saturating_add(1);
@@ -76,16 +75,14 @@ pub(crate) fn granulate(&time: &Time) -> Time {
 }
 
 #[allow(clippy::type_complexity)]
-pub(super) fn channel_sink<S, D, R>(
-    collection: &Collection<S, D, R>,
+pub(super) fn channel_sink<S, D>(
+    collection: &Collection<S, D, Diff>,
     probe: &mut ProbeHandle<S::Timestamp>,
-    channel: Sender<Event<S::Timestamp, (D, S::Timestamp, R)>>,
+    channel: Sender<Event<S::Timestamp, (D, S::Timestamp, Diff)>>,
     should_consolidate: bool,
 ) where
-    S: Scope,
-    S::Timestamp: Lattice,
+    S: Scope<Timestamp = Time>,
     D: ExchangeData + Hashable,
-    R: Semigroup + ExchangeData,
 {
     let collection = if should_consolidate {
         collection.consolidate()
@@ -179,26 +176,28 @@ pub(super) fn log_file_path(file_prefix: &str, dir: &Path, worker_id: usize) -> 
         .with_context(|| anyhow::format_err!("failed to canonicalize path '{}'", path.display()))
 }
 
-pub(crate) fn set_steady_tick(progress: &ProgressBar, delta: usize) {
-    let time = SystemTime::UNIX_EPOCH.elapsed().map_or_else(
-        |err| {
-            tracing::error!("failed to get system time for seeding generator: {:?}", err);
-            Pcg64::new(delta as u128).next_u64() as u128
-        },
-        |time| time.as_nanos(),
-    );
+// pub(crate) fn set_steady_tick(progress: &ProgressBar, delta: usize) {
+//     let time = SystemTime::UNIX_EPOCH.elapsed().map_or_else(
+//         |err| {
+//             tracing::error!("failed to get system time for seeding generator: {:?}", err);
+//             Pcg64::new(delta as u128).next_u64() as u128
+//         },
+//         |time| time.as_nanos(),
+//     );
+//
+//     let mut rng = Pcg64::new(time);
+//     rng.advance(delta as u128);
+//
+//     progress.enable_steady_tick(rng.gen_range(50..500));
+// }
 
-    let mut rng = Pcg64::new(time);
-    rng.advance(delta as u128);
-
-    progress.enable_steady_tick(rng.gen_range(50..500));
-}
-
+#[allow(dead_code)]
 pub(crate) struct Pcg64 {
     state: Wrapping<u128>,
     increment: Wrapping<u128>,
 }
 
+#[allow(dead_code)]
 impl Pcg64 {
     const MULTIPLIER: Wrapping<u128> = Wrapping(6_364_136_223_846_793_005);
     const DEFAULT_INCREMENT: Wrapping<u128> = Wrapping(1_442_695_040_888_963_407);
@@ -265,6 +264,7 @@ impl Pcg64 {
 #[derive(Debug)]
 pub struct JoinOnDrop<T>(Option<JoinHandle<T>>);
 
+#[allow(dead_code)]
 impl<T> JoinOnDrop<T> {
     pub const fn new(handle: JoinHandle<T>) -> Self {
         Self(Some(handle))
@@ -319,5 +319,113 @@ impl<T> Drop for JoinOnDrop<T> {
                 }
             }
         }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct HumanDuration(pub Duration);
+
+impl HumanDuration {
+    #[allow(dead_code)]
+    pub const fn new(duration: Duration) -> Self {
+        Self(duration)
+    }
+}
+
+impl Deref for HumanDuration {
+    type Target = Duration;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for HumanDuration {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Debug for HumanDuration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Debug::fmt(&self.0, f)
+    }
+}
+
+impl Display for HumanDuration {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fn item_plural(
+            f: &mut fmt::Formatter,
+            started: &mut bool,
+            name: &str,
+            value: u64,
+        ) -> fmt::Result {
+            if value > 0 {
+                if *started {
+                    f.write_str(" ")?;
+                }
+
+                Display::fmt(&value, f)?;
+                f.write_str(name)?;
+
+                if value > 1 {
+                    f.write_str("s")?;
+                }
+
+                *started = true;
+            }
+
+            Ok(())
+        }
+
+        fn item(f: &mut fmt::Formatter, started: &mut bool, name: &str, value: u32) -> fmt::Result {
+            if value > 0 {
+                if *started {
+                    f.write_str(" ")?;
+                }
+
+                Display::fmt(&value, f)?;
+                f.write_str(name)?;
+                *started = true;
+            }
+
+            Ok(())
+        }
+
+        let secs = self.0.as_secs();
+        let nanos = self.0.subsec_nanos();
+
+        if secs == 0 && nanos == 0 {
+            f.write_str("0s")?;
+            return Ok(());
+        }
+
+        let years = secs / 31_557_600; // 365.25d
+        let ydays = secs % 31_557_600;
+        let months = ydays / 2_630_016; // 30.44d
+        let mdays = ydays % 2_630_016;
+        let days = mdays / 86400;
+        let day_secs = mdays % 86400;
+        let hours = day_secs / 3600;
+        let minutes = day_secs % 3600 / 60;
+        let seconds = day_secs % 60;
+
+        let millis = nanos / 1_000_000;
+        let micros = nanos / 1000 % 1000;
+        let nanosec = nanos % 1000;
+
+        let started = &mut false;
+        item_plural(f, started, "year", years)?;
+        item_plural(f, started, "month", months)?;
+        item_plural(f, started, "day", days)?;
+        item(f, started, "h", hours as u32)?;
+        item(f, started, "m", minutes as u32)?;
+        item(f, started, "s", seconds as u32)?;
+        item(f, started, "ms", millis)?;
+        item(f, started, "us", micros)?;
+        item(f, started, "ns", nanosec)?;
+
+        Ok(())
     }
 }

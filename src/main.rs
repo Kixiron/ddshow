@@ -4,21 +4,23 @@ mod dataflow;
 mod logging;
 mod replay_loading;
 mod report;
+mod status;
 mod ui;
 
 use crate::{
     args::Args,
     colormap::{select_color, Color},
     dataflow::{
-        constants::DDSHOW_VERSION, utils::XXHasher, Channel, DataflowData, DataflowSenders,
-        Summation,
+        constants::DDSHOW_VERSION,
+        utils::{HumanDuration, XXHasher},
+        Channel, DataflowData, DataflowSenders, Summation,
     },
     replay_loading::{connect_to_sources, wait_for_input},
     ui::{ActivationDuration, DDShowStats, EdgeKind, Lifespan, TimelineEvent},
 };
 use anyhow::{Context, Result};
 use ddshow_types::{timely_logging::OperatesEvent, OperatorAddr, OperatorId, WorkerId};
-use indicatif::{HumanDuration, MultiProgress, ProgressDrawTarget};
+use mimalloc::MiMalloc;
 use std::{
     collections::HashMap,
     fs::{self, File},
@@ -33,10 +35,15 @@ use std::{
 };
 use structopt::StructOpt;
 
+#[global_allocator]
+static ALLOCATOR: MiMalloc = MiMalloc;
+
 // TODO: Library-ify a lot of this
 // FIXME: Clean this up so much
 // TODO: Set the panic hook to shut down the computation
 //       so that panics don't stick things
+// TODO: Write my own progress bar system since indicatif
+//       uses mutexes for everything
 fn main() -> Result<()> {
     let start_time = Instant::now();
 
@@ -78,17 +85,11 @@ fn main() -> Result<()> {
         return Ok(());
     };
 
-    let (running, workers_finished, replays_finished, progress_bars) = (
+    let (running, workers_finished, replays_finished) = (
         Arc::new(AtomicBool::new(true)),
         Arc::new(AtomicUsize::new(0)),
         Arc::new(AtomicUsize::new(0)),
-        Arc::new(MultiProgress::new()),
     );
-    progress_bars.set_draw_target(if args.is_quiet() {
-        ProgressDrawTarget::hidden()
-    } else {
-        ProgressDrawTarget::stdout()
-    });
 
     let (replay_shutdown, moved_replays_finished, moved_args, moved_workers_finished) = (
         running.clone(),
@@ -150,7 +151,6 @@ fn main() -> Result<()> {
                 replay_shutdown.clone(),
                 moved_workers_finished.clone(),
                 moved_replays_finished.clone(),
-                progress_bars.clone(),
                 timely_traces,
                 differential_traces,
                 progress_traces,
@@ -198,11 +198,11 @@ fn main() -> Result<()> {
     data.subgraphs
         .sort_unstable_by(|(addr1, _), (addr2, _)| addr1.cmp(addr2));
     data.edges
-        .sort_unstable_by_key(|(worker, _, channel, _)| (*worker, channel.channel_id()));
+        .sort_unstable_by_key(|(_, channel, _)| channel.channel_id());
 
     let mut subgraph_ids = Vec::new();
-    for &((worker, _), ref event) in data.subgraphs.iter() {
-        subgraph_ids.push((worker, event.id));
+    for (_, event) in data.subgraphs.iter() {
+        subgraph_ids.push(event.id);
     }
 
     let (mut operator_stats, mut agg_operator_stats, mut raw_timings) = (
@@ -210,11 +210,8 @@ fn main() -> Result<()> {
         HashMap::with_capacity_and_hasher(data.aggregated_summaries.len() / 2, XXHasher::default()),
         Vec::with_capacity(data.summarized.len()),
     );
-    for (operator, stats) in data.summarized.iter() {
-        if !subgraph_ids.contains(operator) {
-            raw_timings.push(stats.total);
-        }
-
+    for ((_worker, operator), stats) in data.summarized.iter() {
+        raw_timings.push(stats.total);
         operator_stats.insert(*operator, stats);
     }
     for (operator, stats) in data.aggregated_summaries.iter() {
@@ -291,95 +288,88 @@ fn main() -> Result<()> {
     let html_nodes: Vec<_> = data
         .nodes
         .iter()
-        .filter_map(
-            |&((worker, ref addr), OperatesEvent { id, ref name, .. })| {
-                let Summation {
-                    max,
-                    min,
-                    average,
-                    total,
-                    count: invocations,
-                } = **operator_stats.get(&(worker, id))?;
+        .filter_map(|&(ref addr, OperatesEvent { id, ref name, .. })| {
+            let Summation {
+                max,
+                min,
+                average,
+                total,
+                count: invocations,
+            } = **operator_stats.get(&id)?;
 
-                let arranged = arrangement_map.get(&(worker, id)).copied();
-                let activation_durations = activations_map
-                    .get(&(worker, id))
-                    .map(|activations| {
-                        activations
-                            .iter()
-                            .map(|(duration, time)| ActivationDuration {
-                                activation_time: duration.as_nanos() as u64,
-                                activated_at: time.as_nanos() as u64,
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                let fill_color = select_color(&args.palette, total, (max_time, min_time));
-                let text_color = fill_color.text_color();
-
-                Some(ui::Node {
-                    id,
-                    worker,
-                    addr,
-                    name,
-                    max_activation_time: format!("{:#?}", max),
-                    min_activation_time: format!("{:#?}", min),
-                    average_activation_time: format!("{:#?}", average),
-                    total_activation_time: format!("{:#?}", total),
-                    invocations,
-                    fill_color: format!("{}", fill_color),
-                    text_color: format!("{}", text_color),
-                    // TODO: Teach JS to deal with durations so we don't have to allocate
-                    //       so much garbage
-                    activation_durations,
-                    max_arrangement_size: arranged.as_ref().map(|arr| arr.max_size),
-                    min_arrangement_size: arranged.as_ref().map(|arr| arr.min_size),
+            let arranged = arrangement_map.get(&(WorkerId::new(0), id)).copied();
+            let activation_durations = activations_map
+                .get(&(WorkerId::new(0), id))
+                .map(|activations| {
+                    activations
+                        .iter()
+                        .map(|(duration, time)| ActivationDuration {
+                            activation_time: duration.as_nanos() as u64,
+                            activated_at: time.as_nanos() as u64,
+                        })
+                        .collect()
                 })
-            },
-        )
+                .unwrap_or_default();
+
+            let fill_color = select_color(&args.palette, total, (max_time, min_time));
+            let text_color = fill_color.text_color();
+
+            Some(ui::Node {
+                id,
+                addr,
+                name,
+                max_activation_time: format!("{:#?}", max),
+                min_activation_time: format!("{:#?}", min),
+                average_activation_time: format!("{:#?}", average),
+                total_activation_time: format!("{:#?}", total),
+                invocations,
+                fill_color: format!("{}", fill_color),
+                text_color: format!("{}", text_color),
+                // TODO: Teach JS to deal with durations so we don't have to allocate
+                //       so much garbage
+                activation_durations,
+                max_arrangement_size: arranged.as_ref().map(|arr| arr.max_size),
+                min_arrangement_size: arranged.as_ref().map(|arr| arr.min_size),
+            })
+        })
         .collect();
 
     let html_subgraphs: Vec<_> = data
         .subgraphs
         .iter()
-        .filter_map(
-            |&((worker, ref addr), OperatesEvent { id, ref name, .. })| {
-                let Summation {
-                    max,
-                    min,
-                    average,
-                    total,
-                    count: invocations,
-                } = **operator_stats.get(&(worker, id))?;
+        .filter_map(|&(ref addr, OperatesEvent { id, ref name, .. })| {
+            let Summation {
+                max,
+                min,
+                average,
+                total,
+                count: invocations,
+            } = **operator_stats.get(&id)?;
 
-                let fill_color = select_color(&args.palette, total, (max, min));
-                let text_color = fill_color.text_color();
+            let fill_color = select_color(&args.palette, total, (max, min));
+            let text_color = fill_color.text_color();
 
-                Some(ui::Subgraph {
-                    id,
-                    worker,
-                    addr,
-                    name,
-                    max_activation_time: format!("{:#?}", max),
-                    min_activation_time: format!("{:#?}", min),
-                    average_activation_time: format!("{:#?}", average),
-                    total_activation_time: format!("{:#?}", total),
-                    invocations,
-                    fill_color: format!("{}", fill_color),
-                    text_color: format!("{}", text_color),
-                })
-            },
-        )
+            Some(ui::Subgraph {
+                id,
+                addr,
+                name,
+                max_activation_time: format!("{:#?}", max),
+                min_activation_time: format!("{:#?}", min),
+                average_activation_time: format!("{:#?}", average),
+                total_activation_time: format!("{:#?}", total),
+                invocations,
+                fill_color: format!("{}", fill_color),
+                text_color: format!("{}", text_color),
+            })
+        })
         .collect();
 
     let html_edges: Vec<_> = data
         .edges
         .iter()
-        .map(|&(worker, _, ref channel, _)| ui::Edge {
+        .map(|(_, channel, _)| ui::Edge {
             src: channel.source_addr(),
             dest: channel.target_addr(),
-            worker,
             channel_id: channel.channel_id(),
             edge_kind: match channel {
                 Channel::Normal { .. } => EdgeKind::Normal,

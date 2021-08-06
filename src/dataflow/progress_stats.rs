@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use crate::dataflow::{
     operators::{FlatSplit, Keys, MapTimed},
     utils::{Diff, ProgressLogBundle, Time},
@@ -144,6 +146,7 @@ pub struct ProgressStats {
     pub capability_updates: usize,
 }
 
+/*
 pub fn aggregate_channel_messages<S>(
     progress_stream: &Stream<S, ProgressLogBundle>,
     shapes: &Collection<S, OperatorShape, Diff>,
@@ -189,83 +192,82 @@ where
             .as_collection(),
     );
 
-    let shape_ids = shapes
-        .map(|shape| ((shape.worker, shape.id), ()))
-        .arrange_by_key();
+    let shape_ids = shapes.map(|shape| (shape.id, ())).arrange_by_key();
 
-    let mut shape_outputs =
-        shapes
-            .flat_map(|shape| {
-                shape.outputs.clone().into_iter().map(move |output_port| {
-                    ((shape.worker, output_port, shape.addr.clone()), shape.id)
-                })
-            })
-            .join_map(
-                &produced,
-                |&(worker, output_port, ref _addr), &operator_id, &(input_port, channel, diff)| {
-                    (
-                        ((worker, operator_id, output_port, input_port, channel), ()),
-                        diff as isize,
-                    )
-                },
-            )
-            .explode(iter::once)
-            .count_total()
-            .map(
-                |(((worker, operator, output, _input, channel), ()), messages)| {
-                    ((worker, operator), (output, (messages, channel)))
-                },
-            )
-            .reduce(|_, counts, output| {
-                output.push((
-                    counts.iter().map(|(&count, _)| count).collect::<Vec<_>>(),
-                    1isize,
-                ));
-            });
+    let mut shape_outputs = shapes
+        .flat_map(|shape| {
+            shape
+                .outputs
+                .clone()
+                .into_iter()
+                .map(move |output_port| ((output_port, shape.addr.clone()), shape.id))
+        })
+        .join_map(
+            &produced,
+            |&(worker, output_port, ref _addr), &operator_id, &(input_port, channel, diff)| {
+                (
+                    ((worker, operator_id, output_port, input_port, channel), ()),
+                    diff as isize,
+                )
+            },
+        )
+        .explode(iter::once)
+        .count_total()
+        .map(
+            |(((worker, operator, output, _input, channel), ()), messages)| {
+                ((worker, operator), (output, (messages, channel)))
+            },
+        )
+        .reduce(|_, counts, output| {
+            output.push((
+                counts.iter().map(|(&count, _)| count).collect::<Vec<_>>(),
+                1isize,
+            ));
+        });
 
     shape_outputs = shape_ids
         .antijoin(&shape_outputs.keys())
-        .map(|((worker, operator), ())| ((worker, operator), Vec::new()))
+        .map(|(operator, ())| (operator, Vec::new()))
         .concat(&shape_outputs);
 
-    let mut shape_inputs =
-        shapes
-            .flat_map(|shape| {
-                shape.inputs.clone().into_iter().map(move |input_port| {
-                    ((shape.worker, input_port, shape.addr.clone()), shape.id)
-                })
-            })
-            .join_map(
-                &consumed,
-                |&(worker, input_port, ref _addr), &operator_id, &(output_port, channel, diff)| {
-                    (
-                        ((worker, operator_id, input_port, output_port, channel), ()),
-                        diff as isize,
-                    )
-                },
-            )
-            .explode(iter::once)
-            .count_total()
-            .map(
-                |(((worker, operator, input, _output, channel), ()), messages)| {
-                    ((worker, operator), (input, (messages, channel)))
-                },
-            )
-            .reduce(|_, counts, output| {
-                output.push((
-                    counts.iter().map(|(&count, _)| count).collect::<Vec<_>>(),
-                    1isize,
-                ));
-            });
+    let mut shape_inputs = shapes
+        .flat_map(|shape| {
+            shape
+                .inputs
+                .clone()
+                .into_iter()
+                .map(move |input_port| ((input_port, shape.addr.clone()), shape.id))
+        })
+        .join_map(
+            &consumed,
+            |&(input_port, ref _addr), &operator_id, &(output_port, channel, diff)| {
+                (
+                    ((operator_id, input_port, output_port, channel), ()),
+                    diff as isize,
+                )
+            },
+        )
+        .explode(iter::once)
+        .count_total()
+        .map(|(((operator, input, _output, channel), ()), messages)| {
+            ((operator), (input, (messages, channel)))
+        })
+        .reduce(|_, counts, output| {
+            output.push((
+                counts.iter().map(|(&count, _)| count).collect::<Vec<_>>(),
+                1isize,
+            ));
+        });
 
     shape_inputs = shape_ids
         .antijoin(&shape_inputs.keys())
-        .map(|((worker, operator), ())| ((worker, operator), Vec::new()))
+        .map(|(operator, ())| (operator, Vec::new()))
         .concat(&shape_inputs);
 
     shape_inputs
         .join(&shape_outputs)
-        .map(|((worker, operator), (inputs, outputs))| {
-            OperatorProgress::new(operator, worker, inputs, outputs)
+        .map(|(operator, (inputs, outputs))| {
+            OperatorProgress::new(operator, WorkerId::new(0), inputs, outputs)
         })
 }
+*/

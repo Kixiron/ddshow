@@ -159,6 +159,26 @@ impl<T, D> Event<T, D> {
             None
         }
     }
+
+    /// Returns progress data if the event is [`Event::Progress`]
+    #[inline]
+    pub fn into_progress(self) -> Result<Vec<(T, i64)>, Self> {
+        if let Self::Progress(progress) = self {
+            Ok(progress)
+        } else {
+            Err(self)
+        }
+    }
+
+    /// Returns message data if the event is [`Event::Messages`]
+    #[inline]
+    pub fn into_messages(self) -> Result<(T, Vec<D>), Self> {
+        if let Self::Messages(time, messages) = self {
+            Ok((time, messages))
+        } else {
+            Err(self)
+        }
+    }
 }
 
 impl<T, D> From<TimelyEvent<T, D>> for Event<T, D> {

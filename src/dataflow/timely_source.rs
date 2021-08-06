@@ -1,9 +1,8 @@
 use crate::{
     dataflow::{
-        constants::FILE_SOURCED_FUEL,
-        operators::{DelayExt, Fuel},
-        utils::{granulate, Time, XXHasher},
-        worker_timeline::{process_timely_event, EventMap, EventProcessor},
+        operators::{FilterMapTimed, InspectExt},
+        utils::{OpKey, Time, XXHasher},
+        worker_timeline::{process_timely_event, EventProcessor},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelineEvent,
         TimelyLogBundle, WorkerId,
     },
@@ -12,65 +11,461 @@ use crate::{
 use ddshow_types::timely_logging::{ChannelsEvent, OperatesEvent, StartStop, TimelyEvent};
 use differential_dataflow::{
     collection::AsCollection,
-    difference::Semigroup,
-    lattice::Lattice,
     operators::arrange::{Arrange, ArrangeByKey},
-    Collection, Hashable,
+    Collection,
 };
-use std::{
-    cmp::{Ordering, Reverse},
-    collections::{BinaryHeap, HashMap},
-    time::Duration,
-};
+use std::{collections::HashMap, time::Duration};
 use timely::{
+    communication::message::RefOrMut,
     dataflow::{
-        channels::{
-            pact::Exchange,
-            pushers::{buffer::Session, counter::Counter as PushCounter, Tee},
-        },
-        operators::{
-            generic::{builder_rc::OperatorBuilder, OutputHandle, OutputWrapper},
-            Capability, CapabilityRef,
-        },
+        channels::pact::Pipeline,
+        operators::{Enter, Filter, Operator},
+        scopes::Child,
         Scope, Stream,
     },
-    progress::frontier::MutableAntichain,
-    Data,
 };
 
 // TODO: So much refactoring
 
-type TimelyCollections<S> = (
+// TODO: `operator_creations` & `channel_creations` are currently unused
+pub(crate) struct TimelyCollections<S>
+where
+    S: Scope<Timestamp = Time>,
+{
     // Operator lifespans
-    Collection<S, ((WorkerId, OperatorId), Lifespan), Diff>,
+    pub(crate) lifespans: Collection<S, (OpKey, Lifespan), Diff>,
     // Operator activation times `(start, duration)`
-    Collection<S, ((WorkerId, OperatorId), (Duration, Duration)), Diff>,
+    pub(crate) activations: Collection<S, (OpKey, (Duration, Duration)), Diff>,
     // Operator creation times
-    Collection<S, ((WorkerId, OperatorId), Duration), Diff>,
+    pub(crate) operator_creations: Collection<S, (OpKey, Duration), Diff>,
     // Channel creation times
-    Collection<S, ((WorkerId, ChannelId), Duration), Diff>,
+    pub(crate) channel_creations: Collection<S, ((WorkerId, ChannelId), Duration), Diff>,
     // Raw channel events
     // TODO: Remove the need for this
-    Collection<S, (WorkerId, ChannelsEvent), Diff>,
+    pub(crate) raw_channel_events: Collection<S, ChannelsEvent, Diff>,
     // Raw operator events
     // TODO: Remove the need for this
-    Collection<S, (WorkerId, OperatesEvent), Diff>,
+    pub(crate) raw_operator_events: Collection<S, OperatesEvent, Diff>,
     // Operator names
-    ArrangedVal<S, (WorkerId, OperatorId), String>,
+    pub(crate) operator_names: ArrangedVal<S, OpKey, String>,
     // Operator ids to addresses
-    ArrangedVal<S, (WorkerId, OperatorId), OperatorAddr>,
+    pub(crate) operator_ids_to_addrs: ArrangedVal<S, OpKey, OperatorAddr>,
     // Operator addresses to ids
-    ArrangedVal<S, (WorkerId, OperatorAddr), OperatorId>,
+    pub(crate) operator_addrs_to_ids: ArrangedVal<S, (WorkerId, OperatorAddr), OperatorId>,
     // Operator addresses
-    ArrangedKey<S, (WorkerId, OperatorAddr)>,
+    pub(crate) operator_addrs: ArrangedKey<S, OperatorAddr>,
     // Channel scope addresses
-    ArrangedVal<S, (WorkerId, ChannelId), OperatorAddr>,
+    pub(crate) channel_scope_addrs: ArrangedVal<S, (WorkerId, ChannelId), OperatorAddr>,
     // Dataflow operator ids
-    ArrangedKey<S, (WorkerId, OperatorId)>,
+    pub(crate) dataflow_ids: ArrangedKey<S, OpKey>,
     // Timely event data, will be `None` if timeline analysis is disabled
-    Option<Collection<S, TimelineEvent, Diff>>,
-);
+    pub(crate) timeline_events: Option<Collection<S, TimelineEvent, Diff>>,
+}
 
+// TODO: Probably want to intern addresses & names
+pub(super) fn extract_timely_info<S>(
+    scope: &mut S,
+    timely_stream: &Stream<S, TimelyLogBundle>,
+    disable_timeline: bool,
+) -> TimelyCollections<S>
+where
+    S: Scope<Timestamp = Time>,
+{
+    scope.region_named("Extract Timely Info", |region| {
+        let timely_stream = timely_stream.enter(region);
+        extract_timely_info_dataflow(&timely_stream, disable_timeline)
+    })
+}
+
+fn extract_timely_info_dataflow<S>(
+    timely_stream: &Stream<Child<'_, S, S::Timestamp>, TimelyLogBundle>,
+    disable_timeline: bool,
+) -> TimelyCollections<S>
+where
+    S: Scope<Timestamp = Time>,
+{
+    let only_operates_events = timely_stream
+        .filter(|(_, _, event)| event.is_operates())
+        .debug_frontier_with("only_operates_events");
+
+    // Get raw operates events
+    let raw_operators = only_operates_events
+        .filter_map_ref_timed_named("Raw Operators", |&timestamp, &(_, worker, ref event)| {
+            match event {
+                TimelyEvent::Operates(operates) if worker == WorkerId::new(0) => {
+                    Some((operates.clone(), timestamp, 1))
+                }
+                _ => None,
+            }
+        })
+        .debug_frontier_with("raw_operators")
+        .as_collection();
+
+    let operator_creations = only_operates_events
+        .filter_map_ref_timed_named(
+            "Operator Creations",
+            |&timestamp, &(time, worker, ref event)| match event {
+                TimelyEvent::Operates(operates) => {
+                    Some((((worker, operates.id), time), timestamp, 1))
+                }
+                _ => None,
+            },
+        )
+        .debug_frontier_with("operator_creations")
+        .as_collection();
+
+    let operator_names = only_operates_events
+        .filter_map_ref_timed_named("Operator Names", |&timestamp, &(_, worker, ref event)| {
+            match event {
+                TimelyEvent::Operates(operates) => {
+                    Some((((worker, operates.id), operates.name.clone()), timestamp, 1))
+                }
+                _ => None,
+            }
+        })
+        .as_collection()
+        .debug_frontier_with("operator_names")
+        .arrange_by_key_named("ArrangeByKey: Operator Names");
+
+    let dataflow_ids = only_operates_events
+        .filter_map_ref_timed_named("Dataflow Ids", |&timestamp, &(_, worker, ref event)| {
+            match event {
+                TimelyEvent::Operates(operates) if operates.addr.is_top_level() => {
+                    Some((((worker, operates.id), ()), timestamp, 1))
+                }
+                _ => None,
+            }
+        })
+        .as_collection()
+        .debug_frontier_with("dataflow_ids")
+        .arrange_named("Arrange: Dataflow Ids");
+
+    let operator_ids_to_addrs = only_operates_events
+        .filter_map_ref_timed_named(
+            "Operator Ids to Addrs",
+            |&timestamp, &(_, worker, ref event)| match event {
+                TimelyEvent::Operates(operates) => {
+                    Some((((worker, operates.id), operates.addr.clone()), timestamp, 1))
+                }
+                _ => None,
+            },
+        )
+        .as_collection()
+        .debug_frontier_with("operator_ids_to_addrs")
+        .arrange_by_key_named("ArrangeByKey: Operator Ids to Addrs");
+
+    let operator_addrs = only_operates_events
+        .filter_map_ref_timed_named(
+            "Operator Addrs by Self",
+            |&timestamp, &(_, worker, ref event)| match event {
+                TimelyEvent::Operates(operates) => {
+                    Some(((operates.addr.clone(), ()), timestamp, 1))
+                }
+                _ => None,
+            },
+        )
+        .as_collection()
+        .debug_frontier_with("operator_addrs")
+        // TODO: Distinct this or use `Present`
+        .arrange_named("Arrange: Operator Addrs by Self");
+
+    let operator_addrs_to_ids = only_operates_events
+        .filter_map_ref_timed_named(
+            "Operator Addrs to Ids",
+            |&timestamp, &(_, worker, ref event)| match event {
+                TimelyEvent::Operates(operates) => {
+                    Some((((worker, operates.addr.clone()), operates.id), timestamp, 1))
+                }
+                _ => None,
+            },
+        )
+        .as_collection()
+        .debug_frontier_with("operator_addrs_to_ids")
+        .arrange_by_key_named("ArrangeByKey: Operator Addrs to Ids");
+
+    // Parse out operator lifespans
+    let lifespans = timely_stream
+        .filter(|(_, _, event)| event.is_operates() || event.is_shutdown())
+        .unary(Pipeline, "Operator Lifespans", move |_capability, _info| {
+            let mut lifespan_map = HashMap::with_hasher(XXHasher::default());
+
+            move |input, output| {
+                input.for_each(|capability, data| {
+                    let mut session = output.session(&capability);
+                    let buffer = match data {
+                        RefOrMut::Ref(data) => data,
+                        RefOrMut::Mut(ref data) => &**data,
+                    };
+
+                    for &(time, worker, ref event) in buffer {
+                        match event {
+                            TimelyEvent::Operates(operates) => {
+                                let displaced = lifespan_map.insert((worker, operates.id), time);
+
+                                if let Some(displaced) = displaced {
+                                    tracing::warn!(
+                                        %worker,
+                                        operator = %operates.id,
+                                        displaced_start_time = ?displaced,
+                                        new_start_time = ?time,
+                                        "displaced lifespan start event",
+                                    );
+                                }
+                            }
+
+                            TimelyEvent::Shutdown(shutdown) => {
+                                if let Some(start_time) =
+                                    lifespan_map.remove(&(worker, shutdown.id))
+                                {
+                                    let lifespan = Lifespan::new(start_time, time);
+
+                                    session.give((
+                                        ((worker, shutdown.id), lifespan),
+                                        *capability.time(),
+                                        1,
+                                    ));
+                                } else {
+                                    tracing::warn!(
+                                        %worker,
+                                        operator = %shutdown.id,
+                                        shutdown_time = ?time,
+                                        "failed to end lifespan event on operator shutdown",
+                                    );
+                                }
+                            }
+
+                            _ => {}
+                        }
+                    }
+
+                    if let RefOrMut::Mut(data) = data {
+                        data.clear();
+                    }
+                })
+            }
+        })
+        .as_collection()
+        .debug_frontier_with("lifespans");
+
+    let activations = timely_stream
+        .filter(|(_, _, event)| event.is_schedule() || event.is_shutdown())
+        .unary(Pipeline, "Operator Activations", |_capability, _info| {
+            let mut activation_map = HashMap::with_hasher(XXHasher::default());
+
+            move |input, output| {
+                input.for_each(|capability, data| {
+                    let mut session = output.session(&capability);
+                    let buffer = match data {
+                        RefOrMut::Ref(data) => data,
+                        RefOrMut::Mut(ref data) => &**data,
+                    };
+
+                    for &(time, worker, ref event) in buffer {
+                        match event {
+                            TimelyEvent::Schedule(schedule) => {
+                                let operator = schedule.id;
+
+                                match schedule.start_stop {
+                                    StartStop::Start => {
+                                        let displaced =
+                                            activation_map.insert((worker, operator), time);
+
+                                        if let Some(displaced) = displaced {
+                                            tracing::warn!(
+                                                %worker,
+                                                %operator,
+                                                displaced_start_time = ?displaced,
+                                                new_start_time = ?time,
+                                                "displaced activation start event",
+                                            );
+                                        }
+                                    }
+
+                                    StartStop::Stop => {
+                                        if let Some(start_time) =
+                                            activation_map.remove(&(worker, operator))
+                                        {
+                                            if start_time > time {
+                                                tracing::warn!(
+                                                    %worker,
+                                                    %operator,
+                                                    start_time = ?start_time,
+                                                    end_time = ?time,
+                                                    "stop event occurred before start event",
+                                                );
+                                            }
+
+                                            let duration = time
+                                                .checked_sub(start_time)
+                                                .unwrap_or_else(|| Duration::from_secs(0));
+
+                                            session.give((
+                                                ((worker, operator), (start_time, duration)),
+                                                *capability.time(),
+                                                1,
+                                            ));
+                                        } else {
+                                            tracing::warn!(
+                                                %worker,
+                                                %operator,
+                                                stop_time = ?time,
+                                                "failed to end activation on stop event",
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+                            TimelyEvent::Shutdown(shutdown) => {
+                                let operator = shutdown.id;
+
+                                if let Some(start_time) = activation_map.remove(&(worker, operator))
+                                {
+                                    tracing::warn!(
+                                        %worker,
+                                        %operator,
+                                        shutdown_time = ?time,
+                                        "activation never ended, terminated by operator shutdown",
+                                    );
+
+                                    if start_time > time {
+                                        tracing::warn!(
+                                            %worker,
+                                            %operator,
+                                            start_time = ?start_time,
+                                            end_time = ?time,
+                                            "shutdown event occurred before start event",
+                                        );
+                                    }
+
+                                    let duration = time
+                                        .checked_sub(start_time)
+                                        .unwrap_or_else(|| Duration::from_secs(0));
+
+                                    session.give((
+                                        ((worker, operator), (start_time, duration)),
+                                        *capability.time(),
+                                        1,
+                                    ));
+                                }
+                            }
+
+                            _ => {}
+                        }
+                    }
+
+                    if let RefOrMut::Mut(data) = data {
+                        data.clear();
+                    }
+                })
+            }
+        })
+        .as_collection()
+        .debug_frontier_with("activations");
+
+    let only_channels_events = timely_stream
+        .filter(|(_, _, event)| event.is_channels())
+        .debug_frontier_with("only_channels_events");
+
+    let raw_channels = only_channels_events
+        .filter_map_ref_timed_named("Raw Channels", |&timestamp, &(_, worker, ref event)| {
+            match event {
+                TimelyEvent::Channels(channel) if worker == WorkerId::new(0) => {
+                    Some((channel.clone(), timestamp, 1))
+                }
+                _ => None,
+            }
+        })
+        .as_collection()
+        .debug_frontier_with("raw_channels");
+
+    let channel_creations = only_channels_events
+        .filter_map_ref_timed_named(
+            "Channel Creations",
+            |&timestamp, &(time, worker, ref event)| match event {
+                TimelyEvent::Channels(channel) => {
+                    Some((((worker, channel.id), time), timestamp, 1))
+                }
+                _ => None,
+            },
+        )
+        .as_collection()
+        .debug_frontier_with("channel_creations");
+
+    let channel_scope_addrs = only_channels_events
+        .filter_map_ref_timed_named(
+            "Channel Scope Addrs",
+            |&timestamp, &(_, worker, ref event)| match event {
+                TimelyEvent::Channels(channel) => Some((
+                    ((worker, channel.id), channel.scope_addr.clone()),
+                    timestamp,
+                    1,
+                )),
+                _ => None,
+            },
+        )
+        .as_collection()
+        .debug_frontier_with("channel_scope_addrs")
+        .arrange_by_key_named("ArrangeByKey: Channel Scope Addrs");
+
+    let timeline_events = if disable_timeline {
+        None
+    } else {
+        let events = timely_stream
+            .unary(Pipeline, "Timeline Events", move |_capability, _info| {
+                let (mut buffer, mut event_map, mut map_buffer, mut stack_buffer) = (
+                    Vec::new(),
+                    HashMap::with_hasher(XXHasher::default()),
+                    HashMap::with_hasher(XXHasher::default()),
+                    Vec::new(),
+                );
+
+                move |input, mut output| {
+                    input.for_each(|capability, data| {
+                        data.swap(&mut buffer);
+
+                        let capability = capability.retain();
+                        for (time, worker, event) in buffer.drain(..) {
+                            let mut event_processor = EventProcessor::new(
+                                &mut event_map,
+                                &mut map_buffer,
+                                &mut stack_buffer,
+                                &mut output,
+                                &capability,
+                                worker,
+                                time,
+                            );
+
+                            process_timely_event(&mut event_processor, event);
+                        }
+                    })
+                }
+            })
+            .as_collection()
+            .debug_frontier_with("timeline_events")
+            .leave_region();
+
+        Some(events)
+    };
+
+    TimelyCollections {
+        lifespans: lifespans.leave_region(),
+        activations: activations.leave_region(),
+        operator_creations: operator_creations.leave_region(),
+        channel_creations: channel_creations.leave_region(),
+        raw_channel_events: raw_channels.leave_region(),
+        raw_operator_events: raw_operators.leave_region(),
+        operator_names: operator_names.leave_region(),
+        operator_ids_to_addrs: operator_ids_to_addrs.leave_region(),
+        operator_addrs_to_ids: operator_addrs_to_ids.leave_region(),
+        operator_addrs: operator_addrs.leave_region(),
+        channel_scope_addrs: channel_scope_addrs.leave_region(),
+        dataflow_ids: dataflow_ids.leave_region(),
+        timeline_events,
+    }
+}
+
+/*
 type WorkList = BinaryHeap<Reverse<WorkItem>>;
 
 struct WorkItem {
@@ -244,32 +639,28 @@ where
         channel_scope_addrs.arrange_by_key_named("ArrangeByKey: Channel Scope Addrs");
     let dataflow_ids = dataflow_ids.arrange_named("Arrange: Dataflow Ids");
 
-    // Granulate all streams and turn them into collections
-    (
+    TimelyCollections {
         lifespans,
-        activation_durations,
+        activations: activation_durations,
         operator_creations,
         channel_creations,
-        raw_channels,
-        // FIXME: This isn't granulated since I have no idea what depends
-        //       on the timestamp being the event time
-        raw_operators,
+        raw_channel_events: raw_channels,
+        raw_operator_events: raw_operators,
         operator_names,
-        operator_ids,
-        operator_addrs,
-        operator_addrs_by_self,
+        operator_ids_to_addrs: operator_ids,
+        operator_addrs_to_ids: operator_addrs,
+        operator_addrs: operator_addrs_by_self,
         channel_scope_addrs,
         dataflow_ids,
-        // Note: Don't granulate this
-        worker_events,
-    )
+        timeline_events: worker_events,
+    }
 }
 #[allow(clippy::too_many_arguments)]
 fn work_loop(
     fuel: &mut Fuel,
     handles: &mut OutputHandles,
-    lifespan_map: &mut HashMap<(WorkerId, OperatorId), Duration, XXHasher>,
-    activation_map: &mut HashMap<(WorkerId, OperatorId), Duration, XXHasher>,
+    lifespan_map: &mut HashMap<OpKey, Duration, XXHasher>,
+    activation_map: &mut HashMap<OpKey, Duration, XXHasher>,
     work_list: &mut WorkList,
     work_list_buffers: &mut Vec<Vec<TimelyLogBundle>>,
     event_map: &mut EventMap,
@@ -430,8 +821,8 @@ fn ingest_event(
     session_time: Time,
     handles: &mut OutputHandles,
     capabilities: &OutputCapabilities,
-    lifespan_map: &mut HashMap<(WorkerId, OperatorId), Duration, XXHasher>,
-    activation_map: &mut HashMap<(WorkerId, OperatorId), Duration, XXHasher>,
+    lifespan_map: &mut HashMap<OpKey, Duration, XXHasher>,
+    activation_map: &mut HashMap<OpKey, Duration, XXHasher>,
 ) {
     match event {
         TimelyEvent::Operates(operates) => {
@@ -878,17 +1269,18 @@ macro_rules! timely_source_processor {
 }
 
 timely_source_processor! {
-    lifespans: ((WorkerId, OperatorId), Lifespan),
-    activation_durations: ((WorkerId, OperatorId), (Duration, Duration)),
-    operator_creations: ((WorkerId, OperatorId), Duration),
+    lifespans: (OpKey, Lifespan),
+    activation_durations: (OpKey, (Duration, Duration)),
+    operator_creations: (OpKey, Duration),
     channel_creations: ((WorkerId, ChannelId), Duration),
     raw_channels: (WorkerId, ChannelsEvent),
     raw_operators: (WorkerId, OperatesEvent),
-    operator_names: ((WorkerId, OperatorId), String),
-    operator_ids: ((WorkerId, OperatorId), OperatorAddr),
+    operator_names: (OpKey, String),
+    operator_ids: (OpKey, OperatorAddr),
     operator_addrs: ((WorkerId, OperatorAddr), OperatorId),
     operator_addrs_by_self: ((WorkerId, OperatorAddr), ()),
     channel_scope_addrs: ((WorkerId, ChannelId), OperatorAddr),
-    dataflow_ids: ((WorkerId, OperatorId), ()),
+    dataflow_ids: (OpKey, ()),
     worker_events: TimelineEvent; if timeline_enabled,
 }
+*/
