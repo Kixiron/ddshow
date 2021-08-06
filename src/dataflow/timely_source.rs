@@ -138,17 +138,17 @@ where
         .arrange_by_key_named("ArrangeByKey: Operator Ids to Addrs");
 
     let operator_addrs = only_operates_events
-        .filter_map_ref_timed_named("Operator Addrs by Self", |&timestamp, (_, _, event)| {
-            match event {
-                TimelyEvent::Operates(operates) => {
+        .filter_map_ref_timed_named(
+            "Operator Addrs by Self",
+            |&timestamp, (_, worker, event)| match event {
+                TimelyEvent::Operates(operates) if *worker == WorkerId::new(0) => {
                     Some(((operates.addr.clone(), ()), timestamp, 1))
                 }
                 _ => None,
-            }
-        })
+            },
+        )
         .as_collection()
         .debug_frontier_with("operator_addrs")
-        // TODO: Distinct this or use `Present`
         .arrange_named("Arrange: Operator Addrs by Self");
 
     let operator_addrs_to_ids = only_operates_events
