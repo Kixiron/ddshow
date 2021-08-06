@@ -1,0 +1,61 @@
+name: Release
+
+on: release
+
+jobs:
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    env:
+      RUST_BACKTRACE: 1
+      CARGO_INCREMENTAL: 0
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows
+          - name: x86_64-pc-windows-msvc
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: i686-pc-windows-msvc
+            os: windows-latest
+            target: i686-pc-windows-msvc
+
+          # Linux
+          - name: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: i686-unknown-linux-gnu
+            os: ubuntu-latest
+            target: i686-unknown-linux-gnu
+
+          # OSX
+          - name: x86_64-apple-darwin
+            os: macos-latest
+            target: x86_64-apple-darwin
+
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v2
+
+      - name: install rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: build binary
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --bin ddshow --target ${{ matrix.target }} -Z build-std
+
+      - name: upload artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: ddshow-${{ matrix.target }}
+          path: target/release/ddshow(.exe)?

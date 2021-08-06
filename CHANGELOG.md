@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Fixed a crash when `TIMELY_WORKER_ADDR` was set within ddshow's environment
+- Fixed abysmal performance on large dataflow graphs
 
 <!-- next-url -->
 [Unreleased]: https://github.com/Kixiron/ddshow/releases/tag/v0.1.1...HEAD
