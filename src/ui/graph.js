@@ -156,6 +156,8 @@ let error_nodes = new Set();
 let operator_addrs = new Set();
 /** @type {Map<number, string>} */
 let operator_names = new Map();
+/** @type {Set<string>} */
+let subgraph_addrs = new Set();
 
 /**
  * Check if the given node address exists
@@ -194,13 +196,14 @@ for (const subgraph of raw_subgraphs) {
     const subgraph_name = subgraph.name;
     operator_names.set(subgraph.id, subgraph_name);
 
-    const subgraph_id = format_addr(subgraph.addr);
-    operator_addrs.add(subgraph_id);
+    const subgraph_addr = format_addr(subgraph.addr);
+    operator_addrs.add(subgraph_addr);
+    subgraph_addrs.add(subgraph_addr);
 
     graph.setNode(
-        subgraph_id,
+        subgraph_addr,
         {
-            label: `${subgraph_name.replace(slash_regexp, "\\\\")} @ ${subgraph.id}, ${subgraph_id}`,
+            label: `${subgraph_name.replace(slash_regexp, "\\\\")} @ ${subgraph.id}, ${subgraph_addr}`,
             style: "fill: #EEEEEE; stroke-dasharray: 5, 2;",
             clusterLabelPos: "top",
             data: { kind: "Subgraph", ...subgraph },
@@ -214,7 +217,7 @@ for (const subgraph of raw_subgraphs) {
             create_error_node(parent_addr);
         }
 
-        graph.setParent(subgraph_id, parent_addr);
+        graph.setParent(subgraph_addr, parent_addr);
     }
 }
 
@@ -222,13 +225,13 @@ for (const node of raw_nodes) {
     const node_name = node.name;
     operator_names.set(node.id, node_name);
 
-    const node_id = format_addr(node.addr);
-    operator_addrs.add(node_id);
+    const node_addr = format_addr(node.addr);
+    operator_addrs.add(node_addr);
 
     graph.setNode(
-        node_id,
+        node_addr,
         {
-            label: `${node_name.replace(slash_regexp, "\\\\")} @ ${node.id}, ${node_id}`,
+            label: `${node_name.replace(slash_regexp, "\\\\")} @ ${node.id}, ${node_addr}`,
             style: `fill: ${node.fill_color}`,
             labelStyle: `fill: ${node.text_color}`,
             data: { kind: "Node", ...node },
@@ -240,7 +243,7 @@ for (const node of raw_nodes) {
         create_error_node(parent_addr);
     }
 
-    graph.setParent(node_id, parent_addr);
+    graph.setParent(node_addr, parent_addr);
 }
 
 for (const edge of raw_edges) {
@@ -262,7 +265,7 @@ for (const edge of raw_edges) {
     const src_id = format_addr(edge.src);
     const dest_id = format_addr(edge.dest);
 
-    if (edge.src.slice(0, edge.src.length - 1) !== edge.dest && edge.dest.slice(0, edge.dest.length - 1) !== edge.src) {
+    if (!subgraph_addrs.has(src_id) && !subgraph_addrs.has(dest_id)) {
         if (!node_id_exists(src_id)) {
             create_error_node(src_id);
         }
@@ -278,6 +281,10 @@ for (const edge of raw_edges) {
                 data: { kind: "Edge", ...edge },
             },
         );
+    } else {
+        console.warn(
+            `skipped edge from ${src_id} to ${dest_id}, ${subgraph_addrs.has(src_id) ? src_id : dest_id} is a subgraph and dagre is stupid`,
+        );
     }
 }
 
@@ -285,7 +292,7 @@ for (const edge of raw_edges) {
 try {
     render(svg, graph);
 } catch (err) {
-    console.error(`failed to render dataflow graph: ${err}`);
+    console.error(`failed to render dataflow graph: ${err} `);
 }
 
 // Create the tooltip div
@@ -308,16 +315,16 @@ svg.selectAll("g.node")
             }
 
             const node = unsafe_node.data;
-            let html = `ran for ${node.total_activation_time} over ${node.invocations} invocations<br>\
+            let html = `ran for ${node.total_activation_time} over ${node.invocations} invocations < br >\
                 average runtime of ${node.average_activation_time} \
-                (max: ${node.max_activation_time}, min: ${node.min_activation_time})`;
+    (max: ${node.max_activation_time}, min: ${node.min_activation_time})`;
 
             if (node.kind === "Node"
                 && node.max_arrangement_size !== null
                 && node.min_arrangement_size !== null
             ) {
-                html += `<br>max arrangement size: ${node.max_arrangement_size}, \
-                    min arrangement size: ${node.min_arrangement_size}`;
+                html += `< br > max arrangement size: ${node.max_arrangement_size}, \
+                    min arrangement size: ${node.min_arrangement_size} `;
             }
 
             tooltip
@@ -366,7 +373,7 @@ svg.selectAll("g.edgePath")
             const src_name = get_node_name(edge.src);
             const dest_name = get_node_name(edge.dest);
 
-            let html = `channel from ${src_name} to ${dest_name}`;
+            let html = `channel from ${src_name} to ${dest_name} `;
 
             tooltip
                 .html(html)
@@ -404,7 +411,7 @@ palette_legend
 palette_legend
     .append("div")
     .attr("id", "palette-gradient")
-    .style("background", `linear-gradient(to top, ${palette_gradient})`);
+    .style("background", `linear - gradient(to top, ${palette_gradient})`);
 
 // Bottom text
 palette_legend
@@ -431,9 +438,9 @@ function format_addr(addr) {
 
     for (const segment of addr) {
         if (started) {
-            buf += `, ${segment}`;
+            buf += `, ${segment} `;
         } else {
-            buf += `${segment}`;
+            buf += `${segment} `;
             started = true;
         }
     }
@@ -458,7 +465,7 @@ function format_duration(input_nanos) {
      */
     function item_plural(buf, started, name, value) {
         if (value > 0) {
-            buf += `${value}${name}`;
+            buf += `${value}${name} `;
             if (value > 1) {
                 buf += "s";
             }
@@ -481,7 +488,7 @@ function format_duration(input_nanos) {
             if (started) {
                 buf += " ";
             }
-            buf += `${value}${name}`;
+            buf += `${value}${name} `;
 
             return [true, buf];
         } else {
