@@ -3,7 +3,7 @@ use crate::{
     dataflow::{
         constants::{IDLE_EXTRACTION_FUEL, TCP_READ_TIMEOUT},
         operators::{EventIterator, EventReader, Fuel, RkyvEventReader},
-        utils::{self, DifferentialLogBundle, ProgressLogBundle, TimelyLogBundle},
+        utils::{DifferentialLogBundle, ProgressLogBundle, TimelyLogBundle},
         DataflowData, DataflowReceivers,
     },
 };
@@ -14,7 +14,6 @@ use crossbeam_channel::Receiver;
 use ddshow_sink::{DIFFERENTIAL_ARRANGEMENT_LOG_FILE, TIMELY_LOG_FILE, TIMELY_PROGRESS_LOG_FILE};
 use ddshow_types::progress_logging::TimelyProgressEvent;
 use differential_dataflow::logging::DifferentialEvent as RawDifferentialEvent;
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rkyv::{
     de::deserializers::SharedDeserializeMap, validation::validators::DefaultValidator, Archive,
     Deserialize,
@@ -270,37 +269,40 @@ where
             connections, plural, address,
         )
     };
+    if args.isnt_quiet() {
+        println!("{}", prefix);
+    }
 
-    let progress_style = ProgressStyle::default_spinner()
-        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-        .template("[{elapsed}] {spinner} {prefix}: {wide_msg}");
-    // Duplicate the style with the spinner removed so that it
-    // looks nicer after the task finishes
-    let finished_style =
-        ProgressStyle::default_spinner().template("[{elapsed}] {prefix}: {wide_msg}");
+    // let progress_style = ProgressStyle::default_spinner()
+    //     .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+    //     .template("[{elapsed}] {spinner} {prefix}: {wide_msg}");
+    // // Duplicate the style with the spinner removed so that it
+    // // looks nicer after the task finishes
+    // let finished_style =
+    //     ProgressStyle::default_spinner().template("[{elapsed}] {prefix}: {wide_msg}");
+    //
+    // let progress = ProgressBar::with_draw_target(
+    //     connections.get() as u64,
+    //     if args.is_quiet() {
+    //         ProgressDrawTarget::hidden()
+    //     } else {
+    //         ProgressDrawTarget::stdout()
+    //     },
+    // )
+    // .with_style(progress_style)
+    // .with_prefix(prefix);
 
-    let progress = ProgressBar::with_draw_target(
-        connections.get() as u64,
-        if args.is_quiet() {
-            ProgressDrawTarget::hidden()
-        } else {
-            ProgressDrawTarget::stdout()
-        },
-    )
-    .with_style(progress_style)
-    .with_prefix(prefix);
-
-    utils::set_steady_tick(&progress, connections.get());
+    // utils::set_steady_tick(&progress, connections.get());
 
     let replay_sources = if let Some(log_dirs) = log_dirs {
         let mut replays = Vec::with_capacity(connections.get());
 
         for log_dir in log_dirs {
-            progress.set_prefix(format!(
-                "Loading {} replay from {}",
-                target,
-                log_dir.display(),
-            ));
+            // progress.set_prefix(format!(
+            //     "Loading {} replay from {}",
+            //     target,
+            //     log_dir.display(),
+            // ));
 
             // Load all files in the directory that have the `.ddshow` extension and a
             // prefix that matches `file_prefix`
@@ -331,8 +333,8 @@ where
                     .map_or(false, |prefix| prefix == file_prefix);
 
                 if is_file && ends_with_ddshow && starts_with_prefix {
-                    progress.set_message(replay_file_path.display().to_string());
-                    progress.inc_length(1);
+                    // progress.set_message(replay_file_path.display().to_string());
+                    // progress.inc_length(1);
 
                     // FIXME: This is kinda crappy
                     if args.debug_replay_files {
@@ -373,7 +375,7 @@ where
                         Box::new(BufReader::new(replay_file)) as Box<dyn Read + Send + 'static>
                     ));
 
-                    progress.inc(1);
+                    // progress.inc(1);
                     num_sources += 1;
                 } else {
                     tracing::warn!(
@@ -386,31 +388,31 @@ where
                         replay_file_path.display(),
                     );
 
-                    let reason = if is_file {
-                        "replay files must be files".to_owned()
-                    } else if ends_with_ddshow {
-                        "did not end with the `.ddshow` extension".to_owned()
-                    } else if starts_with_prefix {
-                        format!("did not start with the prefix {}", file_prefix)
-                    } else {
-                        "unknown error".to_owned()
-                    };
+                    // let reason = if is_file {
+                    //     "replay files must be files".to_owned()
+                    // } else if ends_with_ddshow {
+                    //     "did not end with the `.ddshow` extension".to_owned()
+                    // } else if starts_with_prefix {
+                    //     format!("did not start with the prefix {}", file_prefix)
+                    // } else {
+                    //     "unknown error".to_owned()
+                    // };
 
-                    progress.set_message(format!(
-                        "skipped {}, reason: {}",
-                        replay_file_path.display(),
-                        reason,
-                    ));
+                    // progress.set_message(format!(
+                    //     "skipped {}, reason: {}",
+                    //     replay_file_path.display(),
+                    //     reason,
+                    // ));
                 }
             }
         }
 
-        progress.set_style(finished_style);
-        progress.finish_with_message(format!(
-            "loaded {} replay file{}",
-            progress.position(),
-            if progress.position() == 1 { "" } else { "s" },
-        ));
+        // progress.set_style(finished_style);
+        // progress.finish_with_message(format!(
+        //     "loaded {} replay file{}",
+        //     progress.position(),
+        //     if progress.position() == 1 { "" } else { "s" },
+        // ));
 
         ReplaySource::Rkyv(replays)
     } else {
@@ -426,20 +428,20 @@ where
 
         let source = match args.stream_encoding {
             StreamEncoding::Abomonation => {
-                wait_for_abominated_connections(args, listener, &address, connections, &progress)?
+                wait_for_abominated_connections(args, listener, &address, connections)?
             }
             StreamEncoding::Rkyv => {
-                wait_for_rkyv_connections(args, listener, &address, connections, &progress)?
+                wait_for_rkyv_connections(args, listener, &address, connections)?
             }
         };
 
         num_sources += connections.get();
 
-        progress.set_style(finished_style);
-        progress.finish_with_message(format!(
-            "connected to {} trace source{}",
-            connections, plural,
-        ));
+        // progress.set_style(finished_style);
+        // progress.finish_with_message(format!(
+        //     "connected to {} trace source{}",
+        //     connections, plural,
+        // ));
 
         source
     };
@@ -527,13 +529,13 @@ where
 
 /// Connect to the given address and collect `connections` streams, returning all of them
 /// in non-blocking mode
-#[tracing::instrument(skip(progress))]
+#[tracing::instrument]
 pub fn wait_for_abominated_connections<T, D, R>(
     args: &Args,
     listener: TcpListener,
     addr: &SocketAddr,
     connections: NonZeroUsize,
-    progress: &ProgressBar,
+    // progress: &ProgressBar,
 ) -> Result<ReplaySource<R, EventReader<T, D, TcpStream>>>
 where
     Event<T, D>: Clone,
@@ -546,12 +548,12 @@ where
         "abominated connections come from abominated stream encodings",
     );
 
-    progress.set_message(format!(
-        "connected to 0/{} socket{}",
-        connections,
-        if connections.get() == 1 { "" } else { "s" },
-    ));
-    progress.set_length(connections.get() as u64);
+    // progress.set_message(format!(
+    //     "connected to 0/{} socket{}",
+    //     connections,
+    //     if connections.get() == 1 { "" } else { "s" },
+    // ));
+    // progress.set_length(connections.get() as u64);
 
     let timely_conns = (0..connections.get())
         .zip(listener.incoming())
@@ -578,13 +580,13 @@ where
                 connections,
             );
 
-            progress.set_message(format!(
-                "connected to {}/{} socket{}",
-                idx + 1,
-                connections,
-                if connections.get() == 1 { "" } else { "s" },
-            ));
-            progress.inc(1);
+            // progress.set_message(format!(
+            //     "connected to {}/{} socket{}",
+            //     idx + 1,
+            //     connections,
+            //     if connections.get() == 1 { "" } else { "s" },
+            // ));
+            // progress.inc(1);
 
             Ok(EventReader::new(socket))
         })
@@ -598,13 +600,13 @@ type ConnectedRkyvSource<T, D, A> =
 
 /// Connect to the given address and collect `connections` streams, returning all of them
 /// in non-blocking mode
-#[tracing::instrument(skip(progress))]
+#[tracing::instrument]
 pub fn wait_for_rkyv_connections<T, D, A>(
     args: &Args,
     listener: TcpListener,
     addr: &SocketAddr,
     connections: NonZeroUsize,
-    progress: &ProgressBar,
+    // progress: &ProgressBar,
 ) -> Result<ConnectedRkyvSource<T, D, A>>
 where
     T: Archive,
@@ -618,12 +620,12 @@ where
         "rkyv connections come from rkyv stream encodings",
     );
 
-    progress.set_message(format!(
-        "connected to 0/{} socket{}",
-        connections,
-        if connections.get() == 1 { "" } else { "s" },
-    ));
-    progress.set_length(connections.get() as u64);
+    // progress.set_message(format!(
+    //     "connected to 0/{} socket{}",
+    //     connections,
+    //     if connections.get() == 1 { "" } else { "s" },
+    // ));
+    // progress.set_length(connections.get() as u64);
 
     let timely_conns = (0..connections.get())
         .zip(listener.incoming())
@@ -649,13 +651,13 @@ where
                 connections,
             );
 
-            progress.set_message(format!(
-                "connected to {}/{} socket{}",
-                idx + 1,
-                connections,
-                if connections.get() == 1 { "" } else { "s" },
-            ));
-            progress.inc(1);
+            // progress.set_message(format!(
+            //     "connected to {}/{} socket{}",
+            //     idx + 1,
+            //     connections,
+            //     if connections.get() == 1 { "" } else { "s" },
+            // ));
+            // progress.inc(1);
 
             Ok(RkyvEventReader::new(
                 Box::new(socket) as Box<dyn Read + Send + 'static>
@@ -700,19 +702,13 @@ pub fn wait_for_input(
     );
     let num_threads = worker_guards.guards().len();
 
-    // let progress = ProgressBar::with_draw_target(1, ProgressDrawTarget::hidden())
-    //     .with_style(ProgressStyle::default_bar())
-    //     .with_message("Processing data...");
-
     loop {
-        // progress.tick();
-
         // If all workers finish their computations
-        if workers_finished.load(Ordering::Acquire) == num_threads {
+        if workers_finished.load(Ordering::Acquire) >= num_threads {
             tracing::info!(
                 num_threads = num_threads,
-                workers_finished = num_threads,
-                running = running.load(Ordering::Acquire),
+                workers_finished = workers_finished.load(Ordering::Relaxed),
+                running = running.load(Ordering::Relaxed),
                 "main thread got shutdown signal, all workers finished",
             );
 
@@ -723,27 +719,37 @@ pub fn wait_for_input(
         if !running.load(Ordering::Acquire) {
             tracing::info!(
                 num_threads = num_threads,
-                workers_finished = workers_finished.load(Ordering::Acquire),
-                running = false,
+                workers_finished = workers_finished.load(Ordering::Relaxed),
+                running = running.load(Ordering::Relaxed),
                 "main thread got shutdown signal, `running` was set to false",
             );
 
             break;
         }
 
-        // if replays_finished.load(Ordering::Relaxed) == total_replays {
-        //     // progress.set_draw_target(ProgressDrawTarget::stdout());
-        // }
-
         // After we've checked all of our exit conditions we can pull some
         // data from out of the target dataflow
         fuel.reset();
-        extractor.extract_with_fuel(&mut fuel);
+
+        // If all channels have disconnected then the dataflow is done
+        if extractor.extract_with_fuel(&mut fuel) {
+            tracing::info!(
+                num_threads = num_threads,
+                workers_finished = workers_finished.load(Ordering::Relaxed),
+                running = running.load(Ordering::Relaxed),
+                "main thread got shutdown signal, all data channels disconnected",
+            );
+
+            break;
+        }
 
         tracing::trace!(
             target: "main_thread_fuel_consumption",
             used = ?fuel.used(),
             remaining = ?fuel.remaining(),
+            num_threads = num_threads,
+            workers_finished = workers_finished.load(Ordering::Relaxed),
+            running = running.load(Ordering::Relaxed),
             "spent {} fuel within the main thread's wait loop",
             fuel.used().unwrap_or(usize::MAX),
         );
@@ -753,7 +759,7 @@ pub fn wait_for_input(
     running.store(false, Ordering::Release);
     atomic::fence(Ordering::Acquire);
 
-    {
+    if args.isnt_quiet() {
         let mut stdout = io::stdout();
         write!(stdout, "Processing data...").context("failed to write to stdout")?;
         stdout.flush().context("failed to flush stdout")?;

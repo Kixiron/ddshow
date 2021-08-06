@@ -1,6 +1,8 @@
 use crate::{
     dataflow::{
-        operators::{DiffDuration, FilterMapTimed, JoinArranged, MapExt, MapTimed, Max, Min},
+        operators::{
+            DiffDuration, FilterMapTimed, InspectExt, JoinArranged, MapExt, MapTimed, Max, Min,
+        },
         send_recv::ChannelAddrs,
         utils::{ArrangedKey, DifferentialLogBundle, Time, TimelyLogBundle},
         Channel, Diff, OperatorAddr,
@@ -10,7 +12,7 @@ use crate::{
 use ddshow_types::{differential_logging::DifferentialEvent, WorkerId};
 use differential_dataflow::{
     difference::{DiffPair, Present},
-    operators::{CountTotal, Join, Reduce, ThresholdTotal},
+    operators::{arrange::Arrange, CountTotal, Join, Reduce, ThresholdTotal},
     AsCollection, Collection, Data,
 };
 use std::iter;
@@ -21,28 +23,37 @@ type AggregatedStats<S> = (
     Collection<S, (WorkerId, WorkerStats), Diff>,
 );
 
+// TODO: Overhaul this
 pub fn aggregate_worker_stats<S>(
     timely: &Stream<S, TimelyLogBundle>,
     differential: Option<&Stream<S, DifferentialLogBundle>>,
-    channels: &Collection<S, (WorkerId, Channel), Diff>,
+    channels: &Collection<S, Channel, Diff>,
     subgraph_addresses: &ChannelAddrs<S, Diff>,
     operator_addrs_by_self: &ArrangedKey<S, (WorkerId, OperatorAddr), Diff>,
 ) -> AggregatedStats<S>
 where
     S: Scope<Timestamp = Time>,
 {
-    let only_operators = operator_addrs_by_self.antijoin_arranged(subgraph_addresses);
-    let only_subgraphs = operator_addrs_by_self
+    let workers = operator_addrs_by_self
+        .flat_map_ref(|&(worker, _), &()| iter::once(worker))
+        .arrange_named("Arrange: All workers");
+
+    let addresses = operator_addrs_by_self
+        .flat_map_ref(|&(worker, ref addr), &()| iter::once((addr.clone(), worker)))
+        .arrange_named("Arrange: Operator Addresses with workers");
+
+    let only_operators = addresses
+        .antijoin_arranged(subgraph_addresses)
+        .debug_frontier_with("only_operators");
+    let only_subgraphs = addresses
         .semijoin_arranged(subgraph_addresses)
-        .map_named("Map: Select Subgraphs", |((worker, addr), _)| {
-            (worker, addr)
-        });
+        .map_named("Map: Select Subgraphs", |(addr, worker)| (worker, addr));
     let only_dataflows = only_subgraphs.filter(|(_, addr)| addr.is_top_level());
 
     // Collect all dataflow addresses into a single vec
     let dataflow_addrs = only_dataflows.reduce_named(
         "Reduce: Collect All Dataflow Addresses",
-        |_worker, input, output| {
+        |_worker, input: &[(&OperatorAddr, Diff)], output| {
             let dataflows: Vec<OperatorAddr> = input
                 .iter()
                 .filter_map(|&(addr, diff)| if diff >= 1 { Some(addr.clone()) } else { None })
@@ -55,16 +66,20 @@ where
     // Count the total number of each item
     let total_dataflows = only_dataflows
         .map_named("Map: Count Dataflows", |(worker, _)| worker)
-        .count_total();
+        .count_total()
+        .debug_frontier_with("total_dataflows");
     let total_subgraphs = only_subgraphs
         .map_named("Map: Count Subgraphs", |(worker, _)| worker)
-        .count_total();
+        .count_total()
+        .debug_frontier_with("total_subgraphs");
     let total_channels = channels
-        .map_named("Map: Count Channels", |(worker, _)| worker)
-        .count_total();
+        .explode(|_| Some(((), 1)))
+        .count_total()
+        .debug_frontier_with("total_channels");
     let total_operators = only_operators
-        .map_named("Map: Count Operators", |((worker, _), _)| worker)
-        .count_total();
+        .map_named("Map: Count Operators", |(_, worker)| worker)
+        .count_total()
+        .debug_frontier_with("total_operators");
 
     let mut total_arrangements = if let Some(differential) = differential {
         differential
@@ -85,21 +100,18 @@ where
                     | DifferentialEvent::Drop(_) => None,
                 };
 
-                operator.map(|operator| (((worker, operator), ()), time, Present))
+                operator.map(|operator| ((operator, worker), time, Present))
             })
             .as_collection()
+            .debug_frontier_with("total_arrangements")
             .distinct_total_core::<Diff>()
-            .map_named("Map: Count Arrangements", |((worker, _operator), ())| {
-                worker
-            })
+            .map_named("Map: Count Arrangements", |(_, worker)| worker)
             .count_total()
 
     // If we don't have access to differential events just make every worker have zero
     // arrangements
     } else {
-        total_channels.map_named("Map: Give Each Worker Zero Dataflows", |(worker, _)| {
-            (worker, 0)
-        })
+        total_channels.map_named("Map: Give Each Worker Zero Dataflows", |_| 0)
     };
 
     // Add back any workers that didn't contain any arrangements
@@ -116,6 +128,7 @@ where
         |&time, (_, worker, _)| (worker, time, 1),
     )
     .as_collection()
+    .debug_frontier_with("total_events")
     .count_total();
 
     let create_timestamps = |time| {
@@ -132,6 +145,7 @@ where
         move |&time, (event_time, worker, _)| (worker, time, create_timestamps(event_time)),
     )
     .as_collection()
+    .debug_frontier_with("total_runtime")
     .count_total();
 
     // TODO: For whatever reason this part of the dataflow graph is de-prioritized,
@@ -184,7 +198,8 @@ where
                     },
                 )
             },
-        );
+        )
+        .debug_frontier_with("worker_stats");
 
     let program_stats =
         worker_stats
@@ -257,7 +272,8 @@ where
                     events: events as usize,
                     runtime: runtime.to_duration(),
                 },
-            );
+            )
+            .debug_frontier_with("program_stats");
 
     (program_stats, worker_stats)
 }

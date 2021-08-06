@@ -17,7 +17,16 @@ type Element<T, D, R> = TinyVec<[Vec<(D, T, R)>; 16]>;
 pub trait DelayExt<T> {
     type Output;
 
+    #[inline]
+    #[track_caller]
     fn delay_fast<F>(&self, delay: F) -> Self::Output
+    where
+        F: FnMut(&T) -> T + Clone + 'static,
+    {
+        self.delay_fast_named("Delay", delay)
+    }
+
+    fn delay_fast_named<F>(&self, name: &str, delay: F) -> Self::Output
     where
         F: FnMut(&T) -> T + Clone + 'static;
 }
@@ -32,16 +41,16 @@ where
 
     #[inline]
     #[track_caller]
-    fn delay_fast<F>(&self, mut delay: F) -> Self::Output
+    fn delay_fast_named<F>(&self, name: &str, mut delay: F) -> Self::Output
     where
         F: FnMut(&S::Timestamp) -> S::Timestamp + Clone + 'static,
     {
         let caller = Location::caller();
-        let name = located!("Delay", caller);
+        let name = located!(name, caller);
 
         let mut elements = HashMap::with_hasher(XXHasher::default());
         let mut idle_buffers = Vec::new();
-        let mut dirty = BinaryHeap::new();
+        // let mut dirty = BinaryHeap::new();
 
         self.unary_notify(Pipeline, &name, None, move |input, output, notificator| {
             input.for_each(|time, data| {
@@ -53,13 +62,16 @@ where
                 debug_assert!(time.time().less_equal(&new_time));
 
                 notificator.notify_at(time.delayed(&new_time));
-                elements
-                    .entry(new_time.clone())
-                    .or_insert_with(TinyVec::<[_; 16]>::new)
-                    .push(buffer);
-                dirty.push(Reverse(new_time));
+                let buffers = elements
+                    .entry(new_time)
+                    .or_insert_with(TinyVec::<[_; 16]>::new);
+                buffers.push(buffer);
+                // if buffers.len() > 10 {
+                //     dirty.push(Reverse(new_time));
+                // }
             });
 
+            /*
             if let Some(Reverse(dirty_time)) = dirty.pop() {
                 // TODO: Maybe remove the entry if it has no update vectors in it?
                 if let Some(updates) = elements.get_mut(&dirty_time) {
@@ -95,6 +107,7 @@ where
                     updates.shrink_to_fit();
                 }
             }
+            */
 
             // for each available notification, send corresponding set
             notificator.for_each(|time, notifications, notificator| {
@@ -130,9 +143,9 @@ where
                 }
             });
 
-            if dirty.capacity() > dirty.len() * 2 {
-                dirty.shrink_to_fit();
-            }
+            // if dirty.capacity() > dirty.len() * 2 {
+            //     dirty.shrink_to_fit();
+            // }
 
             elements.retain(|_, buf| !buf.is_empty());
             if elements.capacity() > elements.len() * 2 {
@@ -159,16 +172,16 @@ where
 
     #[inline]
     #[track_caller]
-    fn delay_fast<F>(&self, mut delay: F) -> Self::Output
+    fn delay_fast_named<F>(&self, name: &str, mut delay: F) -> Self::Output
     where
         F: FnMut(&S::Timestamp) -> S::Timestamp + Clone + 'static,
     {
         let caller = Location::caller();
-        let name = located!("Delay", caller);
+        let name = located!(name, caller);
 
         let mut elements = HashMap::with_hasher(XXHasher::default());
         let mut idle_buffers = Vec::new();
-        let mut dirty = BinaryHeap::new();
+        // let mut dirty = BinaryHeap::new();
 
         self.inner
             .unary_notify(Pipeline, &name, None, move |input, output, notificator| {
@@ -210,15 +223,17 @@ where
 
                     buffer.shrink_to_fit();
                     notificator.notify_at(time.delayed(&stream_time));
-                    elements
-                        .entry(stream_time.clone())
-                        .or_insert_with(TinyVec::<[_; 16]>::new)
-                        .push(buffer);
-                    dirty.push(Reverse(stream_time));
+                    let buffers = elements
+                        .entry(stream_time)
+                        .or_insert_with(TinyVec::<[_; 16]>::new);
+                    buffers.push(buffer);
+                    // if buffers.len() > 10 {
+                    //     dirty.push(Reverse(stream_time));
+                    // }
                 });
 
                 // Perform some cleanup on the data we have just sitting around
-                compact_delayed_buffers(&mut dirty, &mut elements, &mut idle_buffers);
+                // compact_delayed_buffers(&mut dirty, &mut elements, &mut idle_buffers);
 
                 // for each available notification, send corresponding set
                 notificator.for_each(|time, notifications, notificator| {
@@ -256,9 +271,9 @@ where
                     }
                 });
 
-                if dirty.capacity() > dirty.len() * 2 {
-                    dirty.shrink_to_fit();
-                }
+                // if dirty.capacity() > dirty.len() * 2 {
+                //     dirty.shrink_to_fit();
+                // }
 
                 elements.retain(|_, buf| !buf.is_empty());
                 if elements.capacity() > elements.len() * 2 {
@@ -276,6 +291,7 @@ where
 }
 
 /// Consolidate updates within their timestamp
+#[allow(dead_code)]
 fn compact_delayed_buffers<T, D, R>(
     dirty: &mut BinaryHeap<Reverse<T>>,
     elements: &mut HashMap<T, Element<T, D, R>, XXHasher>,
@@ -285,11 +301,12 @@ fn compact_delayed_buffers<T, D, R>(
     D: Data,
     R: Semigroup,
 {
-    // TODO: Maybe add an actual fuel mechanism?
-
     if let Some(Reverse(dirty_time)) = dirty.pop() {
         // TODO: Maybe remove the entry if it has no update vectors in it?
         if let Some(updates) = elements.get_mut(&dirty_time) {
+            let before_records = updates.iter().map(|buf| buf.len()).sum::<usize>();
+            let before_buffers = updates.len();
+
             let largest_buf = updates
                 .iter()
                 .enumerate()
@@ -320,6 +337,18 @@ fn compact_delayed_buffers<T, D, R>(
                     updates.push(consolidated);
                 }
             }
+
+            let compacted_records = updates.iter().map(|buf| buf.len()).sum::<usize>();
+            let compacted_buffers = updates.len();
+            tracing::debug!(
+                before_records,
+                before_buffers,
+                compacted_records,
+                compacted_buffers,
+                removed_buffers = before_buffers - compacted_buffers,
+                removed_records = before_records - compacted_records,
+                "compacted delay buffers",
+            );
         }
     }
 }

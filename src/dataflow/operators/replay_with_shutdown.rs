@@ -1,11 +1,10 @@
 use crate::dataflow::{
     constants::{DEFAULT_REACTIVATION_DELAY, FILE_SOURCED_FUEL},
     operators::util::Fuel,
-    utils::JoinOnDrop,
+    utils::Time,
 };
 use abomonation::Abomonation;
 use crossbeam_channel::TryRecvError;
-use indicatif::ProgressBar;
 use std::{
     convert::identity,
     fmt::Debug,
@@ -207,7 +206,6 @@ where
             replays_finished,
             Fuel::unlimited(),
             DEFAULT_REACTIVATION_DELAY,
-            None,
         )
     }
 
@@ -222,7 +220,6 @@ where
         is_running: Arc<AtomicBool>,
         replays_finished: Arc<AtomicUsize>,
         fuel: Fuel,
-        progress_bar: Option<ProgressBar>,
     ) -> Stream<S, D>
     where
         Self: Sized,
@@ -237,7 +234,6 @@ where
             replays_finished,
             fuel,
             DEFAULT_REACTIVATION_DELAY,
-            progress_bar,
         )
     }
 
@@ -251,36 +247,33 @@ where
         replays_finished: Arc<AtomicUsize>,
         fuel: Fuel,
         reactivation_delay: Duration,
-        progress_bar: Option<ProgressBar>,
     ) -> Stream<S, D>
     where
         N: Into<String>,
         S: Scope<Timestamp = T>;
 }
 
-impl<T, D, I> ReplayWithShutdown<T, D> for I
+impl<D, I> ReplayWithShutdown<Time, D> for I
 where
-    T: Timestamp + Default,
+    // T: Timestamp + Default,
     D: Debug + Data + Send,
     I: IntoIterator,
-    <I as IntoIterator>::Item: EventIterator<T, D> + Send + 'static,
+    <I as IntoIterator>::Item: EventIterator<Time, D> + Send + 'static,
 {
     #[track_caller]
     fn replay_with_shutdown_into_core<N, S>(
         self,
         name: N,
         scope: &mut S,
-        // TODO: Implement this
-        _probe: ProbeHandle<T>,
+        probe: ProbeHandle<Time>,
         is_running: Arc<AtomicBool>,
         replays_finished: Arc<AtomicUsize>,
         mut fuel: Fuel,
         reactivation_delay: Duration,
-        progress_bar: Option<ProgressBar>,
     ) -> Stream<S, D>
     where
         N: Into<String>,
-        S: Scope<Timestamp = T>,
+        S: Scope<Timestamp = Time>,
     {
         let worker_index = scope.index();
         let caller = Location::caller();
@@ -321,13 +314,14 @@ where
             (false, vec![false; total_streams], false);
 
         let logger: Option<TimelyLogger> = scope.log_register().get("timely");
+        let mut buffer: Vec<Event<Time, _>> = Vec::new();
 
-        let (running, progress) = (is_running.clone(), progress_bar.clone());
+        let running = is_running.clone();
         let (senders, receivers): (Vec<_>, Vec<_>) = (0..total_streams)
             .map(|_| crossbeam_channel::bounded(FILE_SOURCED_FUEL.get()))
             .unzip();
 
-        let worker_handle = Builder::new()
+        Builder::new()
             .name(format!("ddshow-replay-worker-{}", worker_index))
             .spawn(move || {
                 tracing::debug!(worker = worker_index, "spawned thread worker for replay");
@@ -335,7 +329,7 @@ where
                 let (mut streams_finished, mut bytes_read) =
                     (vec![false; total_streams], vec![0; total_streams]);
 
-                while running.load(Ordering::Acquire)
+                'outer: while running.load(Ordering::Acquire)
                     && !streams_finished.iter().copied().all(identity)
                 {
                     for ((stream_idx, event_stream), channel) in
@@ -349,6 +343,17 @@ where
 
                             match next {
                                 Ok(Some(event)) => {
+                                    if let Err(err) = channel.send(event) {
+                                        tracing::error!(
+                                            worker = worker_index,
+                                            "failed to send data to replay channel: {:?}",
+                                            err,
+                                        );
+                                        running.store(false, Ordering::Release);
+
+                                        break 'outer;
+                                    }
+
                                     if let Err(err) = sync_activator.activate() {
                                         tracing::error!(
                                             worker = worker_index,
@@ -359,28 +364,12 @@ where
                                         );
                                         running.store(false, Ordering::Release);
 
-                                        return;
-                                    }
-
-                                    if let Event::Messages(_, data) = &event {
-                                        // Update the progress bar with the number of messages we've ingested
-                                        if let Some(bar) = progress.as_ref() {
-                                            bar.inc_length(data.len() as u64);
-                                        }
-                                    }
-
-                                    if let Err(err) = channel.send(event) {
-                                        tracing::error!(
-                                            worker = worker_index,
-                                            "failed to send data to replay channel: {:?}",
-                                            err,
-                                        );
-                                        running.store(false, Ordering::Release);
-
-                                        return;
+                                        break 'outer;
                                     }
                                 }
+
                                 Ok(None) => break 'inner,
+
                                 Err(err) => {
                                     tracing::error!(
                                         worker = worker_index,
@@ -389,7 +378,7 @@ where
                                     );
                                     running.store(false, Ordering::Release);
 
-                                    return;
+                                    break 'outer;
                                 }
                             }
                         }
@@ -404,16 +393,24 @@ where
                     "thread worker for replay on worker {} finished",
                     worker_index,
                 );
+                drop(senders);
+
+                if let Err(err) = sync_activator.activate() {
+                    tracing::error!(
+                        worker = worker_index,
+                        is_running = running.load(Ordering::Acquire),
+                        "replay thread failed to activate replay operator, \
+                                                setting is_running to false: {:?}",
+                        err,
+                    );
+                    running.store(false, Ordering::Release);
+                }
             })
             .expect("the thread's name is valid");
-        let worker_handle = JoinOnDrop::new(worker_handle);
 
         let mut receivers = receivers.into_iter().enumerate().cycle();
 
         builder.build(move |progress| {
-            // Join our worker handle whenever the operator is shut down
-            let _worker_handle = &worker_handle;
-
             if let Some(logger) = logger.as_ref() {
                 logger.log(RawTimelyEvent::Input(RawInputEvent {
                     start_stop: RawStartStop::Start,
@@ -436,35 +433,90 @@ where
             } else {
                 fuel.reset();
 
+                let mut idx = 0;
+                while idx < buffer.len() {
+                    let event = &buffer[idx];
+
+                    match event {
+                        Event::Progress(updates) => {
+                            // Exert a little bit of effort for propagating timestamps
+                            fuel.exert(updates.len());
+
+                            if updates.iter().any(|&(time, _)| {
+                                probe.less_equal(&(time + Duration::from_secs(5)))
+                            }) || probe.with_frontier(|frontier| frontier.is_empty())
+                            {
+                                let updates = if let Event::Progress(updates) = buffer.remove(idx) {
+                                    updates
+                                } else {
+                                    unreachable!()
+                                };
+
+                                progress.internals[0].extend(updates.iter().cloned());
+                                antichain.update_iter(updates);
+                            } else {
+                                idx += 1
+                            }
+                        }
+
+                        &Event::Messages(time, ref data) => {
+                            // Exert effort for each record we receive
+                            fuel.exert(data.len());
+
+                            if probe.less_equal(&(time + Duration::from_secs(5)))
+                                || probe.with_frontier(|frontier| frontier.is_empty())
+                            {
+                                let mut data = if let Event::Messages(_, data) = buffer.remove(idx)
+                                {
+                                    data
+                                } else {
+                                    unreachable!()
+                                };
+
+                                output.session(&time).give_vec(&mut data);
+                            } else {
+                                idx += 1
+                            }
+                        }
+                    }
+                }
+
                 'outer: for (idx, recv) in receivers.by_ref().take(total_streams) {
-                    'inner: while !disconnected_channels[idx] {
+                    'inner: while !disconnected_channels[idx]
+                        && !fuel.is_exhausted()
+                        && is_running.load(Ordering::Acquire)
+                    {
                         match recv.try_recv() {
                             Ok(event) => match event {
-                                Event::Progress(vec) => {
+                                Event::Progress(updates) => {
                                     // Exert a little bit of effort for propagating timestamps
-                                    fuel.exert(1);
+                                    fuel.exert(updates.len());
 
-                                    progress.internals[0].extend(vec.iter().cloned());
-                                    antichain.update_iter(vec);
+                                    if updates.iter().any(|&(time, _)| {
+                                        probe.less_equal(&(time + Duration::from_secs(5)))
+                                    }) {
+                                        progress.internals[0].extend(updates.iter().cloned());
+                                        antichain.update_iter(updates);
+                                    } else {
+                                        buffer.push(Event::Progress(updates));
+                                        break 'inner;
+                                    }
                                 }
 
                                 Event::Messages(time, mut data) => {
-                                    let data_len = data.len();
-
                                     // Exert effort for each record we receive
-                                    fuel.exert(data_len);
+                                    fuel.exert(data.len());
 
-                                    output.session(&time).give_vec(&mut data);
-
-                                    if let Some(bar) = progress_bar.as_ref() {
-                                        bar.inc(data_len as u64);
+                                    if probe.less_equal(&(time + Duration::from_secs(5))) {
+                                        output.session(&time).give_vec(&mut data);
+                                    } else {
+                                        buffer.push(Event::Messages(time, data));
+                                        break 'inner;
                                     }
                                 }
                             },
 
                             Err(TryRecvError::Empty) => {
-                                worker_handle.unpark();
-
                                 if fuel.is_exhausted() || !is_running.load(Ordering::Acquire) {
                                     break 'outer;
                                 } else {
@@ -482,11 +534,6 @@ where
                                 disconnected_channels[idx] = true;
                                 break 'inner;
                             }
-                        }
-
-                        if fuel.is_exhausted() || !is_running.load(Ordering::Acquire) {
-                            worker_handle.unpark();
-                            break 'outer;
                         }
                     }
                 }
@@ -579,6 +626,9 @@ where
                 worker = worker_index,
                 fuel = ?fuel,
                 remaining = ?fuel.remaining(),
+                ?disconnected_channels,
+                buffer_length = buffer.len(),
+                antichain = ?*antichain.frontier(),
             );
 
             let all_channels_disconnected = disconnected_channels.iter().copied().all(identity);
@@ -591,63 +641,81 @@ where
                 .drain_into(&mut progress.produceds[0]);
 
             // Reactivate according to the re-activation delay
-            activator.activate_after(reactivation_delay);
+            // activator.activate_after(reactivation_delay);
 
             // If we're supposed to be running and haven't completed our input streams,
             // flush the output & re-activate ourselves after a delay
-            let needs_reactivation =
-                if is_running.load(Ordering::Acquire) && !all_channels_disconnected {
-                    // Tell timely we have work left to do
-                    // true
-                    false
+            let needs_reactivation = if is_running.load(Ordering::Acquire)
+                && (!all_channels_disconnected || !buffer.is_empty())
+            {
+                tracing::trace!(
+                    target: "replay_reactivations",
+                    worker = worker_index,
+                    fuel = ?fuel,
+                    remaining = ?fuel.remaining(),
+                    is_running = is_running.load(Ordering::Acquire),
+                    ?disconnected_channels,
+                    all_channels_disconnected,
+                    buffer_length = buffer.len(),
+                    buffer_is_empty = buffer.is_empty(),
+                    condition = is_running.load(Ordering::Acquire) && (!all_channels_disconnected || !buffer.is_empty()),
+                    antichain = ?*antichain.frontier(),
+                    "reactivating replay worker",
+                );
 
-                // If we're not supposed to be running or all input streams are finished,
-                // flush our outputs and release all outstanding capabilities so that
-                // any downstream consumers know we're done
+                activator.activate_after(DEFAULT_REACTIVATION_DELAY);
+
+                // Tell timely we have work left to do
+                true
+
+            // If we're not supposed to be running or all input streams are finished,
+            // flush our outputs and release all outstanding capabilities so that
+            // any downstream consumers know we're done
+            } else {
+                let reason = if all_channels_disconnected {
+                    "all streams have finished"
                 } else {
-                    let reason = if all_channels_disconnected {
-                        "all streams have finished"
-                    } else {
-                        "is_running was set to false"
-                    };
-
-                    tracing::info!(
-                        worker = worker_index,
-                        is_running = is_running.load(Ordering::Acquire),
-                        all_channels_disconnected = all_channels_disconnected,
-                        "received shutdown signal within event replay: {}",
-                        reason,
-                    );
-
-                    // Release all outstanding capabilities
-                    while !antichain.is_empty() {
-                        let elements = antichain
-                            .frontier()
-                            .iter()
-                            .map(|time| (time.clone(), -1))
-                            .collect::<Vec<_>>();
-
-                        for (time, change) in elements.iter() {
-                            progress.internals[0].update(time.clone(), *change);
-                        }
-
-                        antichain.update_iter(elements);
-                    }
-
-                    if let Some(bar) = progress_bar.as_ref() {
-                        if started {
-                            bar.finish_using_style();
-                        }
-                    }
-
-                    if !has_incremented {
-                        replays_finished.fetch_add(1, Ordering::Relaxed);
-                        has_incremented = true;
-                    }
-
-                    // Tell timely we're completely done
-                    false
+                    "is_running was set to false"
                 };
+
+                tracing::info!(
+                    worker = worker_index,
+                    is_running = is_running.load(Ordering::Acquire),
+                    all_channels_disconnected = all_channels_disconnected,
+                    buffer_empty = buffer.is_empty(),
+                    "received shutdown signal within event replay: {}",
+                    reason,
+                );
+
+                // Release all outstanding capabilities
+                while !antichain.is_empty() {
+                    let elements = antichain
+                        .frontier()
+                        .iter()
+                        .map(|&time| (time, -1))
+                        .collect::<Vec<_>>();
+
+                    for &(time, change) in elements.iter() {
+                        progress.internals[0].update(time, change);
+                    }
+
+                    antichain.update_iter(elements);
+                }
+
+                // if let Some(bar) = progress_bar.as_ref() {
+                //     if started {
+                //         bar.finish_using_style();
+                //     }
+                // }
+
+                if !has_incremented {
+                    replays_finished.fetch_add(1, Ordering::Relaxed);
+                    has_incremented = true;
+                }
+
+                // Tell timely we're completely done
+                false
+            };
 
             if let Some(logger) = logger.as_ref() {
                 logger.log(RawTimelyEvent::Input(RawInputEvent {

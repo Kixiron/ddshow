@@ -13,10 +13,10 @@ use timely::dataflow::{
 
 pub fn display_reachability<S>(
     scope: &mut S,
-    window_size: Duration,
+    window_size: Time,
     reachability_trace: &Stream<S, ReachabilityLogBundle>,
 ) where
-    S: Scope<Timestamp = Duration>,
+    S: Scope<Timestamp = Time>,
 {
     let mut clock_probe = Handle::new();
     let clock = iterator_source(

@@ -1,28 +1,23 @@
 use crate::dataflow::{
     operators::{InspectExt, IterateExt, JoinArranged},
     send_recv::ChannelAddrs,
-    Channel, FilterMap, Multiply,
+    utils::{Diff, Time},
+    Channel, FilterMap,
 };
-use ddshow_types::{
-    timely_logging::ChannelsEvent, ChannelId, OperatorAddr, OperatorId, PortId, WorkerId,
-};
+use ddshow_types::{timely_logging::ChannelsEvent, ChannelId, OperatorAddr, OperatorId, PortId};
 use differential_dataflow::{
-    difference::Abelian,
-    lattice::Lattice,
     operators::{arrange::ArrangeByKey, JoinCore, Threshold, ThresholdTotal},
-    Collection, ExchangeData,
+    Collection,
 };
-use timely::{dataflow::Scope, order::TotalOrder};
+use timely::dataflow::Scope;
 
-pub fn rewire_channels<S, D>(
+pub fn rewire_channels<S>(
     scope: &mut S,
-    channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
-    subgraphs: &ChannelAddrs<S, D>,
-) -> Collection<S, (WorkerId, Channel), D>
+    channels: &Collection<S, ChannelsEvent, Diff>,
+    subgraphs: &ChannelAddrs<S, Diff>,
+) -> Collection<S, Channel, Diff>
 where
-    S: Scope,
-    S::Timestamp: Lattice + TotalOrder,
-    D: Abelian + ExchangeData + Multiply<Output = D> + From<i8>,
+    S: Scope<Timestamp = Time>,
 {
     scope.region_named("Rewire Channels", |region| {
         let (channels, subgraphs) = (
@@ -40,16 +35,14 @@ where
     })
 }
 
-fn subgraph_crosses<S, D>(
-    channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
-    subgraphs: &ChannelAddrs<S, D>,
-) -> Collection<S, (WorkerId, Channel), D>
+fn subgraph_crosses<S>(
+    channels: &Collection<S, ChannelsEvent, Diff>,
+    subgraphs: &ChannelAddrs<S, Diff>,
+) -> Collection<S, Channel, Diff>
 where
-    S: Scope,
-    S::Timestamp: Lattice,
-    D: Abelian + ExchangeData + Multiply<Output = D> + From<i8>,
+    S: Scope<Timestamp = Time>,
 {
-    let channels = channels.map(|(worker, channel)| {
+    let channels = channels.map(|channel| {
         let mut source = channel.scope_addr.clone();
         source.push(channel.source[0]);
 
@@ -57,7 +50,7 @@ where
         target.push(channel.target[0]);
 
         (
-            (worker, source, channel.source[1]),
+            (source, channel.source[1]),
             (
                 (target, channel.target[1]),
                 OperatorAddr::from_elem(OperatorId::new(channel.id.into_inner())),
@@ -68,9 +61,9 @@ where
     let channels_forward = channels.arrange_by_key_named("ArrangeByKey: Subgraph Channels");
     let channels_reverse = channels
         .map(
-            |((worker, source_addr, src_channel), ((target_addr, target_channel), path))| {
+            |((source_addr, src_channel), ((target_addr, target_channel), path))| {
                 (
-                    (worker, target_addr, target_channel),
+                    (target_addr, target_channel),
                     ((source_addr, src_channel), path),
                 )
             },
@@ -85,31 +78,31 @@ where
             );
 
             let ingress_candidates = links
-                .map(|((worker, source, channel), (target, path))| {
+                .map(|((source, channel), (target, path))| {
                     let mut new_target = target.0.clone();
                     new_target.push(PortId::zero());
 
-                    ((worker, new_target, target.1), ((source, channel), path))
+                    ((new_target, target.1), ((source, channel), path))
                 })
                 .arrange_by_key_named("ArrangeByKey: Ingress Candidates");
 
             let egress_candidates = links
-                .map(|((worker, mut source, channel), (target, path))| {
+                .map(|((mut source, channel), (target, path))| {
                     source.push(PortId::zero());
 
-                    ((worker, source, channel), (target, path))
+                    ((source, channel), (target, path))
                 })
                 .arrange_by_key_named("ArrangeByKey: Egress Candidates");
 
             let ingress = channels_arranged.join_core(
                 &ingress_candidates,
-                |&(worker, _, _), (inner, inner_vec), (outer, outer_vec)| {
+                |_, (inner, inner_vec), (outer, outer_vec)| {
                     if inner_vec != outer_vec {
                         let mut outer_vec = outer_vec.clone();
                         outer_vec.extend(inner_vec.iter());
 
                         Some((
-                            (worker, outer.0.to_owned(), outer.1.to_owned()),
+                            (outer.0.to_owned(), outer.1.to_owned()),
                             (inner.to_owned(), outer_vec),
                         ))
                     } else {
@@ -120,13 +113,13 @@ where
 
             let egress = channels_reverse.join_core(
                 &egress_candidates,
-                |&(worker, _, _), (inner, inner_vec), (outer, outer_vec)| {
+                |_, (inner, inner_vec), (outer, outer_vec)| {
                     if inner_vec != outer_vec {
                         let mut inner_vec = inner_vec.to_owned();
                         inner_vec.extend(outer_vec.iter());
 
                         Some((
-                            (worker, inner.0.to_owned(), inner.1.to_owned()),
+                            (inner.0.to_owned(), inner.1.to_owned()),
                             (outer.to_owned(), inner_vec),
                         ))
                     } else {
@@ -136,13 +129,14 @@ where
             );
 
             links
+                // TODO: Name this
                 .concatenate(vec![ingress, egress])
-                .distinct_core::<D>()
+                .threshold_named(&located!("Distinct"), |_, _| 1)
         });
 
     propagated_channels
         .filter_map(
-            |((worker, source_addr, _source_port), ((target_addr, _target_port), channel_path))| {
+            |((source_addr, _source_port), ((target_addr, _target_port), channel_path))| {
                 if channel_path.len() >= 2 {
                     let channel = Channel::ScopeCrossing {
                         channel_id: ChannelId::new(channel_path[0].into_inner()),
@@ -150,27 +144,25 @@ where
                         target_addr,
                     };
 
-                    Some(((worker, channel.target_addr().to_owned()), channel))
+                    Some(((channel.target_addr().to_owned()), channel))
                 } else {
                     None
                 }
             },
         )
         .antijoin_arranged(subgraphs)
-        .map(|((worker, _), channel)| (worker, channel))
+        .map(|(_, channel)| channel)
 }
 
-fn subgraph_normal<S, D>(
-    channels: &Collection<S, (WorkerId, ChannelsEvent), D>,
-    subgraphs: &ChannelAddrs<S, D>,
-) -> Collection<S, (WorkerId, Channel), D>
+fn subgraph_normal<S>(
+    channels: &Collection<S, ChannelsEvent, Diff>,
+    subgraphs: &ChannelAddrs<S, Diff>,
+) -> Collection<S, Channel, Diff>
 where
-    S: Scope,
-    S::Timestamp: Lattice,
-    D: Abelian + ExchangeData + Multiply<Output = D>,
+    S: Scope<Timestamp = Time>,
 {
     let channels = channels
-        .filter_map(|(worker, channel)| {
+        .filter_map(|channel| {
             if channel.source[0] != PortId::zero() && channel.target[0] != PortId::zero() {
                 let mut source_addr = channel.scope_addr.clone();
                 source_addr.push(channel.source[0]);
@@ -178,27 +170,20 @@ where
                 let mut target_addr = channel.scope_addr;
                 target_addr.push(channel.target[0]);
 
-                Some(((worker, source_addr), (channel.id, target_addr)))
+                Some((source_addr, (channel.id, target_addr)))
             } else {
                 None
             }
         })
         .antijoin_arranged(subgraphs)
-        .map(|((worker, source_addr), (channel_id, target_addr))| {
-            ((worker, target_addr), (channel_id, source_addr))
-        })
+        .map(|(source_addr, (channel_id, target_addr))| (target_addr, (channel_id, source_addr)))
         .antijoin_arranged(subgraphs);
 
     channels
-        .map(|((worker, target_addr), (channel_id, source_addr))| {
-            (
-                worker,
-                Channel::Normal {
-                    channel_id,
-                    source_addr,
-                    target_addr,
-                },
-            )
+        .map(|(target_addr, (channel_id, source_addr))| Channel::Normal {
+            channel_id,
+            source_addr,
+            target_addr,
         })
         .debug_frontier_with("subgraph_normal output")
 }

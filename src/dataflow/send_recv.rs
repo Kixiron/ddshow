@@ -3,7 +3,7 @@ use crate::{
         constants::DEFAULT_EXTRACTOR_CAPACITY,
         differential::{ArrangementStats, SplineLevel},
         operators::{CrossbeamExtractor, Fuel},
-        progress_stats::{Channel, OperatorProgress, ProgressInfo},
+        progress_stats::{Channel, OperatorProgress},
         summation::Summation,
         utils::{channel_sink, Diff, OpKey, Time, XXHasher},
         worker_timeline::TimelineEvent,
@@ -30,10 +30,8 @@ use timely::{
     progress::{ChangeBatch, Timestamp},
 };
 
-pub(crate) type ChannelAddrs<S, D> = Arranged<
-    S,
-    TraceAgent<OrdKeySpine<(WorkerId, OperatorAddr), <S as ScopeParent>::Timestamp, D>>,
->;
+pub(crate) type ChannelAddrs<S, D> =
+    Arranged<S, TraceAgent<OrdKeySpine<OperatorAddr, <S as ScopeParent>::Timestamp, D>>>;
 type Bundled<D, R = Diff> = (D, Time, R);
 type ESender<D, R = Diff> = Sender<Event<Time, Bundled<D, R>>>;
 type EReceiver<D, R = Diff> = Receiver<Event<Time, Bundled<D, R>>>;
@@ -77,25 +75,26 @@ macro_rules! make_send_recv {
             #[allow(clippy::too_many_arguments)]
             pub fn install_sinks<S>(
                 mut self,
+                probe: &mut ProbeHandle<Time>,
                 $($name: (&Collection<S, $ty, make_send_recv!(@diff $($diff)?)>, bool),)*
             ) -> Vec<(ProbeHandle<Time>, &'static str)>
             where
                 S: Scope<Timestamp = Time>,
             {
-                let mut probes = Vec::with_capacity(NUM_VARIANTS + 1);
+                let probes = Vec::new(); // Vec::with_capacity(NUM_VARIANTS + 1);
 
                 $(
                     let (stream, needs_consolidation) = $name;
-                    let mut probe = ProbeHandle::new();
+                    // let mut probe = ProbeHandle::new();
 
                     channel_sink(
                         stream,
-                        &mut probe,
+                        probe,
                         self.$name(),
                         needs_consolidation,
                     );
 
-                    probes.push((probe, stringify!($name)));
+                    // probes.push((probe, stringify!($name)));
                 )*
 
                 probes
@@ -177,10 +176,11 @@ macro_rules! make_send_recv {
             }
 
             /// Extract data from the current dataflow in a non-blocking manner
-            pub fn extract_with_fuel(&mut self, fuel: &mut Fuel) {
+            pub fn extract_with_fuel(&mut self, fuel: &mut Fuel) -> bool {
+                let mut is_finished = true;
                 for step in self.step.by_ref().take(NUM_VARIANTS) {
                     if fuel.is_exhausted() {
-                        break;
+                        return false;
                     }
 
                     match step {
@@ -188,11 +188,15 @@ macro_rules! make_send_recv {
                             DataflowStep::$name => {
                                 let (extractor, sink) = &mut self.$name;
 
-                                extractor.extract_with_fuel(fuel, sink, &mut self.consumed);
+                                if !extractor.extract_with_fuel(fuel, sink, &mut self.consumed) {
+                                    is_finished = false;
+                                }
                             },
                         )*
                     }
                 }
+
+                is_finished
             }
 
             // // FIXME: Use the tracker progress infrastructure for a more
@@ -293,19 +297,17 @@ macro_rules! make_send_recv {
 }
 
 type WorkerStatsData = Vec<(WorkerId, WorkerStats)>;
-type NodeData = ((WorkerId, OperatorAddr), OperatesEvent);
+type NodeData = (OperatorAddr, OperatesEvent);
 type EdgeData = (
-    WorkerId,
     OperatesEvent,
     Channel,
     OperatesEvent,
     // Option<ChannelMessageStats>,
 );
-type SubgraphData = ((WorkerId, OperatorAddr), OperatesEvent);
+type SubgraphData = (OperatorAddr, OperatesEvent);
 type TimelineEventData = TimelineEvent;
 type NameLookupData = ((WorkerId, OperatorId), String);
 type AddrLookupData = ((WorkerId, OperatorId), OperatorAddr);
-type ChannelProgressData = (OperatorAddr, ProgressInfo);
 
 make_send_recv! {
     program_stats: ProgramStats,
@@ -317,7 +319,6 @@ make_send_recv! {
     timeline_events: TimelineEventData,
     name_lookup: NameLookupData,
     addr_lookup: AddrLookupData,
-    channel_progress: ChannelProgressData,
     operator_shapes: OperatorShape,
     operator_progress: OperatorProgress,
     operator_activations: (OpKey, (Duration, Duration)),
