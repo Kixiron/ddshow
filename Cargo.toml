@@ -1,7 +1,7 @@
 [package]
 name = "ddshow"
 description = "Timely and Differential dataflow log analysis and vizualization"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Chase Wilson <me@chasewilson.dev>"]
 license = "MIT OR Apache-2.0"
 edition = "2018"
