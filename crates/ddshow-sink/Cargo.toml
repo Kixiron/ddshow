@@ -21,12 +21,12 @@ timely = { version = "0.12.0", default-features = false }
 differential-dataflow = { version = "0.12.0", default-features = false, optional = true }
 
     [dependencies.rkyv]
-    version = "0.7.3"
+    version = "=0.7.3"
     # TODO: "strict"
     features = ["validation", "tinyvec", "tinyvec_alloc"]
 
     [dependencies.ddshow-types]
-    version = "^0.2.0"
+    version = "0.2.0"
     path = "../ddshow-types"
     features = ["rkyv", "enable_abomonation"]
 

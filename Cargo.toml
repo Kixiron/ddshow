@@ -75,17 +75,17 @@ differential-dataflow = { version = "0.12.0", default-features = false }
     default-features = false
 
     [dependencies.ddshow-sink]
-    version = "^0.2.0"
+    version = "0.2.0"
     path = "crates/ddshow-sink"
     features = ["ddflow", "tracing"]
 
     [dependencies.ddshow-types]
-    version = "^0.2.0"
+    version = "0.2.0"
     path = "crates/ddshow-types"
     features = ["rkyv", "serde", "enable_abomonation"]
 
     [dependencies.rkyv]
-    version = "0.7.3"
+    version = "=0.7.3"
     # TODO: "strict" and "copy" once that's stable
     features = ["validation", "tinyvec", "tinyvec_alloc"]
 
