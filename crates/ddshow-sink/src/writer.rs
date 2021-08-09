@@ -74,6 +74,9 @@ where
                         err,
                     );
 
+                    #[cfg(not(feature = "tracing"))]
+                    let _ = err;
+
                     return;
                 }
 
@@ -94,6 +97,9 @@ where
         if let Err(err) = serializer.serialize_value(&event) {
             #[cfg(feature = "tracing")]
             tracing_dep::error!("failed to serialize event: {:?}", err);
+
+            #[cfg(not(feature = "tracing"))]
+            let _ = err;
 
             return;
         }
@@ -120,6 +126,9 @@ where
                 "failed to write buffer data to stream: {:?}",
                 err,
             );
+
+            #[cfg(not(feature = "tracing"))]
+            let _ = err;
         }
     }
 }

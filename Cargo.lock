@@ -330,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "ddshow"
-version = "0.2.2"
+version = "0.2.1"
 dependencies = [
  "abomonation",
  "abomonation_derive",
