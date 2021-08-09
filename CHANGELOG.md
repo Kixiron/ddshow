@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- next-header -->
 ## [Unreleased] - ReleaseDate
 
+## [0.2.2] - 2021-08-09
+
 ## [0.2.1] - 2021-08-09
 
 ## [0.2.0] - 2021-08-09
@@ -34,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed abysmal performance on large dataflow graphs
 
 <!-- next-url -->
-[Unreleased]: https://github.com/Kixiron/ddshow/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Kixiron/ddshow/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/Kixiron/ddshow/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Kixiron/ddshow/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Kixiron/ddshow/releases/tag/v0.1.1...v0.2.0
