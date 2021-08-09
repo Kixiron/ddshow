@@ -80,7 +80,7 @@ differential-dataflow = { git = "https://github.com/ddlog-dev/differential-dataf
     features = ["ddflow", "tracing"]
 
     [dependencies.ddshow-types]
-    version = "0.1.1"
+    version = "^0.2.0"
     path = "crates/ddshow-types"
     features = ["rkyv", "serde", "enable_abomonation"]
 
