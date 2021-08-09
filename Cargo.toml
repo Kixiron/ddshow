@@ -16,6 +16,7 @@ categories = [
     "visualization",
 ]
 default-run = "ddshow"
+exclude = ["proptest-regressions", "corpus", ".github", "release.toml"]
 
 [workspace]
 members = ["crates/*"]
