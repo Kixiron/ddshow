@@ -32,12 +32,12 @@ replace = "<!-- next-url -->\n[Unreleased]: https://github.com/Kixiron/ddshow/co
 
 [[pre-release-replacements]]
 file = "Cargo.toml"
-search = "ddshow-sink = \\{ version = \"{{prev_version}}\","
-replace = "ddshow-sink = \\{ version = \"{{version}}\","
+search = "\\[dependencies.ddshow-sink\\]\n    version = \"\\{\\{prev_version}}\""
+replace = "[dependencies.ddshow-sink]\n    version = \"{{version}}\""
 min = 0
 
 [[pre-release-replacements]]
 file = "Cargo.toml"
-search = "ddshow-types = \\{ version = \"{{prev_version}}\","
-replace = "ddshow-types = \\{ version = \"{{version}}\","
+search = "\\[dependencies.ddshow-types\\]\n    version = \"\\{\\{prev_version}}\""
+replace = "[dependencies.ddshow-types]\n    version = \"{{version}}\""
 min = 0
