@@ -21,12 +21,12 @@ timely = { git = "https://github.com/ddlog-dev/timely-dataflow", branch = "ddlog
 differential-dataflow = { git = "https://github.com/ddlog-dev/differential-dataflow", branch = "ddlog-4", default-features = false, optional = true }
 
     [dependencies.rkyv]
-    version = "0.7.3"
+    version = "=0.7.3"
     # TODO: "strict"
     features = ["validation", "tinyvec", "tinyvec_alloc"]
 
     [dependencies.ddshow-types]
-    version = "^0.2.0"
+    version = "0.2.0"
     path = "../ddshow-types"
     features = ["rkyv", "enable_abomonation"]
 
