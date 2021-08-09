@@ -75,7 +75,7 @@ differential-dataflow = { git = "https://github.com/ddlog-dev/differential-dataf
     default-features = false
 
     [dependencies.ddshow-sink]
-    version = "0.2.2"
+    version = "^0.2.0"
     path = "crates/ddshow-sink"
     features = ["ddflow", "tracing"]
 
