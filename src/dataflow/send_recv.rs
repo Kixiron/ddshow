@@ -9,10 +9,10 @@ use crate::{
         worker_timeline::TimelineEvent,
         OperatorShape,
     },
-    ui::{DataflowStats, ProgramStats, WorkerStats},
+    ui::DataflowStats,
 };
 use crossbeam_channel::{Receiver, Sender};
-use ddshow_types::{timely_logging::OperatesEvent, OperatorAddr, OperatorId, WorkerId};
+use ddshow_types::{timely_logging::OperatesEvent, ChannelId, OperatorAddr, OperatorId, WorkerId};
 use differential_dataflow::{
     difference::Semigroup,
     operators::arrange::{Arranged, TraceAgent},
@@ -296,7 +296,6 @@ macro_rules! make_send_recv {
     (@diff $diff:ty) => { $diff };
 }
 
-type WorkerStatsData = Vec<(WorkerId, WorkerStats)>;
 type NodeData = (OperatorAddr, OperatesEvent);
 type EdgeData = (
     OperatesEvent,
@@ -310,8 +309,13 @@ type NameLookupData = ((WorkerId, OperatorId), String);
 type AddrLookupData = ((WorkerId, OperatorId), OperatorAddr);
 
 make_send_recv! {
-    program_stats: ProgramStats,
-    worker_stats: WorkerStatsData,
+    workers: WorkerId,
+    operators: OperatorAddr,
+    dataflows: OperatorAddr,
+    channels: ChannelId,
+    arrangement_ids: (WorkerId, OperatorId),
+    // `(start, end)` durations for each worker's runtime
+    total_runtime: (WorkerId, (Duration, Duration)),
     nodes: NodeData,
     edges: EdgeData,
     subgraphs: SubgraphData,

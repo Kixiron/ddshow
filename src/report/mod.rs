@@ -10,13 +10,14 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use comfy_table::{presets::UTF8_FULL, Cell, ColumnConstraint, Row, Table as InnerTable, Width};
-use ddshow_types::{OperatorAddr, OperatorId, WorkerId};
+use ddshow_types::{OperatorAddr, OperatorId};
 use std::{
     cmp::Reverse,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fmt::{self, Display},
     fs::{self, File},
     io::Write,
+    time::Duration,
 };
 
 pub fn build_report(
@@ -53,12 +54,6 @@ pub fn build_report(
         tracing::debug!("creating report file: {}", args.report_file.display());
         let mut file = File::create(&args.report_file).context("failed to create report file")?;
 
-        let all_workers: HashSet<_, XXHasher> = data
-            .addr_lookup
-            .iter()
-            .map(|&((worker, _), _)| worker)
-            .collect();
-
         program_overview(args, data, &mut file)?;
         worker_stats(args, data, &mut file)?;
         operator_stats(
@@ -67,7 +62,6 @@ pub fn build_report(
             &mut file,
             name_lookup,
             addr_lookup,
-            &all_workers,
             agg_operator_stats,
             agg_arrangement_stats,
         )?;
@@ -75,9 +69,9 @@ pub fn build_report(
         if args.differential_enabled {
             arrangement_stats(
                 &mut file,
+                data,
                 name_lookup,
                 addr_lookup,
-                &all_workers,
                 agg_operator_stats,
                 agg_arrangement_stats,
             )?;
@@ -87,9 +81,9 @@ pub fn build_report(
 
         operator_tree(
             &mut file,
+            data,
             name_lookup,
             addr_lookup,
-            &all_workers,
             agg_operator_stats,
         )?;
     } else {
@@ -102,56 +96,55 @@ pub fn build_report(
 fn program_overview(args: &Args, data: &DataflowData, file: &mut File) -> Result<()> {
     tracing::debug!("generating program overview table");
 
-    if let Some(stats) = data.program_stats.last() {
-        let mut table = Table::new();
+    let mut table = Table::new();
 
-        table
-            .set_header(&["Program Overview", ""])
-            .add_row(IntoIterator::into_iter([
-                Cell::new("Workers"),
-                Cell::new(stats.workers),
-            ]))
-            .add_row(IntoIterator::into_iter([
-                Cell::new("Dataflows"),
-                Cell::new(stats.dataflows),
-            ]))
-            .add_row(IntoIterator::into_iter([
-                Cell::new("Operators"),
-                Cell::new(stats.operators),
-            ]))
-            .add_row(IntoIterator::into_iter([
-                Cell::new("Subgraphs"),
-                Cell::new(stats.subgraphs),
-            ]))
-            .add_row(IntoIterator::into_iter([
-                Cell::new("Channels"),
-                Cell::new(stats.channels),
-            ]));
+    table
+        .set_header(&["Program Overview", ""])
+        .add_row(IntoIterator::into_iter([
+            Cell::new("Workers"),
+            Cell::new(data.workers.len()),
+        ]))
+        .add_row(IntoIterator::into_iter([
+            Cell::new("Dataflows"),
+            Cell::new(data.dataflows.len()),
+        ]))
+        .add_row(IntoIterator::into_iter([
+            Cell::new("Operators"),
+            Cell::new(data.operators.len()),
+        ]))
+        .add_row(IntoIterator::into_iter([
+            Cell::new("Subgraphs"),
+            Cell::new(data.subgraphs.len()),
+        ]))
+        .add_row(IntoIterator::into_iter([
+            Cell::new("Channels"),
+            Cell::new(data.channels.len()),
+        ]));
 
-        if args.differential_enabled {
-            table.add_row(IntoIterator::into_iter([
-                Cell::new("Arrangements"),
-                Cell::new(stats.arrangements),
-            ]));
-        }
-
-        table
-            .add_row(IntoIterator::into_iter([
-                Cell::new("Events"),
-                Cell::new(stats.events),
-            ]))
-            .add_row(IntoIterator::into_iter([
-                Cell::new("Total Runtime"),
-                Cell::new(format!("{:#?}", stats.runtime)),
-            ]));
-
-        writeln!(file, "{}\n", table).context("failed to write to report file")?;
-    } else {
-        tracing::warn!("didn't receive a program stats entry");
-
-        writeln!(file, "No Program Statistics were received\n")
-            .context("failed to write to report file")?;
+    if args.differential_enabled {
+        table.add_row(IntoIterator::into_iter([
+            Cell::new("Arrangements"),
+            Cell::new(data.arrangement_ids.len()),
+        ]));
     }
+
+    let total_runtime = data
+        .total_runtime
+        .iter()
+        .map(|&(_, (start, end))| {
+            end.checked_sub(start)
+                .unwrap_or_else(|| Duration::from_secs(0))
+        })
+        .sum::<Duration>()
+        .checked_div(data.total_runtime.len() as u32)
+        .unwrap_or_else(|| Duration::from_secs(0));
+
+    table.add_row(IntoIterator::into_iter([
+        Cell::new("Total Runtime"),
+        Cell::new(format!("{:#?}", total_runtime)),
+    ]));
+
+    writeln!(file, "{}\n", table).context("failed to write to report file")?;
 
     Ok(())
 }
@@ -160,50 +153,56 @@ fn worker_stats(args: &Args, data: &DataflowData, file: &mut File) -> Result<()>
     tracing::debug!("generating worker stats table");
 
     let mut table = Table::new();
-    let worker_stats = &data.worker_stats;
 
     let mut headers = vec!["Worker", "Dataflows", "Operators", "Subgraphs", "Channels"];
     if args.differential_enabled {
         headers.push("Arrangements");
     }
-    headers.extend(["Events", "Runtime"].iter());
+    headers.extend(["Runtime"].iter());
 
     table.set_header(&headers);
 
-    if let Some(stats) = worker_stats.last() {
-        // There should only be one entry
-        debug_assert_eq!(worker_stats.len(), 1);
-
+    for &worker in data.workers.iter() {
         let mut row = Vec::with_capacity(8);
-        for (worker, stats) in stats {
-            row.extend(IntoIterator::into_iter([
-                Cell::new(format!("Worker {}", worker.into_inner())),
-                Cell::new(stats.dataflows),
-                Cell::new(stats.operators),
-                Cell::new(stats.subgraphs),
-                Cell::new(stats.channels),
-            ]));
 
-            if args.differential_enabled {
-                row.push(Cell::new(stats.arrangements));
-            }
+        row.extend(IntoIterator::into_iter([
+            Cell::new(format!("Worker {}", worker.into_inner())),
+            Cell::new(data.dataflows.len()),
+            Cell::new(data.operators.len()),
+            Cell::new(data.subgraphs.len()),
+            Cell::new(data.channels.len()),
+        ]));
 
-            row.extend(vec![
-                Cell::new(stats.events),
-                Cell::new(format!("{:#?}", stats.runtime)),
-            ]);
+        if args.differential_enabled {
+            let arrangements = data
+                .arrangement_ids
+                .iter()
+                .filter(|&&(werker, _)| worker == werker)
+                .count();
 
-            table.add_row(row.drain(..));
+            row.push(Cell::new(arrangements));
         }
 
-        writeln!(file, "Per-Worker Statistics\n{}\n", table)
-            .context("failed to write to report file")?;
-    } else {
-        tracing::warn!("didn't receive any worker stats entries");
+        let total_runtime = data
+            .total_runtime
+            .iter()
+            .filter_map(|&(werker, (start, end))| {
+                (worker == werker).then(|| {
+                    end.checked_sub(start)
+                        .unwrap_or_else(|| Duration::from_secs(0))
+                })
+            })
+            .sum::<Duration>()
+            .checked_div(data.total_runtime.len() as u32)
+            .unwrap_or_else(|| Duration::from_secs(0));
 
-        writeln!(file, "No Per-Worker Statistics were received\n")
-            .context("failed to write to report file")?;
+        row.push(Cell::new(format!("{:#?}", total_runtime)));
+
+        table.add_row(row.drain(..));
     }
+
+    writeln!(file, "Per-Worker Statistics\n{}\n", table)
+        .context("failed to write to report file")?;
 
     Ok(())
 }
@@ -215,7 +214,6 @@ fn operator_stats(
     file: &mut File,
     name_lookup: &HashMap<OpKey, &str, XXHasher>,
     addr_lookup: &HashMap<OpKey, &OperatorAddr, XXHasher>,
-    all_workers: &HashSet<WorkerId, XXHasher>,
     agg_operator_stats: &HashMap<OperatorId, &Summation, XXHasher>,
     agg_arrangement_stats: &HashMap<OperatorId, &ArrangementStats, XXHasher>,
 ) -> Result<()> {
@@ -256,10 +254,12 @@ fn operator_stats(
         operators_by_total_runtime
             .iter()
             .map(|&(&operator, &stats)| {
-                let addr = all_workers
+                let addr = data
+                    .workers
                     .iter()
                     .find_map(|&worker| addr_lookup.get(&(worker, operator)));
-                let name: Option<&str> = all_workers
+                let name: Option<&str> = data
+                    .workers
                     .iter()
                     .find_map(|&worker| name_lookup.get(&(worker, operator)).map(|name| &**name));
 
@@ -327,9 +327,9 @@ fn operator_stats(
 
 fn arrangement_stats(
     file: &mut File,
+    data: &DataflowData,
     name_lookup: &HashMap<OpKey, &str, XXHasher>,
     addr_lookup: &HashMap<OpKey, &OperatorAddr, XXHasher>,
-    all_workers: &HashSet<WorkerId, XXHasher>,
     agg_operator_stats: &HashMap<OperatorId, &Summation, XXHasher>,
     agg_arrangement_stats: &HashMap<OperatorId, &ArrangementStats, XXHasher>,
 ) -> Result<()> {
@@ -361,10 +361,12 @@ fn arrangement_stats(
         operators_by_arrangement_size
             .iter()
             .map(|&(operator, ref stats, arrange)| {
-                let addr = all_workers
+                let addr = data
+                    .workers
                     .iter()
                     .find_map(|&worker| addr_lookup.get(&(worker, operator)));
-                let name: Option<&str> = all_workers
+                let name: Option<&str> = data
+                    .workers
                     .iter()
                     .find_map(|&worker| name_lookup.get(&(worker, operator)).map(|name| &**name));
 
@@ -400,9 +402,9 @@ fn arrangement_stats(
 
 fn operator_tree(
     file: &mut File,
+    data: &DataflowData,
     name_lookup: &HashMap<OpKey, &str, XXHasher>,
     addr_lookup: &HashMap<OpKey, &OperatorAddr, XXHasher>,
-    all_workers: &HashSet<WorkerId, XXHasher>,
     agg_operator_stats: &HashMap<OperatorId, &Summation, XXHasher>,
 ) -> Result<()> {
     tracing::debug!("generating operator tree");
@@ -412,11 +414,13 @@ fn operator_tree(
     });
 
     for (&operator, &stats) in agg_operator_stats.iter() {
-        let addr = *all_workers
+        let addr = *data
+            .workers
             .iter()
             .find_map(|&worker| addr_lookup.get(&(worker, operator)))
             .expect("missing operator addr");
-        let name = *all_workers
+        let name = *data
+            .workers
             .iter()
             .find_map(|&worker| name_lookup.get(&(worker, operator)))
             .expect("missing operator name");

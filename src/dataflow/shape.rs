@@ -1,5 +1,5 @@
 use crate::dataflow::{
-    operators::{InspectExt, Keys},
+    operators::Keys,
     utils::{ArrangedKey, Diff, Time},
 };
 use abomonation_derive::Abomonation;
@@ -58,12 +58,10 @@ where
         .map(|operator| (operator.addr, operator.id))
         .arrange_by_key_named("Arrange: Operator Addresses");
 
-    let inputs = channels
-        .map(|mut channel| {
-            channel.scope_addr.push(channel.target[0]);
-            (channel.scope_addr, channel.target[1])
-        })
-        .debug_frontier();
+    let inputs = channels.map(|mut channel| {
+        channel.scope_addr.push(channel.target[0]);
+        (channel.scope_addr, channel.target[1])
+    });
 
     let mut operator_inputs = inputs
         .join_core(&operator_addrs, |_, &input_port, &operator_id| {
@@ -71,20 +69,16 @@ where
         })
         .reduce(|_, ports, output| {
             output.push((ports.iter().map(|(&port, _)| port).collect::<Vec<_>>(), 1));
-        })
-        .debug_frontier();
+        });
     operator_inputs = operator_ids
         .antijoin(&operator_inputs.keys())
         .map(|(operator_id, ())| (operator_id, Vec::new()))
-        .concat(&operator_inputs)
-        .debug_frontier();
+        .concat(&operator_inputs);
 
-    let outputs = channels
-        .map(|mut channel| {
-            channel.scope_addr.push(channel.source[0]);
-            (channel.scope_addr, channel.source[1])
-        })
-        .debug_frontier();
+    let outputs = channels.map(|mut channel| {
+        channel.scope_addr.push(channel.source[0]);
+        (channel.scope_addr, channel.source[1])
+    });
 
     let mut operator_outputs = outputs
         .join_core(&operator_addrs, |_, &output_port, &operator_id| {
@@ -92,13 +86,11 @@ where
         })
         .reduce(|_, ports, output| {
             output.push((ports.iter().map(|(&port, _)| port).collect::<Vec<_>>(), 1));
-        })
-        .debug_frontier();
+        });
     operator_outputs = operator_ids
         .antijoin(&operator_outputs.keys())
         .map(|(operator_id, ())| (operator_id, Vec::new()))
-        .concat(&operator_outputs)
-        .debug_frontier();
+        .concat(&operator_outputs);
 
     operators
         .map(|operator| (operator.id, operator.addr))
@@ -107,5 +99,4 @@ where
         .map(|(operator_id, ((scope_addr, inputs), outputs))| {
             OperatorShape::new(operator_id, scope_addr, inputs, outputs)
         })
-        .debug_frontier()
 }

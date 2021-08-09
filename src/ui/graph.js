@@ -292,7 +292,7 @@ for (const edge of raw_edges) {
 try {
     render(svg, graph);
 } catch (err) {
-    console.error(`failed to render dataflow graph: ${err} `);
+    console.error(`failed to render dataflow graph: ${err}`);
 }
 
 // Create the tooltip div
@@ -317,7 +317,7 @@ svg.selectAll("g.node")
             const node = unsafe_node.data;
             let html = `ran for ${node.total_activation_time} over ${node.invocations} invocations < br >\
                 average runtime of ${node.average_activation_time} \
-    (max: ${node.max_activation_time}, min: ${node.min_activation_time})`;
+                (max: ${node.max_activation_time}, min: ${node.min_activation_time})`;
 
             if (node.kind === "Node"
                 && node.max_arrangement_size !== null
@@ -411,7 +411,7 @@ palette_legend
 palette_legend
     .append("div")
     .attr("id", "palette-gradient")
-    .style("background", `linear - gradient(to top, ${palette_gradient})`);
+    .style("background", `linear-gradient(to top, ${palette_gradient})`);
 
 // Bottom text
 palette_legend
@@ -419,13 +419,6 @@ palette_legend
     .attr("class", "palette-text")
     .attr("id", "palette-bottom-text")
     .text("faster");
-
-// Center & scale the graph
-const initial_scale = 1.00;
-d3.zoomIdentity
-    .translate([(svg.attr("width") - graph.graph().width * initial_scale) / 2, 20])
-    .scale(initial_scale);
-dataflow_svg.attr("height", graph.graph().height * initial_scale + 40);
 
 /**
  * Formats an operator address into a human-readable string
@@ -436,11 +429,25 @@ function format_addr(addr) {
     let buf = "[";
     let started = false;
 
+    const length = addr.length;
+    let idx = 0;
+
     for (const segment of addr) {
+        idx += 1;
+
         if (started) {
-            buf += `, ${segment} `;
+            if (idx == length) {
+                buf += `, ${segment}`;
+            } else {
+                buf += `, ${segment} `;
+            }
         } else {
-            buf += `${segment} `;
+            if (idx == length) {
+                buf += `${segment}`;
+            } else {
+                buf += `${segment} `;
+            }
+
             started = true;
         }
     }
@@ -559,43 +566,43 @@ const ddshow_spec = {
             name: "filter_subgraphs",
             value: false,
             bind: {
-                input: "checkbox"
-            }
+                input: "checkbox",
+            },
         },
         {
             name: "enable_activation_graphs",
             value: true,
             bind: {
-                input: "checkbox"
-            }
+                input: "checkbox",
+            },
         },
-        {
-            name: "enable_compaction_graphs",
-            value: true,
-            bind: {
-                input: "checkbox"
-            }
-        },
+        // {
+        //     name: "enable_compaction_graphs",
+        //     value: true,
+        //     bind: {
+        //         input: "checkbox"
+        //     }
+        // },
         {
             name: "operators_to_display",
             value: 10,
             bind: {
-                input: "range",
+                input: "number",
                 min: 1,
                 // TODO: Get a dynamic max
                 max: 1000,
                 step: 1,
-            }
-        }
+            },
+        },
     ],
     transform: [
         {
             calculate: "[datum.name, datum.id]",
-            as: "name_and_id"
+            as: "name_and_id",
         },
         {
-            filter: "!filter_subgraphs || datum.node_kind != \"Subgraph\""
-        }
+            filter: "!filter_subgraphs || datum.node_kind != \"Subgraph\"",
+        },
     ],
     vconcat: [
         {
@@ -734,7 +741,7 @@ const ddshow_spec = {
                         op: "rank",
                         as: "rank",
                     }],
-                    sort: [{ "field": "arrangement_batches", "order": "descending" }],
+                    sort: [{ "field": "total_runtime", "order": "descending" }],
                 },
                 {
                     filter: "datum.rank <= operators_to_display",
@@ -785,6 +792,16 @@ const ddshow_spec = {
         {
             title: "Operator Activation Durations",
             transform: [
+                {
+                    window: [{
+                        op: "rank",
+                        as: "rank",
+                    }],
+                    sort: [{ "field": "total_runtime", "order": "descending" }],
+                },
+                {
+                    filter: "enable_activation_graphs && datum.rank <= operators_to_display",
+                },
                 {
                     flatten: [
                         "activation_durations"
@@ -863,6 +880,7 @@ const ddshow_spec = {
                 ]
             }
         },
+        /*
         {
             title: "Arrangement Compaction",
             transform: [
@@ -933,6 +951,7 @@ const ddshow_spec = {
                 ],
             },
         },
+        */
     ],
 };
 

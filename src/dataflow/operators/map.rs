@@ -1,5 +1,6 @@
 use differential_dataflow::{difference::Semigroup, AsCollection, Collection};
 use timely::{
+    communication::message::RefOrMut,
     dataflow::{channels::pact::Pipeline, operators::Operator, Scope, Stream},
     Data,
 };
@@ -139,6 +140,12 @@ pub trait MapTimed<T, D1, D2> {
         D1: Data,
         D2: Data,
         L: FnMut(&T, D1) -> D2 + 'static;
+
+    fn map_ref_timed_named<L>(&self, name: &str, logic: L) -> Self::Output
+    where
+        D1: Data,
+        D2: Data,
+        L: FnMut(&T, &D1) -> D2 + 'static;
 }
 
 impl<S, D1, D2> MapTimed<S::Timestamp, D1, D2> for Stream<S, D1>
@@ -168,6 +175,33 @@ where
             }
         })
     }
+
+    #[inline]
+    fn map_ref_timed_named<L>(&self, name: &str, mut logic: L) -> Self::Output
+    where
+        D1: Data,
+        D2: Data,
+        L: FnMut(&S::Timestamp, &D1) -> D2 + 'static,
+    {
+        self.unary(Pipeline, name, move |_capability, _info| {
+            move |input, output| {
+                input.for_each(|time, data| {
+                    let buffer = match data {
+                        RefOrMut::Ref(data) => data,
+                        RefOrMut::Mut(ref data) => &**data,
+                    };
+
+                    output
+                        .session(&time)
+                        .give_iterator(buffer.iter().map(|data| logic(&time, data)));
+
+                    if let RefOrMut::Mut(data) = data {
+                        data.clear();
+                    }
+                });
+            }
+        })
+    }
 }
 
 impl<S, D1, D2, R> MapTimed<S::Timestamp, D1, D2> for Collection<S, D1, R>
@@ -187,6 +221,21 @@ where
         self.inner
             .map_named(name, move |(data, time, diff)| {
                 (logic(&time, data), time, diff)
+            })
+            .as_collection()
+    }
+
+    #[inline]
+    fn map_ref_timed_named<L>(&self, name: &str, mut logic: L) -> Self::Output
+    where
+        D1: Data,
+        D2: Data,
+        L: FnMut(&S::Timestamp, &D1) -> D2 + 'static,
+    {
+        self.inner
+            // TODO: `.map_ref_named()`
+            .map_ref_timed_named(name, move |_, (data, time, diff)| {
+                (logic(time, data), time.clone(), diff.clone())
             })
             .as_collection()
     }

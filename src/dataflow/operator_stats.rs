@@ -1,6 +1,6 @@
 use crate::dataflow::{
     differential::{self, ArrangementStats, SplineLevel},
-    operators::{DiffDuration, InspectExt, Max, Min},
+    operators::{DiffDuration, Max, Min},
     summation::{summation, Summation},
     utils::{Diff, DifferentialLogBundle, OpKey, Time},
     OperatorId, WorkerId,
@@ -63,15 +63,11 @@ where
     S: Scope<Timestamp = Time>,
 {
     let summarized =
-        summation(&activation_times.map(|(operator, (_start, duration))| (operator, duration)))
-            .debug_frontier_with("summarized time");
+        summation(&activation_times.map(|(operator, (_start, duration))| (operator, duration)));
     let (arrangements, spline_levels) = if let Some(stream) = differential_stream {
         let (arranged, splines) = differential::arrangement_stats(scope, stream);
 
-        (
-            Some(arranged.debug_frontier_with("arranged")),
-            Some(splines.debug_frontier_with("splines")),
-        )
+        (Some(arranged), Some(splines))
     } else {
         (None, None)
     };
@@ -149,8 +145,7 @@ where
 
                 (operator, stats)
             },
-        )
-        .debug_frontier_with("aggregated summaries");
+        );
 
     let aggregated_arrangements = arrangements.as_ref().map(|arrangements| {
         arrangements
@@ -196,7 +191,6 @@ where
                     )
                 },
             )
-            .debug_frontier_with("aggregated arrangements")
     });
 
     OperatorStatsRelations {
@@ -241,14 +235,12 @@ where
 
                 output.push((activations, 1));
             },
-        )
-        .debug_frontier();
+        );
     activation_durations = operator_stats
         .map(|((_, operator), _)| (operator, Vec::new()))
         .antijoin(&activation_durations.keys())
         .concat(&activation_durations)
-        .consolidate_named("Consolidate Aggregated Activation Durations")
-        .debug_frontier();
+        .consolidate_named("Consolidate Aggregated Activation Durations");
 
     let aggregated = operator_stats_without_worker
         .explode(
@@ -387,8 +379,7 @@ where
 
                 (operator, stats)
             },
-        )
-        .debug_frontier();
+        );
 
     aggregated.join_map(&activation_durations, |&operator, stats, activations| {
         let stats = AggregatedOperatorStats {

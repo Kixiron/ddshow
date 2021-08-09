@@ -1,6 +1,6 @@
 use crate::{
     dataflow::{
-        operators::{FilterMapTimed, InspectExt},
+        operators::FilterMapTimed,
         utils::{OpKey, Time, XXHasher},
         worker_timeline::{process_timely_event, EventProcessor},
         ArrangedKey, ArrangedVal, ChannelId, Diff, OperatorAddr, OperatorId, TimelineEvent,
@@ -80,9 +80,7 @@ fn extract_timely_info_dataflow<S>(
 where
     S: Scope<Timestamp = Time>,
 {
-    let only_operates_events = timely_stream
-        .filter(|(_, _, event)| event.is_operates())
-        .debug_frontier_with("only_operates_events");
+    let only_operates_events = timely_stream.filter(|(_, _, event)| event.is_operates());
 
     // Get raw operates events
     let raw_operators = only_operates_events
@@ -94,7 +92,6 @@ where
                 _ => None,
             }
         })
-        .debug_frontier_with("raw_operators")
         .as_collection();
 
     let operator_names = only_operates_events
@@ -107,7 +104,6 @@ where
             }
         })
         .as_collection()
-        .debug_frontier_with("operator_names")
         .arrange_by_key_named("ArrangeByKey: Operator Names");
 
     let dataflow_ids = only_operates_events
@@ -120,7 +116,6 @@ where
             }
         })
         .as_collection()
-        .debug_frontier_with("dataflow_ids")
         .arrange_named("Arrange: Dataflow Ids");
 
     let operator_ids_to_addrs = only_operates_events
@@ -134,7 +129,6 @@ where
             },
         )
         .as_collection()
-        .debug_frontier_with("operator_ids_to_addrs")
         .arrange_by_key_named("ArrangeByKey: Operator Ids to Addrs");
 
     let operator_addrs = only_operates_events
@@ -148,7 +142,6 @@ where
             },
         )
         .as_collection()
-        .debug_frontier_with("operator_addrs")
         .arrange_named("Arrange: Operator Addrs by Self");
 
     let operator_addrs_to_ids = only_operates_events
@@ -162,7 +155,6 @@ where
             },
         )
         .as_collection()
-        .debug_frontier_with("operator_addrs_to_ids")
         .arrange_by_key_named("ArrangeByKey: Operator Addrs to Ids");
 
     // Parse out operator lifespans
@@ -226,8 +218,7 @@ where
                 })
             }
         })
-        .as_collection()
-        .debug_frontier_with("lifespans");
+        .as_collection();
 
     let activations = timely_stream
         .filter(|(_, _, event)| event.is_schedule() || event.is_shutdown())
@@ -342,12 +333,9 @@ where
                 })
             }
         })
-        .as_collection()
-        .debug_frontier_with("activations");
+        .as_collection();
 
-    let only_channels_events = timely_stream
-        .filter(|(_, _, event)| event.is_channels())
-        .debug_frontier_with("only_channels_events");
+    let only_channels_events = timely_stream.filter(|(_, _, event)| event.is_channels());
 
     let raw_channels = only_channels_events
         .filter_map_ref_timed_named("Raw Channels", |&timestamp, &(_, worker, ref event)| {
@@ -358,8 +346,7 @@ where
                 _ => None,
             }
         })
-        .as_collection()
-        .debug_frontier_with("raw_channels");
+        .as_collection();
 
     let channel_scope_addrs = only_channels_events
         .filter_map_ref_timed_named(
@@ -374,7 +361,6 @@ where
             },
         )
         .as_collection()
-        .debug_frontier_with("channel_scope_addrs")
         .arrange_by_key_named("ArrangeByKey: Channel Scope Addrs");
 
     let timeline_events = if disable_timeline {
@@ -411,7 +397,6 @@ where
                 }
             })
             .as_collection()
-            .debug_frontier_with("timeline_events")
             .leave_region();
 
         Some(events)
