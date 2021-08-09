@@ -4,7 +4,7 @@ pub mod operators;
 pub(crate) mod constants;
 mod differential;
 mod operator_stats;
-// mod program_stats;
+mod program_stats;
 mod progress_stats;
 #[cfg(feature = "timely-next")]
 mod reachability;
@@ -33,7 +33,8 @@ use crate::{
     args::Args,
     dataflow::{
         operator_stats::OperatorStatsRelations,
-        operators::{FilterMap, InspectExt, JoinArranged, SortBy},
+        operators::{FilterMap, JoinArranged},
+        program_stats::GraphStats,
         send_recv::ChannelAddrs,
         subgraphs::rewire_channels,
         timely_source::TimelyCollections,
@@ -42,7 +43,7 @@ use crate::{
             TimelyLogBundle,
         },
     },
-    ui::{DataflowStats, Lifespan, ProgramStats, WorkerStats},
+    ui::{DataflowStats, Lifespan},
 };
 use anyhow::Result;
 use ddshow_types::{timely_logging::OperatesEvent, ChannelId, OperatorAddr, OperatorId, WorkerId};
@@ -116,12 +117,8 @@ where
     // TODO: Turn these into collections of `OpKey` and arrange them
     let (leaves, subgraphs) = sift_leaves_and_scopes(scope, &operator_addrs);
     let (leaves_arranged, subgraphs_arranged) = (
-        leaves
-            .debug_frontier_with("leaves")
-            .arrange_by_self_named("ArrangeBySelf: Dataflow Graph Leaves"),
-        subgraphs
-            .debug_frontier_with("subgraphs")
-            .arrange_by_self_named("ArrangeBySelf: Dataflow Graph Subgraphs"),
+        leaves.arrange_by_self_named("ArrangeBySelf: Dataflow Graph Leaves"),
+        subgraphs.arrange_by_self_named("ArrangeBySelf: Dataflow Graph Subgraphs"),
     );
 
     let subgraph_ids = subgraphs_arranged
@@ -130,13 +127,10 @@ where
                 .as_collection(|&(worker, ref addr), &id| (addr.clone(), (id, worker))),
             |_, &(), &(id, worker)| ((worker, id), ()),
         )
-        .debug_frontier_with("subgraph_ids")
         .arrange_named("Arrange: Dataflow Graph Subgraph Ids");
 
-    let channels = rewire_channels(scope, &raw_channel_events, &subgraphs_arranged)
-        .debug_frontier_with("channels");
-    let edges = attach_operators(scope, &raw_operator_events, &channels, &leaves_arranged)
-        .debug_frontier_with("channel edges");
+    let channels = rewire_channels(scope, &raw_channel_events, &subgraphs_arranged);
+    let edges = attach_operators(scope, &raw_operator_events, &channels, &leaves_arranged);
 
     let operator_shapes = shape::operator_shapes(&raw_operator_events, &raw_channel_events);
     // let operator_progress = progress_stream.map(|progress_stream| {
@@ -148,22 +142,26 @@ where
     //       it needs a serious, intrinsic rework and/or disk backed arrangements
     let timeline_events = timeline_events.as_ref().map(|timeline_events| {
         worker_timeline::worker_timeline(scope, timeline_events, differential_stream)
-            .debug_frontier_with("timeline_events")
     });
 
     let addressed_operators = raw_operator_events
         .map(|operator| (operator.addr.clone(), operator))
-        .debug_frontier_with("addressed_operators")
         .arrange_by_key_named("ArrangeByKey: Addressed Operators");
 
-    // FIXME: This is broken
-    // let (program_stats, worker_stats) = program_stats::aggregate_worker_stats(
-    //     timely_stream,
-    //     differential_stream,
-    //     &channels,
-    //     &subgraphs_arranged,
-    //     &operator_addrs,
-    // );
+    let GraphStats {
+        workers,
+        operators,
+        dataflows,
+        channels,
+        arrangements: arrangement_ids,
+        total_runtime,
+    } = program_stats::aggregate_program_stats(
+        timely_stream,
+        differential_stream,
+        &channels,
+        &subgraphs_arranged,
+        &operator_addrs,
+    );
 
     let dataflow_stats = dataflow_stats(
         &lifespans,
@@ -171,15 +169,18 @@ where
         &operator_ids_to_addrs,
         &subgraph_ids,
         &channel_scope_addrs,
-    )
-    .debug_frontier_with("dataflow_stats");
+    );
 
     let mut probes = install_data_extraction(
         scope,
         master_probe,
         senders,
-        operator::empty(scope).as_collection(), // program_stats.debug_frontier_with("program_stats"),
-        operator::empty(scope).as_collection(), // worker_stats.debug_frontier_with("worker_stats"),
+        workers,
+        operators,
+        dataflows,
+        channels,
+        arrangement_ids,
+        total_runtime,
         leaves_arranged,
         edges,
         subgraphs_arranged,
@@ -235,8 +236,12 @@ fn install_data_extraction<S>(
     scope: &mut S,
     probe: &mut ProbeHandle<Time>,
     senders: DataflowSenders,
-    program_stats: Collection<S, ProgramStats, Diff>,
-    worker_stats: Collection<S, (WorkerId, WorkerStats), Diff>,
+    workers: Collection<S, WorkerId, Diff>,
+    operators: Collection<S, OperatorAddr, Diff>,
+    dataflows: Collection<S, OperatorAddr, Diff>,
+    channels: Collection<S, ChannelId, Diff>,
+    arrangement_ids: Option<Collection<S, (WorkerId, OperatorId), Diff>>,
+    total_runtime: Collection<S, (WorkerId, (Duration, Duration)), Diff>,
     nodes: ArrangedKey<S, OperatorAddr, Diff>,
     edges: Collection<S, (OperatesEvent, Channel, OperatesEvent), Diff>,
     subgraphs: ArrangedKey<S, OperatorAddr, Diff>,
@@ -258,7 +263,14 @@ where
     S: Scope<Timestamp = Time>,
 {
     scope.region_named("Data Extraction", |region| {
-        let program_stats = program_stats.enter_region(region);
+        let workers = workers.enter_region(region);
+        let operators = operators.enter_region(region);
+        let dataflows = dataflows.enter_region(region);
+        let channels = channels.enter_region(region);
+        let arrangement_ids = arrangement_ids
+            .map(|ids| ids.enter_region(region))
+            .unwrap_or_else(|| operator::empty(region).as_collection());
+        let total_runtime = total_runtime.enter_region(region);
         let nodes = nodes.enter_region(region);
         let edges = edges.enter_region(region);
         let subgraphs = subgraphs.enter_region(region);
@@ -290,12 +302,6 @@ where
             .map(|splines| splines.enter_region(region))
             .unwrap_or_else(|| operator::empty(region).as_collection());
 
-        let worker_stats = worker_stats
-            .enter_region(region)
-            .map(|(worker, stats)| ((), (worker, stats)))
-            .sort_by_named("Sort: Sort Worker Stats by Worker", |&(worker, _)| worker)
-            .map(|((), sorted_stats)| sorted_stats);
-
         let nodes = addressed_operators.semijoin_arranged(&nodes);
         let subgraphs = addressed_operators.semijoin_arranged(&subgraphs);
 
@@ -306,17 +312,21 @@ where
         //       appear to the user
         senders.install_sinks(
             probe,
-            (&program_stats.debug_frontier(), false),
-            (&worker_stats.debug_frontier(), false),
-            (&nodes.debug_frontier(), false),
-            (&edges.debug_frontier(), false),
-            (&subgraphs.debug_frontier(), false),
-            (&dataflow_stats.debug_frontier(), false),
-            (&timeline_events.debug_frontier(), false),
-            (&operator_names.debug_frontier(), false),
-            (&operator_ids.debug_frontier(), false),
-            (&operator_shapes.debug_frontier(), false),
-            (&operator_progress.debug_frontier(), false),
+            (&workers, false),
+            (&operators, false),
+            (&dataflows, false),
+            (&channels, false),
+            (&arrangement_ids, false),
+            (&total_runtime, false),
+            (&nodes, false),
+            (&edges, false),
+            (&subgraphs, false),
+            (&dataflow_stats, false),
+            (&timeline_events, false),
+            (&operator_names, false),
+            (&operator_ids, false),
+            (&operator_shapes, false),
+            (&operator_progress, false),
             (&operator_activations, false),
             (&summarized, false),
             (&aggregated_summaries, false),
@@ -410,7 +420,6 @@ where
                 }
             },
         )
-        .debug_frontier()
 }
 
 type LeavesAndScopes<S, R> = (
@@ -436,28 +445,20 @@ where
 
                 iter::once(addr)
             })
-            .debug_frontier_with("potential_scopes flat_map_ref")
             .distinct_total_core::<Diff>()
-            .debug_frontier_with("potential_scopes after distinct")
             .arrange_by_self_named("ArrangeBySelf: Potential Scopes");
 
         // Leaf operators
         let leaf_operators = operator_addrs
             .antijoin_arranged(&potential_scopes)
-            .debug_frontier_with("leaf_operators antijoined")
             .map(|(addr, _)| addr)
-            .debug_frontier_with("leaf_operators after map")
-            .leave_region()
-            .debug_frontier_with("leaf_operators left region");
+            .leave_region();
 
         // Only retain subgraphs that are observed within the logs
         let observed_subgraphs = operator_addrs
             .semijoin_arranged(&potential_scopes)
-            .debug_frontier_with("observed_subgraphs after semijoin")
             .map(|(addr, ())| addr)
-            .debug_frontier_with("observed_subgraphs after map")
-            .leave_region()
-            .debug_frontier_with("observed_subgraphs left region");
+            .leave_region();
 
         (leaf_operators, observed_subgraphs)
     })

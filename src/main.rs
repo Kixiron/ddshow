@@ -11,27 +11,25 @@ use crate::{
     args::Args,
     colormap::{select_color, Color},
     dataflow::{
-        constants::DDSHOW_VERSION,
         utils::{HumanDuration, XXHasher},
-        Channel, DataflowData, DataflowSenders, Summation,
+        Channel, DataflowSenders, Summation,
     },
     replay_loading::{connect_to_sources, wait_for_input},
-    ui::{ActivationDuration, DDShowStats, EdgeKind, Lifespan, TimelineEvent},
+    ui::{ActivationDuration, EdgeKind},
 };
 use anyhow::{Context, Result};
-use ddshow_types::{timely_logging::OperatesEvent, OperatorAddr, OperatorId, WorkerId};
+use ddshow_types::{timely_logging::OperatesEvent, WorkerId};
 use mimalloc::MiMalloc;
 use std::{
     collections::HashMap,
-    fs::{self, File},
-    io::{self, BufWriter},
+    fs::{self},
+    io::{self},
     ops::Deref,
-    path::Path,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 use structopt::StructOpt;
 
@@ -188,10 +186,6 @@ fn main() -> Result<()> {
         .iter()
         .map(|(id, addr)| (*id, addr))
         .collect();
-
-    if let Some(file) = args.dump_json.as_ref() {
-        dump_program_json(&*args, file, &data, &name_lookup, &addr_lookup)?;
-    }
 
     data.nodes
         .sort_unstable_by(|(addr1, _), (addr2, _)| addr1.cmp(addr2));
@@ -385,6 +379,8 @@ fn main() -> Result<()> {
         pos += 0.1;
     }
 
+    let rendering_start_time = Instant::now();
+
     ui::render(
         &args,
         &data,
@@ -399,6 +395,13 @@ fn main() -> Result<()> {
         &agg_activations_map,
         &spline_levels,
     )?;
+
+    let rendering_elapsed = rendering_start_time.elapsed();
+    tracing::info!(
+        elapsed = ?rendering_elapsed,
+        "spent {} within graph rendering",
+        HumanDuration(rendering_elapsed),
+    );
 
     if !args.no_report_file {
         let mut report_file = args.report_file.display().to_string();
@@ -432,51 +435,6 @@ fn main() -> Result<()> {
         "spent {} within data extraction",
         HumanDuration(extraction_elapsed),
     );
-
-    Ok(())
-}
-
-fn dump_program_json(
-    args: &Args,
-    file: &Path,
-    data: &DataflowData,
-    _name_lookup: &HashMap<(WorkerId, OperatorId), &str, XXHasher>,
-    _addr_lookup: &HashMap<(WorkerId, OperatorId), &OperatorAddr, XXHasher>,
-) -> Result<()> {
-    let file = BufWriter::new(File::create(file).context("failed to create json file")?);
-
-    let workers: Vec<_> = data.worker_stats[0]
-        .iter()
-        .map(|(_, stats)| stats)
-        .collect();
-    let events: Vec<_> = data
-        .timeline_events
-        .iter()
-        .map(|event| TimelineEvent {
-            worker: event.worker,
-            event: (),
-            lifespan: Lifespan::new(
-                Duration::from_nanos(event.start_time),
-                Duration::from_nanos(event.start_time + event.duration),
-            ),
-        })
-        .collect();
-
-    let data = DDShowStats {
-        program: data.program_stats[0].clone(),
-        workers: &workers,
-        dataflows: &data.dataflow_stats,
-        // FIXME: Do these
-        nodes: &[],
-        channels: &[],
-        arrangements: &[],
-        events: &events,
-        differential_enabled: args.differential_enabled,
-        progress_enabled: false, // args.progress_enabled,
-        ddshow_version: DDSHOW_VERSION,
-    };
-
-    serde_json::to_writer(file, &data).context("failed to write json to file")?;
 
     Ok(())
 }

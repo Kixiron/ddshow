@@ -254,7 +254,7 @@ where
             "Loading {} replays from {} folder{}",
             target,
             log_dirs.len(),
-            if log_dirs.len() == 1 { "s" } else { "" },
+            if log_dirs.len() == 1 { "" } else { "s" },
         )
     } else {
         tracing::info!(

@@ -105,8 +105,8 @@ lto = false
 opt-level = 0
 
 [profile.release]
-debug = 2
-lto = "fat"
+debug = 0
+lto = "thin"
 opt-level = 3
 codegen-units = 1
 debug-assertions = false

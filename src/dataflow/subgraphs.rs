@@ -1,5 +1,5 @@
 use crate::dataflow::{
-    operators::{InspectExt, IterateExt, JoinArranged},
+    operators::{IterateExt, JoinArranged},
     send_recv::ChannelAddrs,
     utils::{Diff, Time},
     Channel, FilterMap,
@@ -179,11 +179,9 @@ where
         .map(|(source_addr, (channel_id, target_addr))| (target_addr, (channel_id, source_addr)))
         .antijoin_arranged(subgraphs);
 
-    channels
-        .map(|(target_addr, (channel_id, source_addr))| Channel::Normal {
-            channel_id,
-            source_addr,
-            target_addr,
-        })
-        .debug_frontier_with("subgraph_normal output")
+    channels.map(|(target_addr, (channel_id, source_addr))| Channel::Normal {
+        channel_id,
+        source_addr,
+        target_addr,
+    })
 }

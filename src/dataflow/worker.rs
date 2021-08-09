@@ -301,16 +301,14 @@ where
     );
 
     match traces {
-        ReplaySource::Rkyv(rkyv) => rkyv
-            .replay_with_shutdown_into_named(
-                &name,
-                scope,
-                probe,
-                replay_shutdown,
-                replays_finished,
-                fuel,
-            )
-            .debug_frontier_with(&format!("very raw {} stream", source)),
+        ReplaySource::Rkyv(rkyv) => rkyv.replay_with_shutdown_into_named(
+            &name,
+            scope,
+            probe,
+            replay_shutdown,
+            replays_finished,
+            fuel,
+        ),
 
         ReplaySource::Abomonation(abomonation) => abomonation
             .replay_with_shutdown_into_named(
@@ -321,10 +319,6 @@ where
                 replays_finished,
                 fuel,
             )
-            .debug_frontier_with(&format!("very raw {} stream", source))
-            .debug_inspect(
-                move |x| tracing::trace!(target: "raw_event_streams", "immediate {} event: {:?}", source, x),
-            )
             .map(|(time, worker, event): (Duration, usize, RawEvent)| {
                 (time, WorkerId::new(worker), Event::from(event))
             }),
@@ -332,5 +326,4 @@ where
     .debug_inspect(
         move |x| tracing::trace!(target: "raw_event_streams", "{} event: {:?}", source, x),
     )
-    .debug_frontier_with(&format!("raw {} stream", source))
 }
